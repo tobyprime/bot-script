@@ -15,4 +15,6 @@ params:
   api_base:         { type: string, default: 'http://127.0.0.1:18100', desc: 控制面地址 }
   instance_id:      { type: string, default: '', desc: 实例 ID（平台部署时自动注入，无需手填） }
   transfer_pattern: { type: string, default: '你收到了来自 (%S+) 的 ([%d%.]+) C', desc: 'TSLC 收款识别（Lua pattern，引擎侧判定；捕获 1=玩家名 2=金额；热更校验：长度≤256/合法 pattern/恰好 2 捕获；空 = 关闭收款判定）' }
+  pay_token:        { type: string, default: '', desc: '收款通知 token（管理后台签发，pay_…；热更校验：长度≤128；空 = 收款上报彻底静默，不经实例 report 通道）' }
+  pay_endpoint:     { type: string, default: '', desc: '收款通知端点 URL（热更校验：空或合法 http(s) URL；空 = 由 api_base 派生 <api_base>/api/pay/notify；指向其他源时需在 bot.yaml net 与实例边界补对应 origin）' }
 persist: ./data/afk.sqlite

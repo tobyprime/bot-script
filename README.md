@@ -76,21 +76,41 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
 
 ## 收款 bot 部署与参数（TOB-522）
 
-以 `examples/afk_guard` 为生产链路：relay.lua 在引擎侧识别收款系统聊天，向平台上报
-结构化 `{type: 'transfer', data: {payer, amount}}`（chat_line 原文照旧上报留日志；认证面不变，X-Api-Key）。
+以 `examples/afk_guard` 为生产链路：relay.lua 在引擎侧识别收款系统聊天（transfer_pattern 机制），
+收款经 **pay 通知通道** 上报平台（TOB-531 起）：`POST <pay_endpoint|api_base>/api/pay/notify`，
+认证头 `X-Pay-Token`，载荷 `{payer, amount}`。`pay_token` 为空的普通实例收款上报**彻底静默**
+（不经实例 report 通道）；tsl_cmd / chat_line 与 actions 事件机制照旧。
 
-```yaml
-# bot.yaml 关键参数（默认值部署即用，零手改）
-params:
-  bot_name:         { type: string, default: '', desc: bot 进服玩家名；空 = 自动锚定 bot 自身用户名 }
-  transfer_pattern: { type: string, default: '你收到了来自 (%S+) 的 ([%d%.]+) C', desc: 收款识别 Lua pattern }
-```
+**部署三步**：
+
+1. **签发 token**：平台管理后台为收款 bot 签发 `pay_<64hex>` token（平台只存 sha256）。
+2. **配置参数**（运行期 `POST /params` 热更即可，无需重启）：
+
+   ```yaml
+   # bot.yaml 关键参数（默认值部署即用，零手改）
+   params:
+     bot_name:      { type: string, default: '', desc: bot 进服玩家名；空 = 自动锚定 bot 自身用户名 }
+     pay_token:     { type: string, default: '', desc: 收款通知 token（空 = 关闭收款上报） }
+     pay_endpoint:  { type: string, default: '', desc: 收款通知端点；空 = <api_base>/api/pay/notify }
+   ```
+
+3. **小额验证**：用测试账号给 bot 转一笔小额（如 0.5），确认平台后台入账、bot 按 200 响应的
+   `reply` 文案私聊回发付款人。
 
 - **默认锚定自身**：`bot_name` 默认空，引擎从驱动快照取 bot 用户名（`self.username()`），
   收款判定与私聊接收门都无需再硬编码 `MixTobyInjSave`；显式设置仍优先生效（兼容存量实例）。
-- **热更**：运行期 `POST /params` 修改 `transfer_pattern` 即时生效、不断线、持久化重启保留。
-- **热更校验**（非法即拒绝、回传可读错误、旧值继续生效）：长度 ≤256 字节；必须是合法 Lua pattern；
-  恰好 2 个捕获（1=玩家名 2=金额）。空值 = 关闭收款判定（合法值）。
+- **热更**：运行期 `POST /params` 修改 `transfer_pattern` / `pay_token` / `pay_endpoint`
+  即时生效、不断线、持久化重启保留。
+- **热更校验**（非法即拒绝、回传可读错误、旧值继续生效）：`transfer_pattern` 长度 ≤256 字节、
+  合法 Lua pattern、恰好 2 个捕获（1=玩家名 2=金额），空值 = 关闭收款判定；`pay_token` 长度 ≤128；
+  `pay_endpoint` 非空时必须是合法 http(s) URL。
+- **重试口径**：仅网络错误 / 5xx 重试（≤3 次，秒级递增退避后放弃并留 error 日志；按 HTTP
+  状态码归类，5xx 不论 body 形态——含反向代理返回的 HTML 502）；4xx（400/401/429 等）为
+  终态不重试，仅告警。重启丢失未完成的待重试通知为已接受风险
+  （平台侧审计缺口 + admin_adjust 冲正兜底）。
+- **standalone 部署**（`pay_endpoint` 指向 api_base 之外的其他源）：需在 bot.yaml `net` 清单
+  与实例边界 `net` 各补一行对应 origin 通配（如 `"https://pay.example.com/*"`）；
+  托管收款 bot（默认 `<api_base>/api/pay/notify`）被现有 api_base 授权自动覆盖，零额外配置。
 - 服务器收款副本格式不同（如 "X 给 Y 转了 N 金"）时，按上述规则热改 pattern 即可，无需改代码。
 - 旧示例 `examples/tsl_relay` 已标记 DEPRECATED：收款监听由 afk_guard 承接，仅保留绑定/验证码链路参考。
 

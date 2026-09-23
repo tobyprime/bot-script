@@ -1,6 +1,7 @@
 -- tsl_relay — TSL 游戏内 ↔ 平台 绑定/充值中继
--- ⚠ DEPRECATED（TOB-522）：收款/转账监听已由 examples/afk_guard/relay.lua 承接
---   （transfer_pattern 热更 + 引擎侧结构化 transfer 上报 + 默认锚定 bot 自身用户名）。
+-- ⚠ DEPRECATED（TOB-522；TOB-531 起收款上报切 pay 通知通道，缺口进一步拉大）：
+--   收款/转账监听已由 examples/afk_guard/relay.lua 承接（transfer_pattern 热更
+--   + pay 通知通道上报：pay_token/pay_endpoint 参数，普通实例零收款上报）。
 --   新部署请用 afk_guard；本包仅保留绑定/验证码链路参考，不再随引擎演进入维护。
 -- 全部交互 /msg 私聊回复，永不公屏：
 --   /msg bot 登录<验证码>   绑定游戏角色到平台账户，并返回一次性网页登录链接

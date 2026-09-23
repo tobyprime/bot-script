@@ -970,13 +970,13 @@ test('self.username：driver 最小暴露，params_validator 校验钩拒绝非�
   await engine.stop();
 });
 
-test('afk_guard relay：transfer 结构化上报载荷 + chat_line 照旧 + 接收门锚定自身用户名 + pattern 热更校验', async () => {
+test('afk_guard relay：transfer 经 pay 通道上报载荷 + chat_line 照旧 + 接收门锚定自身用户名 + pattern 热更校验', async () => {
   const reports = [];
   const srv = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
-      reports.push({ url: req.url, key: req.headers['x-api-key'], body: JSON.parse(body || '{}') });
+      reports.push({ url: req.url, key: req.headers['x-api-key'], payToken: req.headers['x-pay-token'], body: JSON.parse(body || '{}') });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ actions: [] }));
     });
@@ -984,6 +984,7 @@ test('afk_guard relay：transfer 结构化上报载荷 + chat_line 照旧 + 接�
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
   const port = srv.address().port;
   const netAllow = `http://127.0.0.1:${port}/*`;
+  const PAY_TOKEN = 'pay_' + 'c'.repeat(64);   // TOB-531：收款上报走 pay 通知通道，需配 pay_token
 
   const driver = new MockDriver({ username: 'RelayBot' });
   const engine = new BotEngine({
@@ -997,6 +998,7 @@ test('afk_guard relay：transfer 结构化上报载荷 + chat_line 照旧 + 接�
       instance_id: 'inst-1',
       // 清单形态（带 type）：进 schema 校验面，/params 热更与校验钩可用
       transfer_pattern: { type: 'string', default: '你收到了来自 (%S+) 的 ([%d%.]+) C' },
+      pay_token: { type: 'string', default: PAY_TOKEN },
     },
   }, driver, {
     scriptDir: path.join(EXAMPLES, 'afk_guard'),
@@ -1006,16 +1008,17 @@ test('afk_guard relay：transfer 结构化上报载荷 + chat_line 照旧 + 接�
   await new Promise((r) => setTimeout(r, 80));
 
   const sysChat = (raw) => driver.emit('chat', { text: '', raw, sender: null, sender_kind: 'system', ts: Date.now() });
-  const transfers = () => reports.filter((r) => r.body.type === 'transfer');
+  const transfers = () => reports.filter((r) => r.url === '/api/pay/notify');
 
-  // 默认参数部署（零手改）：bot 收自身用户名款项 → transfer 上报
+  // 默认参数部署（零手改）：bot 收自身用户名款项 → pay 通知通道上报（TOB-531 起 transfer 不再走实例 report）
   sysChat('[TSLLLLL] 你收到了来自 Steve 的 12.5 C');
   assert.ok(await waitFor(() => transfers().length === 1, 3000), '默认参数应产生 transfer 上报');
   const tr = transfers()[0];
-  assert.strictEqual(tr.body.data.payer, 'Steve');
-  assert.strictEqual(tr.body.data.amount, 12.5);
-  assert.strictEqual(tr.url, '/api/v1/instances/inst-1/report');
-  assert.strictEqual(tr.key, 'bsk_test_key', '上报认证面不变：X-Api-Key');
+  assert.strictEqual(tr.body.payer, 'Steve');
+  assert.strictEqual(tr.body.amount, 12.5);
+  assert.strictEqual(tr.url, '/api/pay/notify');
+  assert.strictEqual(tr.payToken, PAY_TOKEN, 'pay 通道认证面：X-Pay-Token');
+  assert.ok(!reports.some((r) => r.body.type === 'transfer'), 'pay 通道启用后实例 report 通道不再收 transfer');
   assert.ok(reports.some((r) => r.body.type === 'chat_line' && r.body.data.raw.includes('你收到了来自 Steve')),
     'chat_line 原文照旧上报（平台留日志用）');
 
@@ -1052,8 +1055,8 @@ test('afk_guard relay：transfer 结构化上报载荷 + chat_line 照旧 + 接�
   engine.setParam('transfer_pattern', '(%S+) 给 RelayBot 转了 ([%d%.]+) 金');
   sysChat('Bob 给 RelayBot 转了 3 金');
   assert.ok(await waitFor(() => transfers().length === 3, 3000), '热更 pattern 即时生效');
-  assert.strictEqual(transfers()[2].body.data.payer, 'Bob');
-  assert.strictEqual(transfers()[2].body.data.amount, 3);
+  assert.strictEqual(transfers()[2].body.payer, 'Bob');
+  assert.strictEqual(transfers()[2].body.amount, 3);
   sysChat('[TSLLLLL] 你收到了来自 Steve 的 12.5 C');
   await new Promise((r) => setTimeout(r, 150));
   assert.strictEqual(transfers().length, 3, '旧格式不再命中');
@@ -1069,6 +1072,284 @@ test('afk_guard relay：transfer 结构化上报载荷 + chat_line 照旧 + 接�
 
   await engine.stop();
   srv.close();
+});
+
+// ============================================================
+// 13. 收款上报切 pay 通知通道（TOB-531：pay_token/pay_endpoint + 重试口径）
+// ============================================================
+
+// 起 notify/report 双端点 mock：POST /api/pay/notify 与 /api/v1/instances/<id>/report
+// 行为由 responder(reqRec, path) 决定（可按 path / 计数切换响应）。
+function startPayMock() {
+  const hits = [];   // { path, payToken, body, ts }
+  let responder = () => [200, {}];
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const rec = {
+        path: req.url,
+        payToken: req.headers['x-pay-token'],
+        apiKey: req.headers['x-api-key'],
+        body: JSON.parse(body || '{}'),
+        ts: Date.now(),
+      };
+      hits.push(rec);
+      const [status, data, ctype] = responder(rec) ?? [200, {}];
+      // data 为字符串时按原文返回（模拟反代 HTML 5xx 等非 JSON body）
+      res.writeHead(status, { 'Content-Type': ctype ?? 'application/json' });
+      res.end(typeof data === 'string' ? data : JSON.stringify(data));
+    });
+  });
+  return {
+    srv,
+    hits,
+    setResponder: (fn) => { responder = fn; },
+    reset: () => { hits.length = 0; },
+    notify: () => hits.filter((h) => h.path === '/api/pay/notify'),
+    transfers: () => hits.filter((h) => h.path.startsWith('/api/v1/instances/') && h.body.type === 'transfer'),
+    listen: () => new Promise((r) => srv.listen(0, '127.0.0.1', r)),
+    close: () => srv.close(),
+  };
+}
+
+function makeRelayEngine(mock, { port, extraNets = [], extraParams = {}, logs } = {}) {
+  const netAllow = `http://127.0.0.1:${port}/*`;
+  const nets = [netAllow, ...extraNets];
+  const driver = new MockDriver({ username: 'RelayBot' });
+  const engine = new BotEngine({
+    name: 'pay-relay-test',
+    scripts: [path.join(EXAMPLES, 'afk_guard', 'relay.lua')],
+    net: nets,
+    params: {
+      bot_name: '',
+      api_key: 'bsk_test_key',
+      api_base: `http://127.0.0.1:${port}`,
+      instance_id: 'inst-1',
+      transfer_pattern: { type: 'string', default: '你收到了来自 (%S+) 的 ([%d%.]+) C' },
+      pay_token: { type: 'string', default: '' },
+      pay_endpoint: { type: 'string', default: '' },
+      ...extraParams,
+    },
+  }, driver, {
+    scriptDir: path.join(EXAMPLES, 'afk_guard'),
+    boundary: { net: nets },
+    ...(logs ? { log: (level, msg) => logs.push({ level, msg }) } : {}),
+  });
+  return { engine, driver };
+}
+
+test('afk_guard relay pay 通道：pay_token 空彻底静默；非空 POST 契约端点 + reply 回发 + endpoint 优先级 + 热更校验', async () => {
+  const mock = startPayMock();
+  await mock.listen();
+  const port = mock.srv.address().port;
+
+  // 第二个 mock：显式 pay_endpoint 指向的独立源
+  const mock2 = startPayMock();
+  await mock2.listen();
+  const port2 = mock2.srv.address().port;
+  mock2.setResponder(() => [200, { ok: true, reply: 'standalone 入账' }]);
+
+  const logs = [];
+  const { engine, driver } = makeRelayEngine(mock, { port, extraNets: [`http://127.0.0.1:${port2}/*`], logs });
+  await engine.start();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const sysChat = (raw) => driver.emit('chat', { text: '', raw, sender: null, sender_kind: 'system', ts: Date.now() });
+
+  // 1) pay_token 为空：收款行 → 零 notify 请求、零 transfer 上报（chat_line 照旧）
+  mock.setResponder((rec) => rec.path === '/api/pay/notify'
+    ? [200, { ok: true, reply: '不应被调用' }]
+    : [200, { actions: [] }]);
+  sysChat('[TSLLLLL] 你收到了来自 Steve 的 12.5 C');
+  await new Promise((r) => setTimeout(r, 200));
+  assert.strictEqual(mock.notify().length, 0, 'pay_token 空不应发 notify');
+  assert.strictEqual(mock.transfers().length, 0, 'pay_token 空不应经实例 report 通道上报 transfer');
+  assert.ok(mock.hits.some((h) => h.body.type === 'chat_line'), 'chat_line 原文照旧上报');
+  assert.ok(!driver.outgoingChat.some((t) => t.includes('不应被调用')), '不应回发任何文案');
+
+  // 2) 热更 pay_token：即时启用 → POST 契约端点，头/载荷与判定捕获一致
+  const TOKEN = 'pay_' + 'a'.repeat(64);
+  engine.setParam('pay_token', TOKEN);
+  mock.setResponder((rec) => rec.path === '/api/pay/notify'
+    ? [200, { ok: true, reply: '已入账 12.5' }]
+    : [200, { actions: [] }]);
+  sysChat('[TSLLLLL] 你收到了来自 Steve 的 12.5 C');
+  assert.ok(await waitFor(() => mock.notify().length === 1, 3000), 'pay_token 非空应发 notify');
+  const n1 = mock.notify()[0];
+  assert.strictEqual(n1.path, '/api/pay/notify');
+  assert.strictEqual(n1.payToken, TOKEN, 'X-Pay-Token 头应为签发 token');
+  assert.strictEqual(n1.body.payer, 'Steve');
+  assert.strictEqual(n1.body.amount, 12.5);
+  assert.strictEqual(mock.transfers().length, 0, 'pay 通道启用后 transfer 仍不经实例 report 通道');
+  assert.ok(await waitFor(() => driver.outgoingChat.includes('Steve 已入账 12.5'), 3000),
+    '200 + reply 非空 → bot 向 payer 回发该文案');
+
+  // 3) pay_endpoint 显式值优先于 api_base 派生
+  engine.setParam('pay_endpoint', `http://127.0.0.1:${port2}/api/pay/notify`);
+  sysChat('[TSLLLLL] 你收到了来自 Bob 的 3 C');
+  assert.ok(await waitFor(() => mock2.hits.length === 1, 3000), '显式 pay_endpoint 应被优先使用');
+  assert.strictEqual(mock2.hits[0].payToken, TOKEN);
+  assert.strictEqual(mock2.hits[0].body.payer, 'Bob');
+  assert.strictEqual(mock.notify().length, 1, 'api_base 派生端点不应再收到请求');
+  assert.ok(await waitFor(() => driver.outgoingChat.includes('Bob standalone 入账'), 3000),
+    '独立源 reply 照样回发');
+
+  // 4) pay_endpoint 热更校验：非法拒绝、错误可读、旧值继续生效
+  for (const bad of ['ftp://x/notify', 'not a url', 'http://exa mple.com/n']) {
+    try {
+      engine.setParam('pay_endpoint', bad);
+      assert.fail(`非法 endpoint（${bad}）应被拒绝`);
+    } catch (e) {
+      assert.strictEqual(e.kind, 'param.rejected');
+      assert.ok(String(e.detail).length > 0, '错误信息应可读');
+    }
+  }
+  try {
+    engine.setParam('pay_token', 'x'.repeat(129));
+    assert.fail('超长 pay_token 应被拒绝');
+  } catch (e) {
+    assert.strictEqual(e.kind, 'param.rejected');
+  }
+  assert.strictEqual(engine.paramValues.get('pay_endpoint'), `http://127.0.0.1:${port2}/api/pay/notify`,
+    '被拒后旧 endpoint 继续生效');
+  sysChat('[TSLLLLL] 你收到了来自 Carol 的 1 C');
+  assert.ok(await waitFor(() => mock2.hits.length === 2, 3000), '被拒热更后旧 endpoint 仍工作');
+
+  // 5) 重启保留 + 空 endpoint 合法（回到 api_base 派生）
+  engine.setParam('pay_endpoint', '');
+  assert.strictEqual(engine.paramPersist.get('pay_endpoint'), '');
+  assert.strictEqual(engine.paramPersist.get('pay_token'), TOKEN);
+  sysChat('[TSLLLLL] 你收到了来自 Dave 的 2 C');
+  assert.ok(await waitFor(() => mock.notify().length === 2, 3000), '空 endpoint 应回落 api_base 派生');
+  assert.strictEqual(mock.notify()[1].body.payer, 'Dave');
+
+  await engine.stop();
+  mock.close();
+  mock2.close();
+});
+
+test('afk_guard relay pay 通道重试口径：4xx 终态不重试；5xx 重试 ≤3 次退避后放弃；网络错误同样重试并留 error 日志', async () => {
+  const mock = startPayMock();
+  await mock.listen();
+  const port = mock.srv.address().port;
+  const logs = [];
+  const { engine, driver } = makeRelayEngine(mock, { port, logs });
+  await engine.start();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const sysChat = (raw) => driver.emit('chat', { text: '', raw, sender: null, sender_kind: 'system', ts: Date.now() });
+  const payLine = '[TSLLLLL] 你收到了来自 Steve 的 12.5 C';
+  engine.setParam('pay_token', 'pay_' + 'b'.repeat(64));
+
+  // 1) 401 终态：恰好 1 次请求，不重试，有 warn
+  mock.setResponder((rec) => rec.path === '/api/pay/notify' ? [401, { ok: false, error: 'token 无效' }] : [200, { actions: [] }]);
+  sysChat(payLine);
+  assert.ok(await waitFor(() => mock.notify().length === 1, 3000), '4xx 应发出请求');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(mock.notify().length, 1, '4xx 为终态，不得重试');
+  assert.ok(logs.some((l) => l.level === 'warn' && l.msg.includes('pay notify')), '4xx 应留 warn 日志');
+
+  // 2) 5xx：重试 ≤3 次（共 4 次尝试）后放弃并留 error 日志
+  mock.reset();
+  const t0 = Date.now();
+  mock.setResponder((rec) => rec.path === '/api/pay/notify' ? [500, { ok: false, error: 'boom' }] : [200, { actions: [] }]);
+  sysChat(payLine);
+  assert.ok(await waitFor(() => mock.notify().length === 4, 15000), '5xx 应重试至共 4 次尝试');
+  assert.ok(mock.notify()[3].ts - mock.notify()[0].ts >= 5000, '重试间应有秒级递增退避（1s+2s+3s≥5s）');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(mock.notify().length, 4, '重试耗尽后放弃');
+  assert.ok(logs.some((l) => l.level === 'error' && l.msg.includes('pay notify')), '重试耗尽应留 error 日志');
+
+  // 3) 网络错误（连接拒绝）：同样重试后放弃
+  const dead = startPayMock();
+  await dead.listen();
+  const deadPort = dead.srv.address().port;
+  dead.close();   // 拿一个已关闭端口 → 连接拒绝
+  await new Promise((r) => setTimeout(r, 100));
+  engine.setParam('pay_endpoint', `http://127.0.0.1:${deadPort}/api/pay/notify`);
+  const errCount0 = logs.filter((l) => l.level === 'error').length;
+  sysChat(payLine);
+  assert.ok(await waitFor(() => logs.filter((l) => l.level === 'error').length > errCount0, 15000),
+    '网络错误重试耗尽应留 error 日志');
+  engine.setParam('pay_endpoint', '');
+
+  await engine.stop();
+  mock.close();
+});
+
+test('afk_guard relay pay 通道 standalone 形态：无实例桥凭据（api_key/instance_id 空）收款上报照常，实例 report 通道零请求', async () => {
+  const mock = startPayMock();
+  await mock.listen();
+  const port = mock.srv.address().port;
+  const logs = [];
+  const TOKEN = 'pay_' + 'c'.repeat(64);
+  const { engine, driver } = makeRelayEngine(mock, {
+    port, logs,
+    extraParams: { api_key: '', instance_id: '', pay_token: TOKEN },
+  });
+  await engine.start();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const sysChat = (raw) => driver.emit('chat', { text: '', raw, sender: null, sender_kind: 'system', ts: Date.now() });
+  mock.setResponder((rec) => rec.path === '/api/pay/notify'
+    ? [200, { ok: true, reply: '已入账 7' }]
+    : [200, { actions: [] }]);
+  sysChat('[TSLLLLL] 你收到了来自 Alex 的 7 C');
+  assert.ok(await waitFor(() => mock.notify().length === 1, 3000), 'standalone 形态收款行应发 pay notify');
+  const n = mock.notify()[0];
+  assert.strictEqual(n.payToken, TOKEN, 'X-Pay-Token 头应携带签发 token');
+  assert.strictEqual(n.body.payer, 'Alex');
+  assert.strictEqual(n.body.amount, 7);
+  assert.ok(mock.hits.every((h) => h.path === '/api/pay/notify'),
+    '实例 report 通道必须零请求（api_key/instance_id 空也不得兜底回落）');
+  assert.strictEqual(mock.transfers().length, 0);
+  assert.ok(!mock.hits.some((h) => h.body.type === 'chat_line'), '无实例桥时不上报 chat_line');
+  assert.ok(await waitFor(() => driver.outgoingChat.includes('Alex 已入账 7'), 3000), 'reply 回发照常');
+
+  await engine.stop();
+  mock.close();
+});
+
+test('afk_guard relay pay 通道重试口径：非 JSON 5xx（反代 HTML 502）与 5xx 同口径重试；非 JSON 4xx 仍终态', async () => {
+  const mock = startPayMock();
+  await mock.listen();
+  const port = mock.srv.address().port;
+  const logs = [];
+  const { engine, driver } = makeRelayEngine(mock, {
+    port, logs,
+    extraParams: { pay_token: 'pay_' + 'd'.repeat(64) },
+  });
+  await engine.start();
+  await new Promise((r) => setTimeout(r, 80));
+
+  const sysChat = (raw) => driver.emit('chat', { text: '', raw, sender: null, sender_kind: 'system', ts: Date.now() });
+
+  // 1) 500 + text/html：按 HTTP 状态进入 5xx 重试口径（共 4 次尝试 + 退避）
+  mock.setResponder((rec) => rec.path === '/api/pay/notify'
+    ? [500, '<html><body>502 Bad Gateway</body></html>', 'text/html']
+    : [200, { actions: [] }]);
+  sysChat('[TSLLLLL] 你收到了来自 Steve 的 12.5 C');
+  assert.ok(await waitFor(() => mock.notify().length === 4, 15000),
+    '非 JSON 5xx 应进入与 5xx 一致的重试口径（共 4 次尝试）');
+  assert.ok(mock.notify()[3].ts - mock.notify()[0].ts >= 5000, '重试间应有秒级递增退避');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(mock.notify().length, 4, '重试耗尽后放弃');
+  assert.ok(logs.some((l) => l.level === 'error' && l.msg.includes('pay notify')), '重试耗尽应留 error 日志');
+
+  // 2) 对照：非 JSON 4xx 仍为终态（恰好 1 次请求 + warn）
+  mock.reset();
+  mock.setResponder((rec) => rec.path === '/api/pay/notify'
+    ? [400, '<html>bad request</html>', 'text/html']
+    : [200, { actions: [] }]);
+  sysChat('[TSLLLLL] 你收到了来自 Bob 的 1 C');
+  assert.ok(await waitFor(() => mock.notify().length === 1, 3000), '非 JSON 4xx 应发出请求');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(mock.notify().length, 1, '非 JSON 4xx 仍为终态不重试');
+  assert.ok(logs.some((l) => l.level === 'warn' && l.msg.includes('pay notify')), '非 JSON 4xx 应留 warn 日志');
+
+  await engine.stop();
+  mock.close();
 });
 
 // ============================================================
