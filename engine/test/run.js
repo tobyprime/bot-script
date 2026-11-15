@@ -1377,6 +1377,23 @@ test('断线：踢出理由解析成可读文本（字符串/chat 组件/JSON �
   assert.equal(reasonText(null), '');
   assert.equal(reasonText(''), '');
   assert.equal(reasonText('{"not":"json at all"'), '{"not":"json at all"', '非法 JSON 不丢原文');
+  // kick_disconnect 的 reason 是 anonymousNbt —— 不处理就会输出 [object Object]，
+  // 而这恰恰是服务器明确说明踢出原因的那条信息
+  assert.equal(
+    reasonText({ type: 'compound', name: '', value: { text: { type: 'string', value: 'You are not white-listed on this server' } } }),
+    'You are not white-listed on this server',
+    'NBT compound（kick 包的真实形态）应简化成可读文本');
+  assert.equal(
+    reasonText({
+      type: 'compound', name: '', value: {
+        text: { type: 'string', value: 'Kicked: ' },
+        extra: { type: 'list', value: { type: 'compound', value: [{ text: { type: 'string', value: 'flying is not enabled' } }] } },
+      },
+    }),
+    'Kicked: flying is not enabled',
+    'NBT 里套 extra 列表也应展开');
+  assert.ok(!reasonText({ type: 'compound', name: '', value: {} }).includes('[object Object]'),
+    '无法解析时也不得输出 [object Object]（至少给出字段名）');
 });
 
 test('断线：连接关闭后动作动词不再写包（防 EPIPE 刷屏）', async () => {
