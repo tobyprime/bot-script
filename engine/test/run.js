@@ -1365,6 +1365,37 @@ test('mineflayer 驱动：look 角度按度进、按弧度出；self 上报回�
   assert.equal(radToDeg(-Math.PI / 2), -90);
 });
 
+// 断线可读性（2026-11-15 实测）：mineflayer 的 kicked/end 理由是 chat 组件或 JSON 文本，
+// 原样 String() 只会给运维一坨裸 JSON，而 EPIPE 只是「对端关闭」的传输层表现、不含业务信息。
+test('断线：踢出理由解析成可读文本（字符串/chat 组件/JSON 文本三种形态）', async () => {
+  const { reasonText } = await import('../../drivers/mineflayer/reason.js');
+  assert.equal(reasonText('{"color":"red","text":"You are banned from this server"}'),
+    'You are banned from this server', 'JSON 文本应取出 text 段');
+  assert.equal(reasonText({ text: 'Kicked: ', extra: [{ text: 'flying is not enabled' }] }),
+    'Kicked: flying is not enabled', '组件对象应拼接 extra');
+  assert.equal(reasonText('plain reason'), 'plain reason', '纯文本原样返回');
+  assert.equal(reasonText(null), '');
+  assert.equal(reasonText(''), '');
+  assert.equal(reasonText('{"not":"json at all"'), '{"not":"json at all"', '非法 JSON 不丢原文');
+});
+
+test('断线：连接关闭后动作动词不再写包（防 EPIPE 刷屏）', async () => {
+  const { MineflayerDriver } = await import('../../drivers/mineflayer/index.js');
+  const d = new MineflayerDriver({ log: () => {} });
+  // 未连接（alive=false）时，动作应静默返回而不是往死 socket 写
+  d.alive = false;
+  d.bot = { entity: { yaw: 0, pitch: 0 }, chat: () => { throw new Error('不该写包'); },
+            setControlState: () => { throw new Error('不该写包'); },
+            look: async () => { throw new Error('不该写包'); },
+            _client: { socket: { destroyed: true } } };
+  await d.chat_send('hi');
+  await d.rot(90, 0);
+  await d.hop();
+  await d.move_input({ fwd: true });
+  const r = await d.path_to({ x: 0, y: 0, z: 0 });
+  assert.deepEqual(r, { ok: false, reason: 'disconnected' }, '寻路应直接失败而不是挂起');
+});
+
 // ============================================================
 
 const started = Date.now();
