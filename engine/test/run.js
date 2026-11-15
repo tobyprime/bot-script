@@ -1440,6 +1440,22 @@ test('bslib.look.at 单轮只发一个视角包（避免 invalid_player_movement
   await engine.stop();
 });
 
+// 视角限速（2026-11-15 实测事故）：服务器踢人理由始终是
+// multiplayer.disconnect.invalid_player_movement。上一版把每轮 2 个包降到 1 个后仍被踢，
+// 真正原因在 mineflayer 的 force 语义：
+//   bot.look(yaw, pitch, true)  // force=true → 直接 lastSentYaw = yaw，绕过 maxDeltaYaw 限速
+// 即允许客户端一个 tick 内把视角瞬移到任意角度，原版客户端受鼠标灵敏度约束做不到，
+// 服务端反作弊据此判定非法移动。驱动必须用 force=false，让视角以 yawSpeed 逐步逼近。
+//
+    test('驱动 rot：不得使用 force=true（会绕过 mineflayer 视角限速，被判 invalid_player_movement）', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../../drivers/mineflayer/index.js', import.meta.url), 'utf8');
+  const rotBody = src.slice(src.indexOf('async rot(yaw, pitch)'), src.indexOf('async hop()'));
+  assert.ok(rotBody.includes('false'), 'rot 的 bot.look 第三个参数应为 false（限速插值）');
+  assert.ok(!/bot\.look\([\s\S]*?true,?\s*\)/.test(rotBody),
+    'rot 不得传 force=true：它会直接把 lastSentYaw 赋成目标值，绕过限速');
+});
+
 // 协议数据表（2026-11-15 实测事故）：mc.zenoxs.cn 下发的是带 dx/dy/dz + f32 角度 + u32 flags
 // 的 entity_teleport。minecraft-data 3.116.0 对同一协议给出旧布局（i8 角度），导致 play 阶段
 // 逐包「Chunk size is 67 but only 33 was read」，三秒后 EPIPE。3.119.0 起定义才正确。

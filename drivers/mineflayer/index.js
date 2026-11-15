@@ -388,10 +388,17 @@ export class MineflayerDriver {
   async rot(yaw, pitch) {
     if (!this.connected) return;
     // 引擎/Lua 侧角度是「度」；mineflayer look 收弧度。null/undefined = 该轴不动
+    //
+    // force 必须为 false。force=true 时 mineflayer 直接把 lastSentYaw/lastSentPitch 赋值成
+    // 目标值（physics.js: `if (force) { lastSentYaw = yaw; return }`），绕过它自己的
+    // maxDeltaYaw 限速——等于允许客户端在一个 tick 内把视角瞬移到任意角度。原版客户端受
+    // 鼠标灵敏度约束做不到这点，服务端反作弊会判 multiplayer.disconnect.invalid_player_movement
+    // （实测于 mc.zenoxs.cn：每 3 秒被踢）。force=false 时视角以 yawSpeed 上限逐步逼近，
+    // 与真实客户端一致；发包节奏由物理循环每 50ms 最多一个，不额外增频。
     await this.bot.look(
       degToRad(yaw) ?? this.bot.entity.yaw,
       degToRad(pitch) ?? this.bot.entity.pitch,
-      true,
+      false,
     );
   }
 
