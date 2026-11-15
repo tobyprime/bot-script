@@ -3,6 +3,7 @@
 // 与引擎的事件/方法契约见 engine/engine.js 顶部注释与 README。
 import { Vec3 } from 'vec3';
 import { degToRad, radToDeg } from './units.js';
+import { reasonText } from './reason.js';
 
 const NORM = (v) => ({ x: Math.round(v.x), y: Math.round(v.y), z: Math.round(v.z) });
 // 规范物品 id：minecraft:x（引擎数据模型约定，CAPABILITIES §3.1）
@@ -19,6 +20,11 @@ export class MineflayerDriver {
     this.selfDirty = false;
     this.entityTimer = null;
     this.pathWait = null; // { resolve }
+    // 连接是否仍可写包：socket 关闭后置 false，动作动词据此静默跳过。没有这道守卫时，
+    // 脚本里的 20Hz 循环（如 look_at_nearest_player 每 50ms 的 rot）会在死连接上持续写包，
+    // 刷出成片的 write EPIPE 噪声，把真正的原因（kicked 的服务器提示）淹掉。
+    this.alive = false;
+    this.transportErrLogged = false;
   }
 
   on(evt, cb) {
@@ -44,6 +50,8 @@ export class MineflayerDriver {
 
   async connect(cfg) {
     this.cfg = cfg;
+    this.alive = false;              // 新连接建立前先置不可写，避免旧会话残留动作写包
+    this.transportErrLogged = false;
     const mineflayer = (await import('mineflayer')).default;
     const pfMod = await import('mineflayer-pathfinder');
     const pf = pfMod.default ?? pfMod;
@@ -99,6 +107,7 @@ export class MineflayerDriver {
 
     bot.once('login', () => this.emit('session', { state: 'logged_in' }));
     bot.once('spawn', () => {
+      this.alive = true;             // spawn 之后才允许动作写包（登录前写也是浪费）
       this.emit('session', {
         state: 'playing',
         info: {
@@ -110,12 +119,31 @@ export class MineflayerDriver {
       this.bindChat();
       this.bindWorld();
     });
-    bot.on('kicked', (reason) => this.emit('session', { state: 'kicked', reason: String(reason).slice(0, 200) }));
-    bot.on('end', (reason) => {
-      this.stopSampling();
-      this.emit('session', { state: 'disconnected', reason: String(reason ?? '').slice(0, 200) });
+    bot.on('kicked', (reason) => {
+      this.alive = false;
+      // 踢出理由要原样上抛：mineflayer 的 kick 包经过 chat 组件，String() 后是 JSON 文本，
+      // 尽量取出可读的 text 段（否则运维只能看到裸 JSON 或干脆什么都看不到）
+      this.emit('session', { state: 'kicked', reason: reasonText(reason).slice(0, 500) });
     });
-    bot.on('error', (e) => this.log(`[mineflayer] error: ${e.message}`));
+    bot.on('end', (reason) => {
+      this.alive = false;
+      this.stopSampling();
+      this.emit('session', { state: 'disconnected', reason: reasonText(reason).slice(0, 500) });
+    });
+    bot.on('error', (e) => {
+      // EPIPE / ECONNRESET 是「对端已关连接」的通用表现，本身不含任何业务信息；
+      // 真正的踢出理由在 kicked/end 里。这里降噪：同类错误只报一次，且标明是传输层问题。
+      this.alive = false;
+      const code = e?.code ?? '';
+      if (code === 'EPIPE' || code === 'ECONNRESET') {
+        if (!this.transportErrLogged) {
+          this.transportErrLogged = true;
+          this.log(`[mineflayer] 连接已断开（${code}）：对端关闭了连接，具体原因见 kick/end 事件`);
+        }
+        return;
+      }
+      this.log(`[mineflayer] error: ${e.message}`);
+    });
 
     bot.loadPlugin(this.pf);
     const Movements = this.pfMod.Movements;
@@ -346,11 +374,19 @@ export class MineflayerDriver {
 
   // ================= L2 动词 =================
 
+  // 连接已断时动作静默跳过（引擎在断线后会 pause 任务并重连，期间仍有在途协程；
+  // 不做这道守卫就会在死 socket 上持续写包，刷出成片的 write EPIPE）
+  get connected() {
+    return this.alive && !!this.bot?.entity && !this.bot?._client?.socket?.destroyed;
+  }
+
   async chat_send(text) {
+    if (!this.connected) return;
     this.bot.chat(text);
   }
 
   async rot(yaw, pitch) {
+    if (!this.connected) return;
     // 引擎/Lua 侧角度是「度」；mineflayer look 收弧度。null/undefined = 该轴不动
     await this.bot.look(
       degToRad(yaw) ?? this.bot.entity.yaw,
@@ -360,12 +396,15 @@ export class MineflayerDriver {
   }
 
   async hop() {
+    if (!this.connected) return;
     this.bot.setControlState('jump', true);
     await new Promise((r) => setTimeout(r, 100));
+    if (!this.connected) return;
     this.bot.setControlState('jump', false);
   }
 
   async move_input(state) {
+    if (!this.connected) return;
     const map = { fwd: 'forward', strafe: 'left', jump: 'jump', sneak: 'sneak', sprint: 'sprint' };
     this.bot.setControlState('left', !!state.strafe);   // v1: strafe 非零 = 左移
     this.bot.setControlState(map.fwd, !!state.fwd);
@@ -375,6 +414,7 @@ export class MineflayerDriver {
   }
 
   async path_to(target, opts = {}) {
+    if (!this.connected) return { ok: false, reason: 'disconnected' };
     const GoalNear = (this.pfMod.goals ?? this.pfMod).GoalNear;
     const arrive = Math.max(0, Math.round(opts.arrive ?? 1.5));
     this.bot.pathfinder.setGoal(new GoalNear(target.x, target.y, target.z, arrive));
