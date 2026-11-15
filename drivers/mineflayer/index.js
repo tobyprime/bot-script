@@ -2,6 +2,7 @@
 // L0 连接（mineflayer 代劳）+ L1 数据面（通道翻译）+ L2 动词（14 动词映射）+ L3 pathfinder。
 // 与引擎的事件/方法契约见 engine/engine.js 顶部注释与 README。
 import { Vec3 } from 'vec3';
+import { degToRad, radToDeg } from './units.js';
 
 const NORM = (v) => ({ x: Math.round(v.x), y: Math.round(v.y), z: Math.round(v.z) });
 // 规范物品 id：minecraft:x（引擎数据模型约定，CAPABILITIES §3.1）
@@ -219,7 +220,7 @@ export class MineflayerDriver {
     this.emit('self', {
       username: bot.username ?? null,
       pos: { x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z },
-      yaw: bot.entity.yaw, pitch: bot.entity.pitch,
+      yaw: radToDeg(bot.entity.yaw), pitch: radToDeg(bot.entity.pitch),
       health: bot.health, food: bot.food,
       gamemode: bot.game?.gameMode,
       held: itemOf(bot.heldItem),
@@ -350,8 +351,12 @@ export class MineflayerDriver {
   }
 
   async rot(yaw, pitch) {
-    // mineflayer yaw [-180,180]；force=true 立即发包
-    await this.bot.look(yaw ?? this.bot.entity.yaw, pitch ?? this.bot.entity.pitch, true);
+    // 引擎/Lua 侧角度是「度」；mineflayer look 收弧度。null/undefined = 该轴不动
+    await this.bot.look(
+      degToRad(yaw) ?? this.bot.entity.yaw,
+      degToRad(pitch) ?? this.bot.entity.pitch,
+      true,
+    );
   }
 
   async hop() {
