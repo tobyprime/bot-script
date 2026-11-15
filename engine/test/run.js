@@ -1396,6 +1396,41 @@ test('断线：连接关闭后动作动词不再写包（防 EPIPE 刷屏）', a
   assert.deepEqual(r, { ok: false, reason: 'disconnected' }, '寻路应直接失败而不是挂起');
 });
 
+// 协议数据表（2026-11-15 实测事故）：mc.zenoxs.cn 下发的是带 dx/dy/dz + f32 角度 + u32 flags
+// 的 entity_teleport。minecraft-data 3.116.0 对同一协议给出旧布局（i8 角度），导致 play 阶段
+// 逐包「Chunk size is 67 but only 33 was read」，三秒后 EPIPE。3.119.0 起定义才正确。
+// 这条测试用线上真实帧验证：必须整包读完，角度必须是合理值。数据表被降级就会红。
+test('协议数据表：entity_teleport 真实帧必须整包读完（防止 minecraft-data 回退）', async () => {
+  const mcMod = await import('minecraft-protocol');
+  const mc = mcMod.default ?? mcMod;
+  const FRAME = Buffer.from(
+    '769df2e89f0440eb5a854031842e4051e0000000000040eb590f8a11f3df000000000000000000000000000000000000000000000000'
+    + '42b1d14c4142ac200000000000', 'hex');
+
+  // 1) 数据表门槛：26.1 的 entity_teleport 必须带 dx 字段（旧表没有）
+  const mcdMod = await import('minecraft-data');
+  const mcd = mcdMod.default ?? mcdMod;
+  const def = mcd('26.1').protocol.play.toClient.types.packet_entity_teleport;
+  const fields = def[1].filter((x) => x.name !== 'name').map((x) => x.name);
+  assert.ok(fields.includes('dx'),
+    '26.1 的 entity_teleport 应含 dx（实际：' + fields.join(',') + '）'
+    + '；缺它说明 minecraft-data 版本过旧，play 阶段会报 partial packet');
+
+  // 2) 端到端：真实 deserializer 吃线上帧，必须恰好读完且数值合理
+  const d = mc.createDeserializer({ state: 'play', isServer: false, version: '1.21.8', noErrorLogging: true });
+  let pkt = null;
+  d.on('data', (p) => { pkt = p; });
+  d.write(FRAME);
+  assert.ok(pkt, '真实帧应能被解析出包');
+  assert.equal(pkt.metadata.size, FRAME.length,
+    '应整包读完（' + pkt.metadata.size + '/' + FRAME.length + '）'
+    + '；读少了就是线上那句「Chunk size is 67 but only 33 was read」');
+  const params = pkt.data.params;
+  assert.equal(params.x, 56020.164086111225);
+  assert.ok(Math.abs(params.yaw - 88.91) < 0.05, 'yaw 应约 88.91°，实际 ' + params.yaw);
+  assert.ok(Math.abs(params.pitch - 12.17) < 0.05, 'pitch 应约 12.17°，实际 ' + params.pitch);
+});
+
 // ============================================================
 
 const started = Date.now();

@@ -16,6 +16,7 @@
     "mineflayer-pathfinder": "^2.4.5",
     "wasmoon": "^1.7.0",
     "ws": "^8.18.0",
-    "yaml": "^2.8.1"
+    "yaml": "^2.8.1",
+    "minecraft-data": "^3.119.0"
   }
 }
