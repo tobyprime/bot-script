@@ -893,6 +893,15 @@ nav = {
 look = {
   yaw = function(a) __fire_token(__act_rot(encode({ yaw = a }), 0)) end,
   pitch = function(a) __fire_token(__act_rot(encode({ pitch = a }), 0)) end,
+  -- 一次写完两轴：原版客户端每 tick 最多发一个 looking 包，分两次调用会翻倍发包频率，
+  -- 高频循环（如 20Hz 瞄准）下服务器会以 multiplayer.disconnect.invalid_player_movement 踢人。
+  -- 只在需要的轴存在时才带上对应键（nil 轴 = 不动该轴）。
+  aim = function(y, p)
+    local t = {}
+    if y ~= nil then t.yaw = y end
+    if p ~= nil then t.pitch = p end
+    __fire_token(__act_rot(encode(t), 0))
+  end,
   current = function() return call_query("__q_look", {}) or { yaw = 0, pitch = 0 } end,
 }
 

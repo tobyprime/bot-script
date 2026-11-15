@@ -41,8 +41,7 @@ function bslib.look.at(t, opts)
   elseif opts and opts.only == "yaw" then
     look.yaw(yaw)
   else
-    look.yaw(yaw)
-    look.pitch(pitch)
+    look.aim(yaw, pitch)   -- 单包同时写两轴：分两次调用 = 发包频率翻倍，高频瞄准会被踢
   end
 end
 

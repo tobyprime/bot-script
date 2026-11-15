@@ -1413,6 +1413,33 @@ test('断线：连接关闭后动作动词不再写包（防 EPIPE 刷屏）', a
   assert.deepEqual(r, { ok: false, reason: 'disconnected' }, '寻路应直接失败而不是挂起');
 });
 
+// 瞄准发包频率（2026-11-15 实测事故）：服务器踢人理由是
+// multiplayer.disconnect.invalid_player_movement —— 移动/视角包发得太频繁。
+// 原版客户端每 tick 最多发一个 looking 包；bslib.look.at 原先分别调用 look.yaw +
+// look.pitch，等于每轮两个包，20Hz 瞄准就是 40 包/秒，必被踢。
+test('bslib.look.at 单轮只发一个视角包（避免 invalid_player_movement 踢人）', async () => {
+  script('aim_rate.lua', `
+    on_start(function()
+      task.spawn(function()
+        time.sleep(50)                      -- 等实体缓存就绪
+        bslib.look.at({ pos = { x = 5, y = 64, z = 0 } })
+        time.sleep(50)
+        bslib.look.at({ pos = { x = 0, y = 64, z = 3 } })
+        time.sleep(50)
+        __R_done = true
+      end)
+    end)
+  `);
+  const { engine, driver } = await makeEngine({ scripts: ['aim_rate.lua'] });
+  assert.ok(await waitFor(() => g(engine, '__R_done') === true), '瞄准场景未跑完');
+  // 两次 look.at → 恰好两次 rot；旧实现会是 4 次
+  assert.equal(driver.rotCalls, 2, `两轮瞄准应只发 2 个视角包（实际 ${driver.rotCalls}）`);
+  // 且两轴同包生效：第二次瞄准的目标在 +Z，yaw 应约为 0
+  assert.ok(Math.abs(driver.botYaw) < 2, `朝 +Z 的目标 yaw 应约为 0，实际 ${driver.botYaw}`);
+  assert.ok(Number.isFinite(driver.botPitch), `pitch 应被写入（实际 ${driver.botPitch}）`);
+  await engine.stop();
+});
+
 // 协议数据表（2026-11-15 实测事故）：mc.zenoxs.cn 下发的是带 dx/dy/dz + f32 角度 + u32 flags
 // 的 entity_teleport。minecraft-data 3.116.0 对同一协议给出旧布局（i8 角度），导致 play 阶段
 // 逐包「Chunk size is 67 but only 33 was read」，三秒后 EPIPE。3.119.0 起定义才正确。
