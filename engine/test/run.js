@@ -1353,6 +1353,19 @@ test('afk_guard relay pay 通道重试口径：非 JSON 5xx（反代 HTML 502）
 });
 
 // ============================================================
+// 驱动边界单位换算（Lua/引擎约定「度」，mineflayer 原生「弧度」）
+
+test('mineflayer 驱动：look 角度按度进、按弧度出；self 上报回度', async () => {
+  const { degToRad, radToDeg } = await import('../../drivers/mineflayer/units.js');
+  assert.equal(degToRad(-90), -Math.PI / 2, 'look.yaw(-90°) 应换算为 -π/2 弧度');
+  assert.equal(degToRad(180), Math.PI);
+  assert.equal(degToRad(null), null, '缺省轴保持 null（look 回退到当前值）');
+  assert.equal(degToRad(undefined), undefined);
+  assert.equal(radToDeg(Math.PI), 180);
+  assert.equal(radToDeg(-Math.PI / 2), -90);
+});
+
+// ============================================================
 
 const started = Date.now();
 let failed = 0;
