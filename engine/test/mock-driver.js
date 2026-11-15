@@ -146,6 +146,9 @@ export class MockDriver {
   }
 
   async rot(yaw, pitch) {
+    // 记录发包次数：原版客户端每 tick 最多发一个 looking 包，
+    // 高频瞄准时若每轮发两个（yaw/pitch 分开），服务器会判 invalid_player_movement
+    this.rotCalls = (this.rotCalls ?? 0) + 1;
     if (yaw != null) this.botYaw = yaw;
     if (pitch != null) this.botPitch = pitch;
   }
