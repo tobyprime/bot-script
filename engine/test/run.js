@@ -1541,6 +1541,49 @@ test('协议诊断：环形缓冲常开、只在断线时倒出（用户无需�
 //
 // 本地红绿测（Paper 26.3 + Via）：不发 1.2s 被踢 / 每 tick 发 → 存活 17.2s；
 // 纯净 1.21.8 发与不发均存活（无回归）。
+test('tick_end 守卫：同一 tick 的多个移动包被延后到下一 tick（不丢弃、取最新坐标）', async () => {
+  const { installTickEndSender } = await import('../../drivers/mineflayer/tickEnd.js');
+  const calls = [];
+  const fakeBot = { _client: { write(name, params) { calls.push({ name, params, at: Date.now() }); } } };
+  const sender = installTickEndSender(fakeBot, { tickMs: 60 });
+  const w = fakeBot._client.write;
+
+  // 模拟 physics catch-up：同一毫秒连发 4 个位置包（线上实测形态，y 递减表示下落中）
+  const t0 = Date.now();
+  let blocked = 0;
+  for (const dy of [0, -0.005, -0.014, -0.026]) {
+    if (w('position', { x: 1, y: 64 + dy, z: 3, flags: {} }) === undefined) blocked += 1;
+  }
+  assert.ok(blocked >= 3, `同 tick 的后续位置包应被延后，实际拦截 ${blocked}/4`);
+
+  await new Promise((r) => setTimeout(r, 250));
+  const positions = calls.filter((c) => c.name === 'position');
+  assert.ok(positions.length >= 2, `延后的位置包必须补发（不丢弃），实际 ${positions.length}`);
+  for (const c of positions.slice(1)) {
+    assert.ok(c.at - t0 >= 55, `补发包应在下一 tick（间隔 ${c.at - t0}ms）`);
+  }
+  const last = positions[positions.length - 1];
+  assert.equal(Math.round(last.params.y * 1000) / 1000, 63.974,
+    `应补发最新坐标（后到者覆盖前一个），实际 ${last.params.y}`);
+  assert.ok(sender.stats().deferred >= 3, 'deferred 统计应反映延后次数');
+  sender.stop();
+});
+
+test('tick_end 守卫：非移动包立即透传（chat 等不受节拍影响）', async () => {
+  const { installTickEndSender } = await import('../../drivers/mineflayer/tickEnd.js');
+  const calls = [];
+  const fakeBot = { _client: { write(name) { calls.push(name); } } };
+  const sender = installTickEndSender(fakeBot, { tickMs: 60 });
+  const w = fakeBot._client.write;
+
+  w('chat_send', { text: 'hi' });
+  w('arm_animation', {});
+  // 非移动包应立即写到底层（不需要等 tick）；过滤掉周期性 tick_end
+  assert.deepEqual(calls.filter((n) => n !== 'tick_end'), ['chat_send', 'arm_animation'],
+    '非移动包应立即写出（不排队）');
+  sender.stop();
+});
+
 test('tick_end：按固定节拍每 tick 发送（补上原版客户端固有行为）', async () => {
   const { installTickEndSender } = await import('../../drivers/mineflayer/tickEnd.js');
   const calls = [];
