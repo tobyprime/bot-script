@@ -6,7 +6,7 @@ import { degToRad, radToDeg } from './units.js';
 import { reasonText } from './reason.js';
 
 import { installProtocolTrace } from './protocolTrace.js';
-import { buildCustomPackets, installTeleportConfirmPatch, confirmMode } from './protocolPatch.js';
+import { buildCustomPackets, installTeleportConfirmPatch, installSinglePositionPatch, confirmMode } from './protocolPatch.js';
 
 const NORM = (v) => ({ x: Math.round(v.x), y: Math.round(v.y), z: Math.round(v.z) });
 // 规范物品 id：minecraft:x（引擎数据模型约定，CAPABILITIES §3.1）
@@ -111,7 +111,13 @@ export class MineflayerDriver {
     // BOTSCRIPT_PROTO_TRACE=1 可切回逐条实时打印（深度调试用）。
     this.trace = installProtocolTrace(bot, (line) => this.log(line));
 
-    // teleport_confirm 补六字段（mineflayer 只传 teleportId；缺坐标会被服务端判非法移动）
+    // 同一 tick 只发一个带位置的包。26.3 的 handleMovePlayer 规定：本 tick 已有位置包时
+    // 再来一个带位置的包 → invalid_player_movement 踢人。而 mineflayer 收到服务端 position
+    // 后会在同一毫秒内「先发 position_look 再发 teleport_confirm」——在 1.21.x 上无害
+    //（确认包只带 id），在 26.3 上确认包也含坐标 → 第二个被判重复。
+    this.unpatchSinglePos = installSinglePositionPatch(bot);
+
+    // teleport_confirm 补六字段（服务端 26.3 要坐标；mineflayer 只传 teleportId）
     this.unpatchTeleport = installTeleportConfirmPatch(bot);
 
     // 配置阶段资源包：必须用字符串 uuid 应答 ACCEPTED+LOADED，否则服务器（如 Velocity 群组服
@@ -205,6 +211,8 @@ export class MineflayerDriver {
     if (!b) return;
     try { this.trace?.off(); } catch { /* ignore */ }
     this.trace = null;
+    try { this.unpatchSinglePos?.(); } catch { /* ignore */ }
+    this.unpatchSinglePos = null;
     try { this.unpatchTeleport?.(); } catch { /* ignore */ }
     this.unpatchTeleport = null;
     try { b.removeAllListeners(); } catch { /* ignore */ }

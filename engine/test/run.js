@@ -1549,6 +1549,46 @@ test('协议诊断：环形缓冲常开、只在断线时倒出（用户无需�
   t.off();
 });
 
+// 同一 tick 只发一个带位置包（2026-11-16 线上 trace 定位）：
+// 26.3 的 handleMovePlayer：本 tick 已有位置包时再来一个带位置的包 → invalid_player_movement。
+// mineflayer 收到服务端 position 后会连发 position_look 与 teleport_confirm（26.3 起后者也带坐标），
+// 两者同 tick → 必踢。修复后同一 50ms 窗口内第二个带位置包降级为纯朝向包（look）。
+test('同一 tick 只发一个带位置包（第二个降级为 look / 纯位置包丢弃）', async () => {
+  const pp = await import('../../drivers/mineflayer/protocolPatch.js');
+  const calls = [];
+  const fakeBot = { _client: { write(name, params) { calls.push({ name, params }); } } };
+  pp.installSinglePositionPatch(fakeBot);
+  const w = fakeBot._client.write;
+
+  // 同一窗口内连发三个带位置包（模拟真实撞车）
+  w('position_look', { x: 1, y: 2, z: 3, yaw: 0.5, pitch: 0.1, flags: { onGround: true } });
+  w('teleport_confirm', { teleportId: 1, x: 1, y: 2, z: 3, yRot: 0, xRot: 0 });   // 不能降级
+  w('position_look', { x: 4, y: 5, z: 6, yaw: 1, pitch: 0.2, flags: { onGround: true } });  // 应降级
+  w('position', { x: 7, y: 8, z: 9, flags: {} });                                // 应丢弃
+
+  const positional = calls.filter((c) => ['position', 'position_look', 'teleport_confirm'].includes(c.name));
+  assert.equal(positional.length, 2,
+    `同窗口内带位置包应只剩 2 个（确认包 + 首个回执），实际 ${positional.map((c) => c.name).join(',')}`);
+
+  // 被降级的那个变成了 look，且保留了朝向
+  const look = calls.find((c) => c.name === 'look');
+  assert.ok(look, `第二个位置回执应降级为 look，实际序列: ${calls.map((c) => c.name).join(',')}`);
+  assert.equal(look.params.yaw, 1, 'look 应带上原回执的朝向');
+  assert.equal(look.params.x, undefined, 'look 不得携带位置字段');
+});
+
+test('单位置包补丁：不同窗口各自允许一个带位置包', async () => {
+  const pp = await import('../../drivers/mineflayer/protocolPatch.js');
+  const calls = [];
+  const fakeBot = { _client: { write(name, params) { calls.push({ name, at: Date.now() }); } } };
+  pp.installSinglePositionPatch(fakeBot);
+  const w = fakeBot._client.write;
+  w('position', { x: 0, y: 0, z: 0, flags: {} });
+  await new Promise((r) => setTimeout(r, 60));   // 跨过一个 tick 窗口
+  w('position', { x: 1, y: 1, z: 1, flags: {} });
+  assert.equal(calls.filter((c) => c.name === 'position').length, 2, '跨窗口的位置包都应发出');
+});
+
 // ============================================================
 
 const started = Date.now();
