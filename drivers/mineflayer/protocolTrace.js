@@ -89,8 +89,8 @@ function summarize(name, params) {
       + (p.x === undefined ? ' ⚠️缺坐标' : ` pos=(${fmt(p.x)},${fmt(p.y)},${fmt(p.z)})`);
   }
   if (name === 'position_look' || name === 'position') {
-    return `pos=(${fmt(p.x)},${fmt(p.y)},${fmt(p.z)})` + (p.yaw !== undefined ? ` yaw=${fmt(rad2deg(p.yaw))}` : '');
+    return `pos=(${fmt(p.x)},${fmt(p.y)},${fmt(p.z)})` + (p.yaw !== undefined ? ` yaw=${fmt(p.yaw)}°` : '');
   }
-  if (name === 'look') return `yaw=${fmt(rad2deg(p.yaw))} pitch=${fmt(rad2deg(p.pitch))}`;
+  if (name === 'look') return `yaw=${fmt(p.yaw)}° pitch=${fmt(p.pitch)}°`;
   return JSON.stringify(p).slice(0, 120);
 }

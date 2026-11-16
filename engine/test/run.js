@@ -1491,25 +1491,6 @@ test('协议数据表：entity_teleport 真实帧必须整包读完（防止 min
   assert.ok(Math.abs(params.pitch - 12.17) < 0.05, 'pitch 应约 12.17°，实际 ' + params.pitch);
 });
 
-// teleport_confirm 补丁（2026-11-16）：26.3 服务端的 ServerboundAcceptTeleportationPacket
-// 是六字段 (id, x, y, z, yRot, xRot)，而 minecraft-data 只定义 { teleportId }。
-// 缺坐标 → 服务端 containsInvalidValues（只查 NaN/Infinity）判非法 → invalid_player_movement 踢人。
-test('teleport_confirm：默认发六字段，可经环境变量切回 id', async () => {
-  const pp = await import('../../drivers/mineflayer/protocolPatch.js');
-  assert.equal(pp.confirmMode({}), 'full', '默认必须 full —— 26.x 后端要坐标');
-  assert.equal(pp.confirmMode({ BOTSCRIPT_TELEPORT_CONFIRM: 'id' }), 'id');
-  assert.equal(pp.confirmMode({ BOTSCRIPT_TELEPORT_CONFIRM: 'nonsense' }), 'full', '非法值退回默认');
-
-  const names = pp.TELEPORT_CONFIRM_FULL[1].map((f) => f.name);
-  assert.deepEqual(names, ['teleportId', 'x', 'y', 'z', 'yRot', 'xRot'],
-    '字段须与服务端 STREAM_CODEC 一致（VAR_INT + DOUBLE×3 + FLOAT×2）');
-
-  const cp = pp.buildCustomPackets('1.21.8');
-  assert.ok(cp?.['1.21.8']?.play?.toServer?.types?.packet_teleport_confirm,
-    '覆盖须落在 serializer 期望的 play.toServer.types 层级');
-  assert.equal(pp.buildCustomPackets('1.21.8', 'id'), undefined, 'id 模式不改类型定义');
-});
-
 test('协议诊断：环形缓冲常开、只在断线时倒出（用户无需配环境变量）', async () => {
   const tr = await import('../../drivers/mineflayer/protocolTrace.js');
   // 默认非 verbose —— 不实时刷日志，只进环形缓冲
@@ -1549,60 +1530,66 @@ test('协议诊断：环形缓冲常开、只在断线时倒出（用户无需�
   t.off();
 });
 
-// 协议守卫（2026-11-16 线上 trace 定位 invalid_player_movement 的真根因）：
-//   mineflayer 的 physics.js 里 lastSentYaw 是**无界累加**
-//     lastSentYaw += clamp(-maxDeltaYaw, dYaw, maxDeltaYaw)
-//   而 bot.entity.yaw 归一在 [0, 2π)。一旦漂出区间，toNotchianYaw() 会算出 ±5000°、±30000°
-//   这种远超 ±180 的 yaw 发给服务端 → containsInvalidValues 判非法 → 踢人。
-// 守卫在发包前把 yaw/pitch 归一到合法区间（角度等价，目标不变）。
-test('协议守卫：yaw/pitch 越界值被归一到合法区间', async () => {
+// 协议守卫（2026-11-16）：mineflayer 收到服务端 position 后，会在**同一毫秒**连发
+//   position_look（位置回执）与 teleport_confirm（确认包），而原版客户端把这两件事
+// 分散在不同 tick。服务端每 tick 只接受一个「玩家移动包」，同 tick 多包会被判非法。
+// 守卫把同一 50ms 窗口内的移动包串行化到不同 tick，且**不丢弃**任何更新
+// （丢弃会让 physics 内部 lastSent 与实际发送脱节，导致服务端再也收不到位置）。
+test('协议守卫：同一 tick 的移动包串行化到下一 tick（不丢弃、保序）', async () => {
   const pp = await import('../../drivers/mineflayer/protocolPatch.js');
-  assert.equal(pp.wrapAngle(5109, 180), 69, '5109° 应归一为 69°');
-  assert.equal(pp.wrapAngle(-312, 180), 48);
-  assert.equal(pp.wrapAngle(450, 180), 90);
-  assert.equal(pp.wrapAngle(359, 180), -1);
-  assert.equal(pp.wrapAngle(100, 90), -80, 'pitch 按 ±90 归一');
-  assert.equal(pp.wrapAngle(-120, 90), 60);
-
   const calls = [];
   const fakeBot = { _client: {
-    write(name, params) { calls.push({ name, params }); },
+    write(name, params) { calls.push({ name, params, at: Date.now() }); },
     on() {}, removeListener() {},
   } };
-  pp.installProtocolGuards(fakeBot);
+  const off = pp.installProtocolGuards(fakeBot, { tickMs: 60 });
   const w = fakeBot._client.write;
-  w('look', { yaw: 5109, pitch: 200, flags: {} });
-  const look = calls.find((c) => c.name === 'look');
-  assert.equal(look.params.yaw, 69, '发包前 yaw 应被归一');
-  assert.equal(look.params.pitch, 20, 'pitch 按 ±90 归一（200 → 20，周期 180）');
+
+  // 同一毫秒连发三个移动包（真实撞车形态）
+  w('teleport_confirm', { teleportId: 1 });
+  w('position_look', { x: 1, y: 2, z: 3, yaw: 0, pitch: 0, flags: {} });
+  w('position', { x: 4, y: 5, z: 6, flags: {} });
+
+  // 第一个立即发出，其余应被延后
+  assert.equal(calls.length, 1, `同 tick 只应立即放行 1 个，实际 ${calls.length}`);
+  assert.equal(calls[0].name, 'teleport_confirm', '服务端等确认包，它必须最先发出');
+
+  await new Promise((r) => setTimeout(r, 160));   // 等延后的包补发
+  const names = calls.map((c) => c.name);
+  assert.ok(names.includes('position_look'), `位置回执不得丢弃，实际 ${names}`);
+  assert.ok(names.includes('position'), `纯位置包不得丢弃，实际 ${names}`);
+  // 补发的包与首个包应跨过至少一个 tick
+  for (const c of calls.slice(1)) {
+    assert.ok(c.at - calls[0].at >= 55, `补发包应在下一 tick（间隔 ${c.at - calls[0].at}ms）`);
+  }
+  off();
 });
 
-test('协议守卫：同一 tick 只放行一个带位置包，回执降级为 look', async () => {
+test('协议守卫：非移动包不受影响（不排队、不延迟）', async () => {
   const pp = await import('../../drivers/mineflayer/protocolPatch.js');
   const calls = [];
   const fakeBot = { _client: {
-    write(name, params) { calls.push({ name, params }); },
-    on(evt, fn) { if (evt === 'position') this._pos = fn; },
-    removeListener() {},
+    write(name, params) { calls.push({ name }); },
+    on() {}, removeListener() {},
   } };
-  pp.installProtocolGuards(fakeBot);
+  const off = pp.installProtocolGuards(fakeBot, { tickMs: 60 });
   const w = fakeBot._client.write;
+  w('teleport_confirm', { teleportId: 1 });
+  w('chat_send', { text: 'hi' });      // 非移动包
+  w('arm_animation', {});              // 非移动包
+  assert.deepEqual(calls.map((c) => c.name), ['teleport_confirm', 'chat_send', 'arm_animation'],
+    '非移动包应立即透传');
+  off();
+});
 
-  // 模拟服务端下发 position（守卫据此补确认包坐标）
-  fakeBot._client._pos({ teleportId: 5, x: 10, y: 20, z: 30, yaw: 45, pitch: -10 });
-
-  // 同一窗口：位置回执 → 确认包 → 再一个位置回执
-  w('position_look', { x: 10, y: 20, z: 30, yaw: 45, pitch: -10, flags: {} });
-  w('teleport_confirm', { teleportId: 5 });
-  w('position_look', { x: 11, y: 21, z: 31, yaw: 46, pitch: -11, flags: {} });
-  w('position', { x: 12, y: 22, z: 32, flags: {} });
-
-  const positional = calls.filter((c) => ['position', 'position_look', 'teleport_confirm'].includes(c.name));
-  assert.ok(positional.length <= 2,
-    `同窗口带位置包应 ≤2（首个回执 + 确认包），实际 ${positional.map((c) => c.name).join(',')}`);
-  const confirm = calls.find((c) => c.name === 'teleport_confirm');
-  assert.equal(confirm.params.x, 10, '确认包应补上服务端下发的坐标');
-  assert.ok(calls.some((c) => c.name === 'look'), '重复的位置回执应降级为 look');
+test('确认包模式：默认不改字段（与客户端声明版本一致），full 才补坐标', async () => {
+  const pp = await import('../../drivers/mineflayer/protocolPatch.js');
+  assert.equal(pp.confirmMode({}), 'id', '默认发单字段 teleportId —— 与 1.21.x/26.1 的包定义一致');
+  assert.equal(pp.confirmMode({ BOTSCRIPT_TELEPORT_CONFIRM: 'full' }), 'full');
+  assert.equal(pp.buildCustomPackets('1.21.8'), undefined, '默认不覆盖类型定义');
+  const full = pp.buildCustomPackets('26.3', 'full');
+  assert.ok(full?.['26.3']?.play?.toServer?.types?.packet_teleport_confirm, 'full 模式才生成六字段覆盖');
+  assert.equal(pp.TELEPORT_CONFIRM_FULL[1].length, 6, '六字段：teleportId + x/y/z + yRot/xRot');
 });
 
 // ============================================================
