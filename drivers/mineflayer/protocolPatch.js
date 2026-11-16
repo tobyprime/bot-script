@@ -1,14 +1,28 @@
-// protocolPatch.js — teleport 确认 + 位置包节流 + **yaw 越界纠正**
+// protocolPatch.js — 移动包节拍守卫（只做一件事：同 tick 只发一个移动包）
 //
-// ── yaw 越界（invalid_player_movement 的真根因）──
-// mineflayer 的 physics.js 里 lastSentYaw 是**无界累加**：
-//     lastSentYaw += clamp(-maxDeltaYaw, dYaw, maxDeltaYaw)
-// 而 bot.entity.yaw 归一在 [0, 2π)。lastSentYaw 一旦漂出该区间（例如 3π），
-// toNotchianYaw(3π) = (π - 3π)·180/π = -360°，服务端收到的 yaw 就远超 ±180 → 判非法。
-// 线上实测：yaw 一路涨到 5109°、30759°，随即 multiplayer.disconnect.invalid_player_movement 踢人。
+// 依据（26.3 反编译 ServerGamePacketListenerImpl.handleMovePlayer）：
+//   if (packet.hasPosition() && this.receivedPositionThisTick)
+//       → disconnect("multiplayer.disconnect.invalid_player_movement")
+//   this.receivedPositionThisTick = true;      // 每服务器 tick(50ms) 重置
+//   // 另有：位置包与 flying/朝向包应分散在不同 tick
 //
-// 修法：在驱动发包前把 yaw/pitch 归一到合法区间（±180 / ±90）。
-// 视角目标本身不变（角度等价），只是避免把越界值发出去。
+// mineflayer 的实际行为（线上 trace 实测）：
+//   → position @9190ms
+//   → flying   @9200ms     ← 同一 tick 内第二个移动包
+//   → position @12389ms
+// 原版客户端每 tick 只发一个移动包。
+//
+// 设计约束（两条踩过的坑，务必保留）：
+//   1) 不能丢弃位置包：physics 在调用 write 前已更新内部 lastSent，丢弃会导致它永不重发
+//      → 服务端收不到位置 → 断连。只能**延迟**。
+//   2) 确认包必须按客户端声明的版本发（1.21.x/26.1 都是单字段 teleportId）。
+//      多发坐标会让代理层按低版本解析后剩垃圾字节 → 协议错误断连。
+const TICK_GAP_MS = 55;   // 略大于一个服务器 tick
+
+export function confirmMode(env = process.env) {
+  return String(env.BOTSCRIPT_TELEPORT_CONFIRM ?? '').toLowerCase() === 'full' ? 'full' : 'id';
+}
+
 export const TELEPORT_CONFIRM_FULL = ['container', [
   { name: 'teleportId', type: 'varint' },
   { name: 'x', type: 'f64' },
@@ -18,92 +32,61 @@ export const TELEPORT_CONFIRM_FULL = ['container', [
   { name: 'xRot', type: 'f32' },
 ]];
 
-export function confirmMode(env = process.env) {
-  const v = String(env.BOTSCRIPT_TELEPORT_CONFIRM ?? '').toLowerCase();
-  return v === 'id' ? 'id' : 'full';
-}
-
 export function buildCustomPackets(majorVersion, mode = confirmMode()) {
   if (mode !== 'full' || !majorVersion) return undefined;
   return { [majorVersion]: { play: { toServer: { types: { packet_teleport_confirm: TELEPORT_CONFIRM_FULL } } } } };
 }
 
-// 角度归一到 [-limit, limit]（周期 360）
-export function wrapAngle(deg, limit = 180) {
-  if (!Number.isFinite(deg)) return 0;
-  const period = limit * 2;
-  let v = ((deg % period) + period) % period;
-  if (v > limit) v -= period;
-  return v;
-}
+// 所有「玩家移动类」包：同一服务器 tick 内只放行一个，其余延后到下一 tick。
+const MOVE_PACKETS = new Set(['position', 'position_look', 'look', 'flying', 'teleport_confirm']);
 
-// 包一层 _client.write：
-//   ① 所有带 yaw/pitch 的包，角度先归一到 ±180 / ±90（修 lastSentYaw 无界漂移）
-//   ② 同一 50ms 窗口只放行一个带位置的包（26.3 的 receivedPositionThisTick 判定）
-//   ③ teleport_confirm 补六字段（26.3 要坐标）
 export function installProtocolGuards(bot, opts = {}) {
   const client = bot?._client;
   if (!client || typeof client.write !== 'function') return () => {};
-  const tickMs = opts.tickMs ?? 50;
-  const mode = opts.mode ?? confirmMode();
+  const gap = opts.tickMs ?? TICK_GAP_MS;
 
-  let windowStart = 0;
-  let positionSentThisWindow = false;
-  let target = null;
+  let lastAt = 0;
+  const queue = [];          // 等待补发的移动包（保留每类最新一份）
+  let timer = null;
 
-  const onPosition = (p) => {
-    const toDeg = (deg, rad) => (Number.isFinite(deg) ? deg : (Number.isFinite(rad) ? (rad * 180) / Math.PI : 0));
-    target = { x: p.x, y: p.y, z: p.z, yRot: toDeg(p.yaw, p.yRot), xRot: toDeg(p.pitch, p.xRot) };
+  const orig = client.write.bind(client);
+
+  const flush = () => {
+    timer = null;
+    const wait = gap - (Date.now() - lastAt);
+    if (wait > 0) { timer = setTimeout(flush, wait); return; }
+    const next = queue.shift();
+    if (!next) return;
+    lastAt = Date.now();
+    orig(next.name, next.params);
+    if (queue.length && !timer) timer = setTimeout(flush, gap);
   };
-  client.on('position', onPosition);
 
-  const origWrite = client.write.bind(client);
+  const enqueue = (name, params) => {
+    // 同类只保留最新（位置包取最新坐标；朝向包取最新角度）
+    const i = queue.findIndex((q) => q.name === name);
+    if (i >= 0) queue[i] = { name, params };
+    else queue.push({ name, params });
+    if (!timer) timer = setTimeout(flush, gap);
+  };
+
   const patched = (name, params) => {
-    const now = Date.now();
-    if (now - windowStart >= tickMs) { windowStart = now; positionSentThisWindow = false; }
-
-    // ① 角度归一（yaw/pitch 在协议里是度数 f32）
-    let p = params;
-    if (p && typeof p === 'object' && (p.yaw !== undefined || p.pitch !== undefined)) {
-      p = { ...p };
-      if (p.yaw !== undefined) p.yaw = wrapAngle(p.yaw, 180);
-      if (p.pitch !== undefined) p.pitch = wrapAngle(p.pitch, 90);
+    if (!MOVE_PACKETS.has(name)) return orig(name, params);
+    // teleport_confirm 必须尽快发（服务端在等），但它同样占本 tick 名额
+    if (Date.now() - lastAt >= gap) {
+      lastAt = Date.now();
+      return orig(name, params);
     }
-
-    const positional = name === 'position' || name === 'position_look' || name === 'teleport_confirm';
-
-    // ③ 确认包补坐标（在节流判定之前，确认包不参与节流）
-    if (name === 'teleport_confirm') {
-      const q = p ?? {};
-      if (mode === 'full' && q.x === undefined && target) {
-        positionSentThisWindow = true;
-        return origWrite(name, {
-          teleportId: q.teleportId, x: target.x, y: target.y, z: target.z,
-          yRot: wrapAngle(target.yRot, 180), xRot: wrapAngle(target.xRot, 90),
-        });
-      }
-      if (mode === 'full') {
-        p = { ...q, yRot: wrapAngle(q.yRot ?? target?.yRot ?? 0, 180), xRot: wrapAngle(q.xRot ?? target?.xRot ?? 0, 90) };
-      }
-      positionSentThisWindow = true;
-      return origWrite(name, p);
-    }
-
-    // ② 同窗口第二个位置包：回执降级为纯朝向，纯位置包丢弃
-    if (positional && positionSentThisWindow) {
-      if (name === 'position_look' && p) {
-        return origWrite('look', { yaw: p.yaw, pitch: p.pitch, flags: p.flags });
-      }
-      if (name === 'position') return undefined;
-    }
-    if (positional) positionSentThisWindow = true;
-    return origWrite(name, p);
+    enqueue(name, params);
+    return undefined;
   };
   client.write = patched;
 
   return () => {
-    client.write = origWrite;
-    try { client.removeListener('position', onPosition); } catch { /* ignore */ }
+    client.write = orig;
+    if (timer) { clearTimeout(timer); timer = null; }
+    for (const q of queue) { try { orig(q.name, q.params); } catch { /* ignore */ } }
+    queue.length = 0;
   };
 }
 
