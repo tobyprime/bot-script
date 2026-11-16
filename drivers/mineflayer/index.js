@@ -6,7 +6,7 @@ import { degToRad, radToDeg } from './units.js';
 import { reasonText } from './reason.js';
 
 import { installProtocolTrace } from './protocolTrace.js';
-import { buildCustomPackets, installProtocolGuards, confirmMode } from './protocolPatch.js';
+import { installTickEndSender } from './tickEnd.js';
 
 const NORM = (v) => ({ x: Math.round(v.x), y: Math.round(v.y), z: Math.round(v.z) });
 // 规范物品 id：minecraft:x（引擎数据模型约定，CAPABILITIES §3.1）
@@ -62,11 +62,6 @@ export class MineflayerDriver {
     this.pfMod = pf;
     const acct = cfg.account ?? {};
     const vd = Math.max(2, Math.min(12, Number(cfg.viewDistance) || 6));
-    // teleport_confirm 补丁：服务端（26.x 后端）要六字段，minecraft-data 只给 teleportId。
-    // 缺坐标会被判 invalid_player_movement（反编译 26.3 确认，containsInvalidValues 只查 NaN）。
-    const mcd = (await import('minecraft-data')).default;
-    const majorVersion = mcd(cfg.version ?? undefined)?.version?.majorVersion;
-    const customPackets = buildCustomPackets(majorVersion);
     const botOpts = {
       host: cfg.host ?? '127.0.0.1',
       port: cfg.port ?? 25565,
@@ -116,7 +111,9 @@ export class MineflayerDriver {
     //      服务端 containsInvalidValues 判非法（线上 trace 实测）。
     //   ② 同一 tick 只放行一个带位置的包 —— 26.3 的 receivedPositionThisTick 判定。
     //   ③ teleport_confirm 补六字段 —— 26.3 的确认包带 x/y/z/yRot/xRot。
-    this.protocolGuard = installProtocolGuards(bot);
+    // 补上原版客户端固有的 tick 结束标记（26.x 服务端靠它清零「本 tick 已收到位置包」计数；
+    // mineflayer 从不发，导致第二个带坐标包总被判非法 → invalid_player_movement 每 1.2 秒被踢）。
+    this.tickEnd = installTickEndSender(bot);
 
     // 配置阶段资源包：必须用字符串 uuid 应答 ACCEPTED+LOADED，否则服务器（如 Velocity 群组服
     // 推自定义资源包）会持有配置阶段不发 finish_configuration，登录卡死且无任何报错。
@@ -209,8 +206,8 @@ export class MineflayerDriver {
     if (!b) return;
     try { this.trace?.off(); } catch { /* ignore */ }
     this.trace = null;
-    try { this.protocolGuard?.(); } catch { /* ignore */ }
-    this.protocolGuard = null;
+    try { this.tickEnd?.stop(); } catch { /* ignore */ }
+    this.tickEnd = null;
     try { this.unpatchTeleport?.(); } catch { /* ignore */ }
     this.unpatchTeleport = null;
     try { b.removeAllListeners(); } catch { /* ignore */ }
@@ -422,7 +419,6 @@ export class MineflayerDriver {
     // 引擎/Lua 侧 yaw 是「服务端度数」（0..360）；mineflayer 的 bot.look 用 bot.entity.yaw 坐标系。
     // mineflayer 内部：bot.entity.yaw = euclideanMod(π - deg2rad(服务端yaw), 2π)，pitch = -deg2rad(pitch)。
     // 换算后再调 bot.look；它内部按 maxDeltaYaw 限速推进，不会瞬移视角。
-    // 越界值（lastSentYaw 无界累加漂移）由 protocolPatch 的守卫在发包前纠正。
     const PI2 = Math.PI * 2;
     const toBotYaw = (deg) => ((((Math.PI - (deg * Math.PI) / 180) % PI2) + PI2) % PI2);
     const botYaw = yaw == null ? this.bot.entity.yaw : toBotYaw(yaw);
