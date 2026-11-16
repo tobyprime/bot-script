@@ -1574,7 +1574,7 @@ test('协议守卫：yaw/pitch 越界值被归一到合法区间', async () => {
   w('look', { yaw: 5109, pitch: 200, flags: {} });
   const look = calls.find((c) => c.name === 'look');
   assert.equal(look.params.yaw, 69, '发包前 yaw 应被归一');
-  assert.equal(look.params.pitch, -20, 'pitch 按 ±90 归一（200 → -20? 见周期）');
+  assert.equal(look.params.pitch, 20, 'pitch 按 ±90 归一（200 → 20，周期 180）');
 });
 
 test('协议守卫：同一 tick 只放行一个带位置包，回执降级为 look', async () => {
