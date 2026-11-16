@@ -1510,14 +1510,43 @@ test('teleport_confirm：默认发六字段，可经环境变量切回 id', asyn
   assert.equal(pp.buildCustomPackets('1.21.8', 'id'), undefined, 'id 模式不改类型定义');
 });
 
-test('协议诊断：默认关闭，=1/true 开启，无 _client 时安全', async () => {
+test('协议诊断：环形缓冲常开、只在断线时倒出（用户无需配环境变量）', async () => {
   const tr = await import('../../drivers/mineflayer/protocolTrace.js');
-  assert.equal(tr.traceEnabled({}), false, '默认必须关闭（零开销）');
-  assert.equal(tr.traceEnabled({ BOTSCRIPT_PROTO_TRACE: '1' }), true);
-  assert.equal(tr.traceEnabled({ BOTSCRIPT_PROTO_TRACE: '0' }), false);
-  const off = tr.installProtocolTrace({}, () => {});
-  assert.equal(typeof off, 'function');
-  assert.doesNotThrow(() => off());
+  // 默认非 verbose —— 不实时刷日志，只进环形缓冲
+  assert.equal(tr.traceVerbose({}), false, '默认非 verbose（零噪音）');
+  assert.equal(tr.traceVerbose({ BOTSCRIPT_PROTO_TRACE: '1' }), true, '可用环境变量切 verbose');
+
+  // 无 _client 时安全：返回 flush/off 两个空函数
+  const noClient = tr.installProtocolTrace({}, () => {});
+  assert.equal(typeof noClient.flush, 'function');
+  assert.equal(typeof noClient.off, 'function');
+  assert.doesNotThrow(() => noClient.flush('x'));
+  assert.doesNotThrow(() => noClient.off());
+
+  // 有 _client 时：平时不输出，flush 时一次性倒出缓冲内容
+  const lines = [];
+  const writes = [];
+  const handlers = {};
+  const fakeBot = { _client: {
+    write(name, p) { writes.push(name); },
+    on(evt, fn) { handlers[evt] = fn; },
+    removeListener(evt) { delete handlers[evt]; },
+  } };
+  const t = tr.installProtocolTrace(fakeBot, (l) => lines.push(l));
+  // 模拟发包 + 服务端下发 position
+  t.flush; // noop
+  fakeBot._client.write('teleport_confirm', { teleportId: 7 });
+  // 注：installProtocolTrace 内部已包装 write，这里用其包装后的路径
+  assert.equal(lines.length, 0, '未断线时不得输出任何日志（零噪音）');
+  assert.equal(writes.length, 1, '包装后仍会真正发包');
+  t.flush('kicked: invalid_player_movement');
+  assert.ok(lines.length > 0, '断线时应倒出缓冲');
+  assert.ok(lines.some((l) => l.includes('断线诊断')), '应带明确标题');
+  t.flush('again');   // 重复 flush 不应再输出
+  const after = lines.length;
+  t.flush('again2');
+  assert.equal(lines.length, after, 'flush 幂等');
+  t.off();
 });
 
 // ============================================================

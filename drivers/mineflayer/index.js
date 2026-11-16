@@ -5,7 +5,7 @@ import { Vec3 } from 'vec3';
 import { degToRad, radToDeg } from './units.js';
 import { reasonText } from './reason.js';
 
-import { traceEnabled, installProtocolTrace } from './protocolTrace.js';
+import { installProtocolTrace } from './protocolTrace.js';
 import { buildCustomPackets, installTeleportConfirmPatch, confirmMode } from './protocolPatch.js';
 
 const NORM = (v) => ({ x: Math.round(v.x), y: Math.round(v.y), z: Math.round(v.z) });
@@ -106,11 +106,10 @@ export class MineflayerDriver {
     const bot = mineflayer.createBot(botOpts);
     this.bot = bot;
 
-    // 协议诊断（BOTSCRIPT_PROTO_TRACE=1 开启）：记录发出的移动/确认包与收到的 position 包，
-    // 用于定位 invalid_player_movement 这类发包内容问题。默认零开销。
-    this.unpatchTrace = traceEnabled()
-      ? installProtocolTrace(bot, (line) => this.log(line))
-      : null;
+    // 协议诊断：常驻开启但只在内存留最近 40 条（环形缓冲），断线时才一次性倒进日志。
+    // 这样无需用户配任何环境变量，出问题时日志里就自带现场；平时零噪音。
+    // BOTSCRIPT_PROTO_TRACE=1 可切回逐条实时打印（深度调试用）。
+    this.trace = installProtocolTrace(bot, (line) => this.log(line));
 
     // teleport_confirm 补六字段（mineflayer 只传 teleportId；缺坐标会被服务端判非法移动）
     this.unpatchTeleport = installTeleportConfirmPatch(bot);
@@ -141,12 +140,17 @@ export class MineflayerDriver {
       this.alive = false;
       // 踢出理由要原样上抛：mineflayer 的 kick 包经过 chat 组件，String() 后是 JSON 文本，
       // 尽量取出可读的 text 段（否则运维只能看到裸 JSON 或干脆什么都看不到）
-      this.emit('session', { state: 'kicked', reason: reasonText(reason).slice(0, 500) });
+      const text = reasonText(reason).slice(0, 500);
+      // 被踢时把协议环形缓冲一次性倒进日志：无需用户配置，现场自带
+      this.trace?.flush(`kicked: ${text}`);
+      this.emit('session', { state: 'kicked', reason: text });
     });
     bot.on('end', (reason) => {
       this.alive = false;
       this.stopSampling();
-      this.emit('session', { state: 'disconnected', reason: reasonText(reason).slice(0, 500) });
+      const text = reasonText(reason).slice(0, 500);
+      this.trace?.flush(`disconnected: ${text}`);
+      this.emit('session', { state: 'disconnected', reason: text });
     });
     bot.on('error', (e) => {
       // EPIPE / ECONNRESET 是「对端已关连接」的通用表现，本身不含任何业务信息；
@@ -199,8 +203,8 @@ export class MineflayerDriver {
   teardownBot() {
     const b = this.bot;
     if (!b) return;
-    try { this.unpatchTrace?.(); } catch { /* ignore */ }   // 恢复 _client.write 并解绑监听
-    this.unpatchTrace = null;
+    try { this.trace?.off(); } catch { /* ignore */ }
+    this.trace = null;
     try { this.unpatchTeleport?.(); } catch { /* ignore */ }
     this.unpatchTeleport = null;
     try { b.removeAllListeners(); } catch { /* ignore */ }
