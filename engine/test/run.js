@@ -1530,66 +1530,46 @@ test('协议诊断：环形缓冲常开、只在断线时倒出（用户无需�
   t.off();
 });
 
-// 协议守卫（2026-11-16）：mineflayer 收到服务端 position 后，会在**同一毫秒**连发
-//   position_look（位置回执）与 teleport_confirm（确认包），而原版客户端把这两件事
-// 分散在不同 tick。服务端每 tick 只接受一个「玩家移动包」，同 tick 多包会被判非法。
-// 守卫把同一 50ms 窗口内的移动包串行化到不同 tick，且**不丢弃**任何更新
-// （丢弃会让 physics 内部 lastSent 与实际发送脱节，导致服务端再也收不到位置）。
-test('协议守卫：同一 tick 的移动包串行化到下一 tick（不丢弃、保序）', async () => {
-  const pp = await import('../../drivers/mineflayer/protocolPatch.js');
+// tick_end 发送（2026-11-16 红绿测确认的 invalid_player_movement 根因）
+//
+// 26.3 服务端：
+//   handleMovePlayer: if (hasPosition() && receivedPositionThisTick) → disconnect(invalid_player_movement)
+//   receivedPositionThisTick 的唯一重置点在 handleClientTickEnd(ServerboundClientTickEndPacket)
+// 即：客户端必须每 tick 发 `client_tick_end`（空载荷、minecraft-data 里名 tick_end，ID 0x0c），
+// 服务端收到才清零「本 tick 已收到位置包」。原版客户端照发；mineflayer 从不发（整库 0 处引用）
+// → 计数永不清零 → 第二个带坐标包被踢（线上每 1.2 秒一次）。
+//
+// 本地红绿测（Paper 26.3 + Via）：不发 1.2s 被踢 / 每 tick 发 → 存活 17.2s；
+// 纯净 1.21.8 发与不发均存活（无回归）。
+test('tick_end：按固定节拍每 tick 发送（补上原版客户端固有行为）', async () => {
+  const { installTickEndSender } = await import('../../drivers/mineflayer/tickEnd.js');
   const calls = [];
-  const fakeBot = { _client: {
-    write(name, params) { calls.push({ name, params, at: Date.now() }); },
-    on() {}, removeListener() {},
-  } };
-  const off = pp.installProtocolGuards(fakeBot, { tickMs: 60 });
-  const w = fakeBot._client.write;
+  const fakeBot = { _client: { write(name, params) { calls.push(name); } } };
 
-  // 同一毫秒连发三个移动包（真实撞车形态）
-  w('teleport_confirm', { teleportId: 1 });
-  w('position_look', { x: 1, y: 2, z: 3, yaw: 0, pitch: 0, flags: {} });
-  w('position', { x: 4, y: 5, z: 6, flags: {} });
+  const sender = installTickEndSender(fakeBot, { tickMs: 200 });
+  await new Promise((r) => setTimeout(r, 650));   // 约 3 拍
+  sender.stop();
 
-  // 第一个立即发出，其余应被延后
-  assert.equal(calls.length, 1, `同 tick 只应立即放行 1 个，实际 ${calls.length}`);
-  assert.equal(calls[0].name, 'teleport_confirm', '服务端等确认包，它必须最先发出');
-
-  await new Promise((r) => setTimeout(r, 160));   // 等延后的包补发
-  const names = calls.map((c) => c.name);
-  assert.ok(names.includes('position_look'), `位置回执不得丢弃，实际 ${names}`);
-  assert.ok(names.includes('position'), `纯位置包不得丢弃，实际 ${names}`);
-  // 补发的包与首个包应跨过至少一个 tick
-  for (const c of calls.slice(1)) {
-    assert.ok(c.at - calls[0].at >= 55, `补发包应在下一 tick（间隔 ${c.at - calls[0].at}ms）`);
-  }
-  off();
+  assert.ok(calls.length >= 2, `应至少发送 2 次，实际 ${calls.length}`);
+  assert.ok(calls.every((n) => n === 'tick_end'), `只应发 tick_end，实际 ${calls.join(',')}`);
+  assert.equal(sender.stats().sent, calls.length, 'stats 应反映实际发送次数');
 });
 
-test('协议守卫：非移动包不受影响（不排队、不延迟）', async () => {
-  const pp = await import('../../drivers/mineflayer/protocolPatch.js');
+test('tick_end：stop 后不再发送；无 _client 时安全', async () => {
+  const { installTickEndSender } = await import('../../drivers/mineflayer/tickEnd.js');
   const calls = [];
-  const fakeBot = { _client: {
-    write(name, params) { calls.push({ name }); },
-    on() {}, removeListener() {},
-  } };
-  const off = pp.installProtocolGuards(fakeBot, { tickMs: 60 });
-  const w = fakeBot._client.write;
-  w('teleport_confirm', { teleportId: 1 });
-  w('chat_send', { text: 'hi' });      // 非移动包
-  w('arm_animation', {});              // 非移动包
-  assert.deepEqual(calls.map((c) => c.name), ['teleport_confirm', 'chat_send', 'arm_animation'],
-    '非移动包应立即透传');
-  off();
-});
+  const fakeBot = { _client: { write(name) { calls.push(name); } } };
+  const sender = installTickEndSender(fakeBot, { tickMs: 100 });
+  await new Promise((r) => setTimeout(r, 250));
+  sender.stop();
+  const after = calls.length;
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(calls.length, after, 'stop 之后不得再发送');
 
-test('确认包模式：默认不改字段（与客户端声明版本一致），full 才补坐标', async () => {
-  const pp = await import('../../drivers/mineflayer/protocolPatch.js');
-  assert.equal(pp.confirmMode({}), 'id', '默认发单字段 teleportId —— 与 1.21.x/26.1 的包定义一致');
-  assert.equal(pp.confirmMode({ BOTSCRIPT_TELEPORT_CONFIRM: 'full' }), 'full');
-  assert.equal(pp.buildCustomPackets('1.21.8'), undefined, '默认不覆盖类型定义');
-  const full = pp.buildCustomPackets('26.3', 'full');
-  assert.ok(full?.['26.3']?.play?.toServer?.types?.packet_teleport_confirm, 'full 模式才生成六字段覆盖');
-  assert.equal(pp.TELEPORT_CONFIRM_FULL[1].length, 6, '六字段：teleportId + x/y/z + yRot/xRot');
+  // 无 _client（建连失败场景）不应抛错
+  const empty = installTickEndSender({}, { tickMs: 100 });
+  assert.equal(empty.stats().sent, 0);
+  assert.doesNotThrow(() => empty.stop());
 });
 
 // ============================================================
