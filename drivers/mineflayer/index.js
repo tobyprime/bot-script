@@ -5,6 +5,9 @@ import { Vec3 } from 'vec3';
 import { degToRad, radToDeg } from './units.js';
 import { reasonText } from './reason.js';
 
+import { traceEnabled, installProtocolTrace } from './protocolTrace.js';
+import { buildCustomPackets, installTeleportConfirmPatch, confirmMode } from './protocolPatch.js';
+
 const NORM = (v) => ({ x: Math.round(v.x), y: Math.round(v.y), z: Math.round(v.z) });
 // 规范物品 id：minecraft:x（引擎数据模型约定，CAPABILITIES §3.1）
 const CANON = (name) => (name && !name.includes(':') ? `minecraft:${name}` : name);
@@ -59,11 +62,17 @@ export class MineflayerDriver {
     this.pfMod = pf;
     const acct = cfg.account ?? {};
     const vd = Math.max(2, Math.min(12, Number(cfg.viewDistance) || 6));
+    // teleport_confirm 补丁：服务端（26.x 后端）要六字段，minecraft-data 只给 teleportId。
+    // 缺坐标会被判 invalid_player_movement（反编译 26.3 确认，containsInvalidValues 只查 NaN）。
+    const mcd = (await import('minecraft-data')).default;
+    const majorVersion = mcd(cfg.version ?? undefined)?.version?.majorVersion;
+    const customPackets = buildCustomPackets(majorVersion);
     const botOpts = {
       host: cfg.host ?? '127.0.0.1',
       port: cfg.port ?? 25565,
       username: acct.username ?? 'bot',
       version: cfg.version ?? undefined,
+      ...(customPackets ? { customPackets } : {}),
       hideErrors: false,
       settings: { viewDistance: vd },              // mineflayer 登录时发送的客户端设置
       clientSettings: { viewDistance: vd },        // mc-protocol play 期 settings（服务器据此发 chunk）
@@ -96,6 +105,15 @@ export class MineflayerDriver {
     }
     const bot = mineflayer.createBot(botOpts);
     this.bot = bot;
+
+    // 协议诊断（BOTSCRIPT_PROTO_TRACE=1 开启）：记录发出的移动/确认包与收到的 position 包，
+    // 用于定位 invalid_player_movement 这类发包内容问题。默认零开销。
+    this.unpatchTrace = traceEnabled()
+      ? installProtocolTrace(bot, (line) => this.log(line))
+      : null;
+
+    // teleport_confirm 补六字段（mineflayer 只传 teleportId；缺坐标会被服务端判非法移动）
+    this.unpatchTeleport = installTeleportConfirmPatch(bot);
 
     // 配置阶段资源包：必须用字符串 uuid 应答 ACCEPTED+LOADED，否则服务器（如 Velocity 群组服
     // 推自定义资源包）会持有配置阶段不发 finish_configuration，登录卡死且无任何报错。
@@ -181,6 +199,10 @@ export class MineflayerDriver {
   teardownBot() {
     const b = this.bot;
     if (!b) return;
+    try { this.unpatchTrace?.(); } catch { /* ignore */ }   // 恢复 _client.write 并解绑监听
+    this.unpatchTrace = null;
+    try { this.unpatchTeleport?.(); } catch { /* ignore */ }
+    this.unpatchTeleport = null;
     try { b.removeAllListeners(); } catch { /* ignore */ }
     try { b._client?.removeAllListeners?.(); } catch { /* ignore */ }
     try { b._client?.end?.(); } catch { /* ignore */ }

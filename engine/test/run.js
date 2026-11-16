@@ -1491,6 +1491,35 @@ test('协议数据表：entity_teleport 真实帧必须整包读完（防止 min
   assert.ok(Math.abs(params.pitch - 12.17) < 0.05, 'pitch 应约 12.17°，实际 ' + params.pitch);
 });
 
+// teleport_confirm 补丁（2026-11-16）：26.3 服务端的 ServerboundAcceptTeleportationPacket
+// 是六字段 (id, x, y, z, yRot, xRot)，而 minecraft-data 只定义 { teleportId }。
+// 缺坐标 → 服务端 containsInvalidValues（只查 NaN/Infinity）判非法 → invalid_player_movement 踢人。
+test('teleport_confirm：默认发六字段，可经环境变量切回 id', async () => {
+  const pp = await import('../../drivers/mineflayer/protocolPatch.js');
+  assert.equal(pp.confirmMode({}), 'full', '默认必须 full —— 26.x 后端要坐标');
+  assert.equal(pp.confirmMode({ BOTSCRIPT_TELEPORT_CONFIRM: 'id' }), 'id');
+  assert.equal(pp.confirmMode({ BOTSCRIPT_TELEPORT_CONFIRM: 'nonsense' }), 'full', '非法值退回默认');
+
+  const names = pp.TELEPORT_CONFIRM_FULL[1].map((f) => f.name);
+  assert.deepEqual(names, ['teleportId', 'x', 'y', 'z', 'yRot', 'xRot'],
+    '字段须与服务端 STREAM_CODEC 一致（VAR_INT + DOUBLE×3 + FLOAT×2）');
+
+  const cp = pp.buildCustomPackets('1.21.8');
+  assert.ok(cp?.['1.21.8']?.play?.toServer?.types?.packet_teleport_confirm,
+    '覆盖须落在 serializer 期望的 play.toServer.types 层级');
+  assert.equal(pp.buildCustomPackets('1.21.8', 'id'), undefined, 'id 模式不改类型定义');
+});
+
+test('协议诊断：默认关闭，=1/true 开启，无 _client 时安全', async () => {
+  const tr = await import('../../drivers/mineflayer/protocolTrace.js');
+  assert.equal(tr.traceEnabled({}), false, '默认必须关闭（零开销）');
+  assert.equal(tr.traceEnabled({ BOTSCRIPT_PROTO_TRACE: '1' }), true);
+  assert.equal(tr.traceEnabled({ BOTSCRIPT_PROTO_TRACE: '0' }), false);
+  const off = tr.installProtocolTrace({}, () => {});
+  assert.equal(typeof off, 'function');
+  assert.doesNotThrow(() => off());
+});
+
 // ============================================================
 
 const started = Date.now();
