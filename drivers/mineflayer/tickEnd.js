@@ -25,21 +25,35 @@
 const TICK_MS = 50;
 
 // 返回 { stop, stats }；stop 用于停机时清理
+// ⚠️ 必须等 bot 进入 play 状态（spawn）之后才开始发：登录/配置阶段发 play 状态的包是非法的，
+//    实测在 spawn 前开始发会让服务端直接断开，实例根本起不来（spawned=false）。
 export function installTickEndSender(bot, opts = {}) {
   const client = bot?._client;
   if (!client || typeof client.write !== 'function') return { stop: () => {}, stats: () => ({ sent: 0 }) };
 
   let sent = 0;
-  const timer = setInterval(() => {
-    try {
-      client.write('tick_end', {});
-      sent += 1;
-    } catch { /* 连接已断或版本不支持：静默 */ }
-  }, opts.tickMs ?? TICK_MS);
-  timer.unref?.();   // 不阻止进程退出
+  let timer = null;
+  const tickMs = opts.tickMs ?? TICK_MS;
+
+  const start = () => {
+    if (timer) return;
+    timer = setInterval(() => {
+      try {
+        client.write('tick_end', {});
+        sent += 1;
+      } catch { /* 连接已断或版本不支持：静默 */ }
+    }, tickMs);
+    timer.unref?.();   // 不阻止进程退出
+  };
+
+  // 只有在 play 状态才发（spawn 事件即进入 play）。
+  // bot 必须是真 mineflayer bot（有 once）；测试用的最小替身直接当作已在 play。
+  if (bot.entity) start();
+  else if (typeof bot.once === 'function') bot.once('spawn', start);
+  else start();
 
   return {
-    stop: () => clearInterval(timer),
+    stop: () => { if (timer) { clearInterval(timer); timer = null; } },
     stats: () => ({ sent }),
   };
 }
