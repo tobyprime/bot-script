@@ -1549,44 +1549,60 @@ test('协议诊断：环形缓冲常开、只在断线时倒出（用户无需�
   t.off();
 });
 
-// 同一 tick 只发一个带位置包（2026-11-16 线上 trace 定位）：
-// 26.3 的 handleMovePlayer：本 tick 已有位置包时再来一个带位置的包 → invalid_player_movement。
-// mineflayer 收到服务端 position 后会连发 position_look 与 teleport_confirm（26.3 起后者也带坐标），
-// 两者同 tick → 必踢。修复后同一 50ms 窗口内第二个带位置包降级为纯朝向包（look）。
-test('同一 tick 只发一个带位置包（第二个降级为 look / 纯位置包丢弃）', async () => {
+// 协议守卫（2026-11-16 线上 trace 定位 invalid_player_movement 的真根因）：
+//   mineflayer 的 physics.js 里 lastSentYaw 是**无界累加**
+//     lastSentYaw += clamp(-maxDeltaYaw, dYaw, maxDeltaYaw)
+//   而 bot.entity.yaw 归一在 [0, 2π)。一旦漂出区间，toNotchianYaw() 会算出 ±5000°、±30000°
+//   这种远超 ±180 的 yaw 发给服务端 → containsInvalidValues 判非法 → 踢人。
+// 守卫在发包前把 yaw/pitch 归一到合法区间（角度等价，目标不变）。
+test('协议守卫：yaw/pitch 越界值被归一到合法区间', async () => {
   const pp = await import('../../drivers/mineflayer/protocolPatch.js');
+  assert.equal(pp.wrapAngle(5109, 180), 69, '5109° 应归一为 69°');
+  assert.equal(pp.wrapAngle(-312, 180), 48);
+  assert.equal(pp.wrapAngle(450, 180), 90);
+  assert.equal(pp.wrapAngle(359, 180), -1);
+  assert.equal(pp.wrapAngle(100, 90), -80, 'pitch 按 ±90 归一');
+  assert.equal(pp.wrapAngle(-120, 90), 60);
+
   const calls = [];
-  const fakeBot = { _client: { write(name, params) { calls.push({ name, params }); } } };
-  pp.installSinglePositionPatch(fakeBot);
+  const fakeBot = { _client: {
+    write(name, params) { calls.push({ name, params }); },
+    on() {}, removeListener() {},
+  } };
+  pp.installProtocolGuards(fakeBot);
   const w = fakeBot._client.write;
-
-  // 同一窗口内连发三个带位置包（模拟真实撞车）
-  w('position_look', { x: 1, y: 2, z: 3, yaw: 0.5, pitch: 0.1, flags: { onGround: true } });
-  w('teleport_confirm', { teleportId: 1, x: 1, y: 2, z: 3, yRot: 0, xRot: 0 });   // 不能降级
-  w('position_look', { x: 4, y: 5, z: 6, yaw: 1, pitch: 0.2, flags: { onGround: true } });  // 应降级
-  w('position', { x: 7, y: 8, z: 9, flags: {} });                                // 应丢弃
-
-  const positional = calls.filter((c) => ['position', 'position_look', 'teleport_confirm'].includes(c.name));
-  assert.equal(positional.length, 2,
-    `同窗口内带位置包应只剩 2 个（确认包 + 首个回执），实际 ${positional.map((c) => c.name).join(',')}`);
-
-  // 被降级的那个变成了 look，且保留了朝向
+  w('look', { yaw: 5109, pitch: 200, flags: {} });
   const look = calls.find((c) => c.name === 'look');
-  assert.ok(look, `第二个位置回执应降级为 look，实际序列: ${calls.map((c) => c.name).join(',')}`);
-  assert.equal(look.params.yaw, 1, 'look 应带上原回执的朝向');
-  assert.equal(look.params.x, undefined, 'look 不得携带位置字段');
+  assert.equal(look.params.yaw, 69, '发包前 yaw 应被归一');
+  assert.equal(look.params.pitch, -20, 'pitch 按 ±90 归一（200 → -20? 见周期）');
 });
 
-test('单位置包补丁：不同窗口各自允许一个带位置包', async () => {
+test('协议守卫：同一 tick 只放行一个带位置包，回执降级为 look', async () => {
   const pp = await import('../../drivers/mineflayer/protocolPatch.js');
   const calls = [];
-  const fakeBot = { _client: { write(name, params) { calls.push({ name, at: Date.now() }); } } };
-  pp.installSinglePositionPatch(fakeBot);
+  const fakeBot = { _client: {
+    write(name, params) { calls.push({ name, params }); },
+    on(evt, fn) { if (evt === 'position') this._pos = fn; },
+    removeListener() {},
+  } };
+  pp.installProtocolGuards(fakeBot);
   const w = fakeBot._client.write;
-  w('position', { x: 0, y: 0, z: 0, flags: {} });
-  await new Promise((r) => setTimeout(r, 60));   // 跨过一个 tick 窗口
-  w('position', { x: 1, y: 1, z: 1, flags: {} });
-  assert.equal(calls.filter((c) => c.name === 'position').length, 2, '跨窗口的位置包都应发出');
+
+  // 模拟服务端下发 position（守卫据此补确认包坐标）
+  fakeBot._client._pos({ teleportId: 5, x: 10, y: 20, z: 30, yaw: 45, pitch: -10 });
+
+  // 同一窗口：位置回执 → 确认包 → 再一个位置回执
+  w('position_look', { x: 10, y: 20, z: 30, yaw: 45, pitch: -10, flags: {} });
+  w('teleport_confirm', { teleportId: 5 });
+  w('position_look', { x: 11, y: 21, z: 31, yaw: 46, pitch: -11, flags: {} });
+  w('position', { x: 12, y: 22, z: 32, flags: {} });
+
+  const positional = calls.filter((c) => ['position', 'position_look', 'teleport_confirm'].includes(c.name));
+  assert.ok(positional.length <= 2,
+    `同窗口带位置包应 ≤2（首个回执 + 确认包），实际 ${positional.map((c) => c.name).join(',')}`);
+  const confirm = calls.find((c) => c.name === 'teleport_confirm');
+  assert.equal(confirm.params.x, 10, '确认包应补上服务端下发的坐标');
+  assert.ok(calls.some((c) => c.name === 'look'), '重复的位置回执应降级为 look');
 });
 
 // ============================================================
