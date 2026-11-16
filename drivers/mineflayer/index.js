@@ -6,7 +6,7 @@ import { degToRad, radToDeg } from './units.js';
 import { reasonText } from './reason.js';
 
 import { installProtocolTrace } from './protocolTrace.js';
-import { buildCustomPackets, installTeleportConfirmPatch, installSinglePositionPatch, confirmMode } from './protocolPatch.js';
+import { buildCustomPackets, installProtocolGuards, confirmMode } from './protocolPatch.js';
 
 const NORM = (v) => ({ x: Math.round(v.x), y: Math.round(v.y), z: Math.round(v.z) });
 // 规范物品 id：minecraft:x（引擎数据模型约定，CAPABILITIES §3.1）
@@ -111,14 +111,12 @@ export class MineflayerDriver {
     // BOTSCRIPT_PROTO_TRACE=1 可切回逐条实时打印（深度调试用）。
     this.trace = installProtocolTrace(bot, (line) => this.log(line));
 
-    // 同一 tick 只发一个带位置的包。26.3 的 handleMovePlayer 规定：本 tick 已有位置包时
-    // 再来一个带位置的包 → invalid_player_movement 踢人。而 mineflayer 收到服务端 position
-    // 后会在同一毫秒内「先发 position_look 再发 teleport_confirm」——在 1.21.x 上无害
-    //（确认包只带 id），在 26.3 上确认包也含坐标 → 第二个被判重复。
-    this.unpatchSinglePos = installSinglePositionPatch(bot);
-
-    // teleport_confirm 补六字段（服务端 26.3 要坐标；mineflayer 只传 teleportId）
-    this.unpatchTeleport = installTeleportConfirmPatch(bot);
+    // 协议守卫（三件事，都是 invalid_player_movement 的成因）：
+    //   ① yaw/pitch 越界纠正 —— mineflayer 的 lastSentYaw 无界累加，会漂到 5109°/30759°，
+    //      服务端 containsInvalidValues 判非法（线上 trace 实测）。
+    //   ② 同一 tick 只放行一个带位置的包 —— 26.3 的 receivedPositionThisTick 判定。
+    //   ③ teleport_confirm 补六字段 —— 26.3 的确认包带 x/y/z/yRot/xRot。
+    this.protocolGuard = installProtocolGuards(bot);
 
     // 配置阶段资源包：必须用字符串 uuid 应答 ACCEPTED+LOADED，否则服务器（如 Velocity 群组服
     // 推自定义资源包）会持有配置阶段不发 finish_configuration，登录卡死且无任何报错。
@@ -211,8 +209,8 @@ export class MineflayerDriver {
     if (!b) return;
     try { this.trace?.off(); } catch { /* ignore */ }
     this.trace = null;
-    try { this.unpatchSinglePos?.(); } catch { /* ignore */ }
-    this.unpatchSinglePos = null;
+    try { this.protocolGuard?.(); } catch { /* ignore */ }
+    this.protocolGuard = null;
     try { this.unpatchTeleport?.(); } catch { /* ignore */ }
     this.unpatchTeleport = null;
     try { b.removeAllListeners(); } catch { /* ignore */ }
@@ -421,19 +419,15 @@ export class MineflayerDriver {
 
   async rot(yaw, pitch) {
     if (!this.connected) return;
-    // 引擎/Lua 侧角度是「度」；mineflayer look 收弧度。null/undefined = 该轴不动
-    //
-    // force 必须为 false。force=true 时 mineflayer 直接把 lastSentYaw/lastSentPitch 赋值成
-    // 目标值（physics.js: `if (force) { lastSentYaw = yaw; return }`），绕过它自己的
-    // maxDeltaYaw 限速——等于允许客户端在一个 tick 内把视角瞬移到任意角度。原版客户端受
-    // 鼠标灵敏度约束做不到这点，服务端反作弊会判 multiplayer.disconnect.invalid_player_movement
-    // （实测于 mc.zenoxs.cn：每 3 秒被踢）。force=false 时视角以 yawSpeed 上限逐步逼近，
-    // 与真实客户端一致；发包节奏由物理循环每 50ms 最多一个，不额外增频。
-    await this.bot.look(
-      degToRad(yaw) ?? this.bot.entity.yaw,
-      degToRad(pitch) ?? this.bot.entity.pitch,
-      false,
-    );
+    // 引擎/Lua 侧 yaw 是「服务端度数」（0..360）；mineflayer 的 bot.look 用 bot.entity.yaw 坐标系。
+    // mineflayer 内部：bot.entity.yaw = euclideanMod(π - deg2rad(服务端yaw), 2π)，pitch = -deg2rad(pitch)。
+    // 换算后再调 bot.look；它内部按 maxDeltaYaw 限速推进，不会瞬移视角。
+    // 越界值（lastSentYaw 无界累加漂移）由 protocolPatch 的守卫在发包前纠正。
+    const PI2 = Math.PI * 2;
+    const toBotYaw = (deg) => ((((Math.PI - (deg * Math.PI) / 180) % PI2) + PI2) % PI2);
+    const botYaw = yaw == null ? this.bot.entity.yaw : toBotYaw(yaw);
+    const botPitch = pitch == null ? this.bot.entity.pitch : Math.max(-Math.PI / 2, Math.min(Math.PI / 2, (-pitch * Math.PI) / 180));
+    await this.bot.look(botYaw, botPitch, false);
   }
 
   async hop() {

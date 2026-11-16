@@ -1,19 +1,14 @@
-// protocolPatch.js — teleport 确认包与「重复位置包」修补
+// protocolPatch.js — teleport 确认 + 位置包节流 + **yaw 越界纠正**
 //
-// 26.3 服务端（反编译证实）：
-//   handleMovePlayer：  if (packet.hasPosition() && receivedPositionThisTick)
-//                          → disconnect("multiplayer.disconnect.invalid_player_movement")
-//                       receivedPositionThisTick = true   // 每 tick 由 serverTick 重置
-//   handleAcceptTeleportPacket： 确认包本身也带 x/y/z/yRot/xRot（26.3 起）
+// ── yaw 越界（invalid_player_movement 的真根因）──
+// mineflayer 的 physics.js 里 lastSentYaw 是**无界累加**：
+//     lastSentYaw += clamp(-maxDeltaYaw, dYaw, maxDeltaYaw)
+// 而 bot.entity.yaw 归一在 [0, 2π)。lastSentYaw 一旦漂出该区间（例如 3π），
+// toNotchianYaw(3π) = (π - 3π)·180/π = -360°，服务端收到的 yaw 就远超 ±180 → 判非法。
+// 线上实测：yaw 一路涨到 5109°、30759°，随即 multiplayer.disconnect.invalid_player_movement 踢人。
 //
-// 于是 mineflayer 的老行为会撞车 —— 收到服务端 position 后它**连发两个带位置的包**：
-//   physics.js:446  sendPacketPositionAndLook  （位置回执）
-//   physics.js:422  teleport_confirm           （确认包）
-// 在 1.21.x 上这没问题（确认包只带 id，服务端不把它算作「位置包」）；
-// 在 26.3 上确认包已含坐标，两者落在同一个 tick → 第二个被判非法 → 被踢。
-//
-// 修法：收到 position 后只保留一个「带位置」的回报，并推迟到下一个 tick 再发，
-// 避免与确认包挤在同一 tick。同时把确认包补齐六字段（26.3 需要）。
+// 修法：在驱动发包前把 yaw/pitch 归一到合法区间（±180 / ±90）。
+// 视角目标本身不变（角度等价），只是避免把越界值发出去。
 export const TELEPORT_CONFIRM_FULL = ['container', [
   { name: 'teleportId', type: 'varint' },
   { name: 'x', type: 'f64' },
@@ -30,60 +25,32 @@ export function confirmMode(env = process.env) {
 
 export function buildCustomPackets(majorVersion, mode = confirmMode()) {
   if (mode !== 'full' || !majorVersion) return undefined;
-  return {
-    [majorVersion]: {
-      play: { toServer: { types: { packet_teleport_confirm: TELEPORT_CONFIRM_FULL } } },
-    },
-  };
+  return { [majorVersion]: { play: { toServer: { types: { packet_teleport_confirm: TELEPORT_CONFIRM_FULL } } } } };
 }
 
-// 核心：给 bot 打「同一 tick 只发一个带位置包」的补丁。
-//
-// 冲突根源：收到服务端 position 后 mineflayer 会连发两个带位置的包——
-//   physics.js:446  position_look  （位置回执）
-//   physics.js:422  teleport_confirm（确认包；26.3 起含坐标）
-// 两个落在同一 tick → 服务端 receivedPositionThisTick 判定触发 → 踢。
-//
-// 解法：确认包保留坐标（服务端要求用它把玩家传到位），随后那个位置回执降级为只发朝向。
-// 朝向更新不丢，位置不再重复。
-export function installSinglePositionPatch(bot, opts = {}) {
+// 角度归一到 [-limit, limit]（周期 360）
+export function wrapAngle(deg, limit = 180) {
+  if (!Number.isFinite(deg)) return 0;
+  const period = limit * 2;
+  let v = ((deg % period) + period) % period;
+  if (v > limit) v -= period;
+  return v;
+}
+
+// 包一层 _client.write：
+//   ① 所有带 yaw/pitch 的包，角度先归一到 ±180 / ±90（修 lastSentYaw 无界漂移）
+//   ② 同一 50ms 窗口只放行一个带位置的包（26.3 的 receivedPositionThisTick 判定）
+//   ③ teleport_confirm 补六字段（26.3 要坐标）
+export function installProtocolGuards(bot, opts = {}) {
   const client = bot?._client;
   if (!client || typeof client.write !== 'function') return () => {};
   const tickMs = opts.tickMs ?? 50;
+  const mode = opts.mode ?? confirmMode();
 
   let windowStart = 0;
   let positionSentThisWindow = false;
-
-  const markWindow = (now) => {
-    if (now - windowStart >= tickMs) { windowStart = now; positionSentThisWindow = false; }
-  };
-
-  const origWrite = client.write.bind(client);
-  const patched = (name, params) => {
-    markWindow(Date.now());
-    const positional = name === 'position' || name === 'position_look' || name === 'teleport_confirm';
-    if (positional && positionSentThisWindow) {
-      // 本窗口已有带位置包：位置回执降级成纯朝向包；纯位置包直接丢弃（下窗口补发）
-      if (name === 'position_look' && params) {
-        return origWrite('look', { yaw: params.yaw, pitch: params.pitch, flags: params.flags });
-      }
-      if (name === 'position') return undefined;
-    }
-    if (positional) positionSentThisWindow = true;
-    return origWrite(name, params);
-  };
-  client.write = patched;
-
-  return () => { client.write = origWrite; };
-}
-
-// teleport_confirm 补六字段：位置取服务端刚下发的目标点（= 服务端期望客户端确认的位置）
-export function installTeleportConfirmPatch(bot, mode = confirmMode()) {
-  if (mode !== 'full') return () => {};
-  const client = bot?._client;
-  if (!client || typeof client.write !== 'function') return () => {};
-
   let target = null;
+
   const onPosition = (p) => {
     const toDeg = (deg, rad) => (Number.isFinite(deg) ? deg : (Number.isFinite(rad) ? (rad * 180) / Math.PI : 0));
     target = { x: p.x, y: p.y, z: p.z, yRot: toDeg(p.yaw, p.yRot), xRot: toDeg(p.pitch, p.xRot) };
@@ -92,16 +59,45 @@ export function installTeleportConfirmPatch(bot, mode = confirmMode()) {
 
   const origWrite = client.write.bind(client);
   const patched = (name, params) => {
+    const now = Date.now();
+    if (now - windowStart >= tickMs) { windowStart = now; positionSentThisWindow = false; }
+
+    // ① 角度归一（yaw/pitch 在协议里是度数 f32）
+    let p = params;
+    if (p && typeof p === 'object' && (p.yaw !== undefined || p.pitch !== undefined)) {
+      p = { ...p };
+      if (p.yaw !== undefined) p.yaw = wrapAngle(p.yaw, 180);
+      if (p.pitch !== undefined) p.pitch = wrapAngle(p.pitch, 90);
+    }
+
+    const positional = name === 'position' || name === 'position_look' || name === 'teleport_confirm';
+
+    // ③ 确认包补坐标（在节流判定之前，确认包不参与节流）
     if (name === 'teleport_confirm') {
-      const p = params ?? {};
-      if (p.x === undefined && target) {
+      const q = p ?? {};
+      if (mode === 'full' && q.x === undefined && target) {
+        positionSentThisWindow = true;
         return origWrite(name, {
-          teleportId: p.teleportId,
-          x: target.x, y: target.y, z: target.z, yRot: target.yRot, xRot: target.xRot,
+          teleportId: q.teleportId, x: target.x, y: target.y, z: target.z,
+          yRot: wrapAngle(target.yRot, 180), xRot: wrapAngle(target.xRot, 90),
         });
       }
+      if (mode === 'full') {
+        p = { ...q, yRot: wrapAngle(q.yRot ?? target?.yRot ?? 0, 180), xRot: wrapAngle(q.xRot ?? target?.xRot ?? 0, 90) };
+      }
+      positionSentThisWindow = true;
+      return origWrite(name, p);
     }
-    return origWrite(name, params);
+
+    // ② 同窗口第二个位置包：回执降级为纯朝向，纯位置包丢弃
+    if (positional && positionSentThisWindow) {
+      if (name === 'position_look' && p) {
+        return origWrite('look', { yaw: p.yaw, pitch: p.pitch, flags: p.flags });
+      }
+      if (name === 'position') return undefined;
+    }
+    if (positional) positionSentThisWindow = true;
+    return origWrite(name, p);
   };
   client.write = patched;
 
@@ -110,3 +106,7 @@ export function installTeleportConfirmPatch(bot, mode = confirmMode()) {
     try { client.removeListener('position', onPosition); } catch { /* ignore */ }
   };
 }
+
+// 兼容旧导出名
+export const installSinglePositionPatch = (bot, opts) => installProtocolGuards(bot, opts);
+export const installTeleportConfirmPatch = () => () => {};
