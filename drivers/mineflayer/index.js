@@ -67,7 +67,6 @@ export class MineflayerDriver {
       port: cfg.port ?? 25565,
       username: acct.username ?? 'bot',
       version: cfg.version ?? undefined,
-      ...(customPackets ? { customPackets } : {}),
       hideErrors: false,
       settings: { viewDistance: vd },              // mineflayer 登录时发送的客户端设置
       clientSettings: { viewDistance: vd },        // mc-protocol play 期 settings（服务器据此发 chunk）
