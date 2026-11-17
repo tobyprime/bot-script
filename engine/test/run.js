@@ -612,6 +612,80 @@ test('httpapi：鉴权/状态/params/cmd/tasks/logs/persist/caps 全链', async 
   await engine.stop();
 });
 
+test('httpapi：实时流 /stream（补历史 + 实时增量）、聊天入站/出站、/chat 门控', async () => {
+  const driver = new MockDriver();
+  const { engine } = await makeEngine({
+    scripts: [],
+    driver,
+    boundary: { chat: { commands: ['/say'] } },   // 只放行 /say 命令；公屏发言受 say_rate 默认限速
+  });
+  process.env.BOTSCRIPT_HTTP_PORT = '0';
+  const { startHttpApi } = await import('../httpapi.js');
+  const { port, token } = await startHttpApi(engine, { log: () => {} });
+  const base = `http://127.0.0.1:${port}`;
+  const hdr = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+  // 聊天入站（驱动 chat 事件）：进内存环，sender_kind 原样保留
+  driver.playerSay('Steve', 'hello world');
+  await new Promise((r) => setTimeout(r, 50));
+  let logs = await (await fetch(base + '/logs', { headers: hdr })).json();
+  assert.ok(logs.chats.some((c) => c.text === 'hello world' && c.sender /* Steve */));
+  assert.ok(logs.logs.every((l) => typeof l.seq === 'number'), '环形日志应带单调 seq');
+
+  // 出站消息流：录制实时流增量（先订阅再动作，避免竞态）
+  const seen = [];
+  const unsub = engine.subscribeStream((e) => seen.push(e));
+  const lastSeq = engine._streamSeq;
+
+  // SSE /stream：补历史（since_seq 之后）+ 实时增量
+  const ctrl = new AbortController();
+  const res = await fetch(base + `/stream?since_seq=${lastSeq}`, { headers: hdr, signal: ctrl.signal });
+  assert.strictEqual(res.headers.get('content-type')?.includes('text/event-stream'), true);
+  const events = [];
+  const reader = res.body.getReader();
+  const pump = (async () => {
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data: '));
+        if (dataLine) events.push(JSON.parse(dataLine.slice(6)));
+      }
+    }
+  })();
+
+  // POST /chat：命令白名单放行（/say）、出站消息入实时流（sender_kind=self）
+  const ok = await fetch(base + '/chat', { method: 'POST', headers: hdr, body: JSON.stringify({ text: '/say hi' }) });
+  assert.strictEqual(ok.status, 200);
+  await new Promise((r) => setTimeout(r, 150));
+  const selfEvt = seen.find((e) => e.type === 'chat' && e.sender_kind === 'self');
+  assert.ok(selfEvt && selfEvt.text === '/say hi', '出站消息应以 sender_kind=self 进实时流');
+  assert.ok(events.some((e) => e.type === 'chat' && e.sender_kind === 'self'), 'SSE 应实时收到出站消息');
+
+  // 门控：未在白名单的命令被拒（400，且不发包）；空文本 400
+  const denied = await fetch(base + '/chat', { method: 'POST', headers: hdr, body: JSON.stringify({ text: '/kill Steve' }) });
+  assert.strictEqual(denied.status, 400);
+  const empty = await fetch(base + '/chat', { method: 'POST', headers: hdr, body: JSON.stringify({ text: '   ' }) });
+  assert.strictEqual(empty.status, 400);
+  const outCmds = driver.outgoingCommands.filter((c) => c === '/kill Steve');
+  assert.strictEqual(outCmds.length, 0, '被拒命令不得真的发出去');
+
+  // 断线退订：订阅者数量归零（否则监听器泄漏）
+  ctrl.abort();
+  await pump.catch(() => {});
+  unsub();
+  await new Promise((r) => setTimeout(r, 100));
+  assert.strictEqual(engine._streamSubs.size, 0, '断开后实时流订阅必须释放');
+
+  await engine.stop();
+});
+
 // ============================================================
 // 9. 平台事件入站（/event → events.next）
 // ============================================================
