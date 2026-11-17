@@ -660,7 +660,8 @@ test('httpapi：实时流 /stream（补历史 + 实时增量）、聊天入站/�
     }
   })();
 
-  // POST /chat：命令白名单放行（/say）、出站消息入实时流（sender_kind=self）
+  // POST /chat：操作者 = console 级，命令白名单**不适用**（白名单只约束脚本）；
+  // 未在白名单的 /kill 也应原样发出，出站消息入实时流（sender_kind=self）
   const ok = await fetch(base + '/chat', { method: 'POST', headers: hdr, body: JSON.stringify({ text: '/say hi' }) });
   assert.strictEqual(ok.status, 200);
   await new Promise((r) => setTimeout(r, 150));
@@ -668,13 +669,20 @@ test('httpapi：实时流 /stream（补历史 + 实时增量）、聊天入站/�
   assert.ok(selfEvt && selfEvt.text === '/say hi', '出站消息应以 sender_kind=self 进实时流');
   assert.ok(events.some((e) => e.type === 'chat' && e.sender_kind === 'self'), 'SSE 应实时收到出站消息');
 
-  // 门控：未在白名单的命令被拒（400，且不发包）；空文本 400
-  const denied = await fetch(base + '/chat', { method: 'POST', headers: hdr, body: JSON.stringify({ text: '/kill Steve' }) });
-  assert.strictEqual(denied.status, 400);
+  // 操作者命令不受脚本白名单约束：/kill Steve 不在 boundary.chat.commands 里，也必须照发
+  const opCmd = await fetch(base + '/chat', { method: 'POST', headers: hdr, body: JSON.stringify({ text: '/kill Steve' }) });
+  assert.strictEqual(opCmd.status, 200, '操作者命令不应被脚本白名单拦截');
+  assert.ok(driver.outgoingCommands.includes('/kill Steve'), '操作者命令应真的发出去（不受白名单限制）');
+  // 空文本仍 400
   const empty = await fetch(base + '/chat', { method: 'POST', headers: hdr, body: JSON.stringify({ text: '   ' }) });
   assert.strictEqual(empty.status, 400);
-  const outCmds = driver.outgoingCommands.filter((c) => c === '/kill Steve');
-  assert.strictEqual(outCmds.length, 0, '被拒命令不得真的发出去');
+
+  // 对照：脚本侧 chat.run_command 仍受 checkChatPolicy（白名单）约束（沙箱边界不变）
+  assert.throws(
+    () => engine.checkChatPolicy('/kill Steve'),
+    (e) => e && e.kind === 'permission.denied',
+    '脚本动作路径仍必须过命令白名单',
+  );
 
   // 断线退订：订阅者数量归零（否则监听器泄漏）
   ctrl.abort();

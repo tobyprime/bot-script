@@ -1824,7 +1824,12 @@ ${e.stack ?? ''}`);
     }
   }
 
-  // 操作者直接发消息/命令（HTTP POST /chat，与脚本动作同一 checkChatPolicy 门控）。
+  // 操作者直接发消息/命令（HTTP POST /chat）。
+  //
+  // 门控口径：「操作者 = console 级」（与 POST /cmd、/eval 同权：HTTP token 持有者能跑任意 Lua，
+  // 聊天命令自然不必再过脚本沙箱）。所以这里**不过 checkChatPolicy**——命令白名单 / say 限速
+  // 是限制**脚本**能替 bot 发出什么的（boundary.chat），不该挡住操作者手敲的命令。
+  // 脚本侧 chat.say / chat.run_command 仍走 checkChatPolicy（沙箱边界不变）。
   // 出站消息进聊天视图的实时流（sender_kind=self）：前端据此把「我发出的」与「收到的」排成一条时间线，
   // 但平台不落库——断线即丢，聊天记录不存储是产品口径。
   async outboundChat(text) {
@@ -1833,7 +1838,6 @@ ${e.stack ?? ''}`);
     if (this.sessionState !== 'playing' && this.sessionState !== 'dry') {
       throw TYPE_ERR('chat.offline', `当前会话状态 ${this.sessionState}，无法发言`);
     }
-    this.checkChatPolicy(s);
     if (!this.runtimeCfg.dry_run) await this.driver.chat_send(s);
     return this.publish('chat', { ts: nowMs(), text: s, raw: s, sender: this.name, sender_kind: 'self' });
   }
