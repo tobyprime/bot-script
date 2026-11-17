@@ -14,14 +14,8 @@ export function startHttpApi(engine, { log = console.log } = {}) {
   const token = process.env.BOTSCRIPT_HTTP_TOKEN
     || crypto.randomUUID().replaceAll('-', '').slice(0, 24);
 
-  // 结构化日志环（/logs 增量拉取）
-  const logRing = [];
-  const origLog = engine.log.bind(engine);
-  engine.log = (level, msg) => {
-    logRing.push({ ts: Date.now(), level, msg });
-    if (logRing.length > 500) logRing.shift();
-    origLog(level, msg);
-  };
+  // 日志/动作/聊天环由 BotEngine 维护（单一出口、带单调 seq），这里只读不写。
+  // 平台侧不落库：/logs 与 /stream 都只是「进程内存环 + 实时增量」的视图。
 
   const json = (res, code, obj) => {
     const body = JSON.stringify(obj);
@@ -169,9 +163,53 @@ export function startHttpApi(engine, { log = console.log } = {}) {
         case '/logs': {
           const since = Number(u.searchParams.get('since') ?? 0) || 0;
           return json(res, 200, {
-            logs: logRing.filter((e) => e.ts > since),
+            logs: engine._logRing.filter((e) => e.ts > since),
             actions: engine.actionLog.filter((e) => e.ts > since),
+            chats: engine._chatRing.filter((e) => e.ts > since),
+            next_seq: engine._streamSeq,
           });
+        }
+
+        // 实时流（SSE）：先按 since_seq 补内存环里的历史，再接实时增量。
+        // 不落库——断线只能续传「本进程此刻仍留在环里的」事件；进程重启即清空。
+        case '/stream': {
+          const sinceSeq = Number(u.searchParams.get('since_seq') ?? 0) || 0;
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          });
+          res.write('retry: 3000\n\n');
+          const send = (evt) => res.write(`id: ${evt.seq}\ndata: ${JSON.stringify(evt)}\n\n`);
+          let lastSent = sinceSeq;
+          for (const e of engine.ringSince('log', sinceSeq)) { send(e); lastSent = Math.max(lastSent, e.seq); }
+          for (const e of engine.ringSince('action', sinceSeq)) { send(e); lastSent = Math.max(lastSent, e.seq); }
+          for (const e of engine.ringSince('chat', sinceSeq)) { send(e); lastSent = Math.max(lastSent, e.seq); }
+          res.write(': backfill done\n\n');
+          const unsub = engine.subscribeStream((evt) => {
+            if (evt.seq <= lastSent) return;
+            lastSent = evt.seq;
+            try { send(evt); } catch { /* 断开由 close 处理 */ }
+          });
+          const heartbeat = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* ignore */ } }, 15_000);
+          const cleanup = () => { clearInterval(heartbeat); unsub(); };
+          req.on('close', cleanup);
+          res.on('error', cleanup);
+          return undefined;
+        }
+
+        // 操作者发消息/命令（与脚本动作同一 checkChatPolicy 门控：命令白名单 / say 限速 / 观察模式全拒）
+        case '/chat': {
+          if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+          const body = JSON.parse((await readBody(req)) || '{}');
+          try {
+            const evt = await engine.outboundChat(String(body.text ?? ''));
+            return json(res, 200, { ok: true, seq: evt.seq });
+          } catch (e) {
+            if (e?.kind) return json(res, 400, { error: e.kind, detail: e.detail ?? null });
+            throw e;
+          }
         }
 
         case '/persist': {

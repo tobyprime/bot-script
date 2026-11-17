@@ -84,6 +84,16 @@ function dist2d(a, b) {
 }
 function nowMs() { return Date.now(); }
 
+// 进程内环形缓冲：固定上限，超限丢最旧。平台侧不做日志/聊天持久化——
+// 连接上的实时流是唯一入口，断线重连只能从本进程内存环取回缺口（进程重启即清空）。
+const RING_LOG = 500;
+const RING_ACTION = 2000;
+const RING_CHAT = 200;
+function pushRing(ring, evt, cap) {
+  ring.push(evt);
+  if (ring.length > cap) ring.shift();
+}
+
 // net 通配符：`*` 匹配任意串（含 `/`）；非 * 部分按字面匹配。匹配对象 = origin + pathname（query 不参与）
 function netGlob(pat, url) {
   const parts = pat.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
@@ -335,7 +345,13 @@ export class BotEngine {
     this.runtimeCfg = { ...(opts.runtime ?? {}) };
     if (opts.dryRun) this.runtimeCfg.dry_run = true;
     this.connectCfg = opts.connect ?? {};
-    this.log = opts.log ?? ((level, msg) => console.log(`[${level}] ${msg}`));
+    // 日志单一出口：进程内环形缓冲（/logs、/stream 增量源）+ 实时流（SSE）+ 宿主输出。
+    // 平台侧不落库：连接上即推送，断线只从本进程的内存环续传（进程重启即清空）。
+    this._logRing = [];
+    this._actionRing = [];
+    this._chatRing = [];
+    this._streamSubs = new Set();
+    this._streamSeq = 0;            // 实时流单调序号（SSE id / 断线续传游标）
     this.name = cfg.name ?? 'bot';
 
     this.tokens = new Map();      // token -> rec
@@ -371,7 +387,14 @@ export class BotEngine {
 
     this.budgetCount = 0;
     this.chatTokens = [];           // say 限速令牌桶时间戳
-    this.actionLog = [];
+    this.actionLog = this._actionRing;   // 动作审计（环形，含 /logs 增量与实时流）
+    // 日志单一出口：进程内环 + 实时流 + 宿主输出（三条并行，平台侧不落库）
+    this._outerLog = opts.log ?? ((level, msg) => console.log(`[${level}] ${msg}`));
+    this.log = (level, msg) => {
+      const evt = this.publish('log', { ts: nowMs(), level, msg });
+      this._outerLog(level, msg);
+      return evt;
+    };
     this.eventQueue = [];           // 平台事件（HTTP /event 注入 → Lua events.next 消费）
     this.eventWaiters = [];         // events.next 等待者（FIFO）
     this.stopped = false;
@@ -572,10 +595,50 @@ export class BotEngine {
     this.event('session.ready', { dimension: this.sessionInfo.dimension ?? null });
   }
 
+  // ================= 实时流（SSE /stream 的进程内出口） =================
+
+  // 统一出口：为事件打单调 seq → 入对应内存环 → 广播实时流。
+  // 平台侧不落库（聊天记录/日志都不持久化）：实时流是唯一入口，断线只能从进程内存环续传。
+  publish(type, evt) {
+    const seq = ++this._streamSeq;
+    const stamped = { seq, type, ...evt };
+    if (type === 'log') pushRing(this._logRing, stamped, RING_LOG);
+    else if (type === 'action') pushRing(this._actionRing, stamped, RING_ACTION);
+    else if (type === 'chat') pushRing(this._chatRing, stamped, RING_CHAT);
+    this.emitStream(stamped);
+    return stamped;
+  }
+
+  // 订阅实时事件（log / action / chat）：返回取消函数。宿主断线/关机时才退订。
+  subscribeStream(fn) {
+    this._streamSubs.add(fn);
+    return () => this._streamSubs.delete(fn);
+  }
+
+  emitStream(evt) {
+    for (const fn of this._streamSubs) {
+      try { fn(evt); } catch { /* 订阅方异常不影响引擎 */ }
+    }
+  }
+
+  // 按 seq 之后取内存环（SSE 补历史 / 断线续传）
+  ringSince(type, sinceSeq) {
+    const ring = type === 'log' ? this._logRing : type === 'action' ? this._actionRing : this._chatRing;
+    return ring.filter((e) => e.seq > sinceSeq);
+  }
+
+  // 聊天入站（驱动 chat 事件）：命令总线 + Lua 事件广播不变，另入内存环与实时流。
+  // sender_kind/sender 原样上抛——平台侧只做展示，不做权威判断（sender_kind 防伪造由引擎给出）。
   onChat(p) {
-    // 命令总线（聊天形态）与 on_chat/await_chat 独立广播
     this.dispatchCommand(p.text ?? '', p.sender ?? null, false);
     this.event('chat', p);
+    this.publish('chat', {
+      ts: p.ts ?? nowMs(),
+      text: String(p.text ?? ''),
+      raw: String(p.raw ?? ''),
+      sender: p.sender ?? null,
+      sender_kind: p.sender_kind ?? 'unknown',
+    });
   }
 
   onSelf(p) {
@@ -1734,7 +1797,7 @@ ${e.stack ?? ''}`);
       return token;
     }
     this.actionCount(name);
-    this.actionLog.push({ ts: nowMs(), task: taskId, action: name, args: safeBrief(args) });
+    this.publish('action', { ts: nowMs(), task: taskId, action: name, args: safeBrief(args) });
 
     let h;
     const promise = new Promise((resolve) => { h = makeHandler(this, token, resolve); });
@@ -1759,6 +1822,20 @@ ${e.stack ?? ''}`);
       this.log('warn', `[${this.name}] 动作预算耗尽（${limit}/h）-> 自动 pause`);
       this.pause('budget');
     }
+  }
+
+  // 操作者直接发消息/命令（HTTP POST /chat，与脚本动作同一 checkChatPolicy 门控）。
+  // 出站消息进聊天视图的实时流（sender_kind=self）：前端据此把「我发出的」与「收到的」排成一条时间线，
+  // 但平台不落库——断线即丢，聊天记录不存储是产品口径。
+  async outboundChat(text) {
+    const s = String(text ?? '');
+    if (!s.trim()) throw TYPE_ERR('chat.bad_request', 'text 必填');
+    if (this.sessionState !== 'playing' && this.sessionState !== 'dry') {
+      throw TYPE_ERR('chat.offline', `当前会话状态 ${this.sessionState}，无法发言`);
+    }
+    this.checkChatPolicy(s);
+    if (!this.runtimeCfg.dry_run) await this.driver.chat_send(s);
+    return this.publish('chat', { ts: nowMs(), text: s, raw: s, sender: this.name, sender_kind: 'self' });
   }
 
   checkChatPolicy(text) {
@@ -1997,14 +2074,6 @@ ${e.stack ?? ''}`);
     };
     loop();
     return h;
-  }
-
-  // ================= 聊天通道 =================
-
-  onChatPipeline(msg) {
-    // 命令总线优先识别（聊天形态）；on_chat/await_chat 独立广播
-    this.dispatchCommand(msg.text ?? '', msg.sender, false);
-    this.event('chat', msg);
   }
 }
 

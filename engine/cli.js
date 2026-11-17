@@ -87,9 +87,12 @@ const pkgAbs = {
 
 async function main() {
   const { MineflayerDriver } = await import('../drivers/mineflayer/index.js');
-  const driver = new MineflayerDriver({ log: (m) => console.log(m) });
+  // 驱动控制台输出不再直落 stdout：改投引擎 log 出口，才能随实时流进平台的日志/聊天视图。
+  // engine 在构造后才存在，先用转发壳；此后 driver.log 全部经 engine.log（环 + 流 + stdout）。
+  let engine = null;
+  const driver = new MineflayerDriver({ log: (m) => (engine ? engine.log('console', String(m)) : console.log(m)) });
 
-  const engine = new BotEngine(pkgAbs, driver, {
+  engine = new BotEngine(pkgAbs, driver, {
     scriptDir: pkgDir,
     boundary: deploy.boundary ?? null,   // 无 boundary = 观察模式（§5.1 默认全拒）
     runtime: deploy.runtime ?? {},
