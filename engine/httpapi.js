@@ -8,10 +8,12 @@ import crypto from 'node:crypto';
 const DEFAULT_PORT = 25580;
 const MAX_BODY = 1 << 20;
 
-export function startHttpApi(engine, { log = console.log } = {}) {
-  const portEnv = Number(process.env.BOTSCRIPT_HTTP_PORT);
-  const basePort = Number.isFinite(portEnv) && portEnv > 0 ? portEnv : DEFAULT_PORT;
-  const token = process.env.BOTSCRIPT_HTTP_TOKEN
+export function startHttpApi(engine, { log = console.log, port, token: tokenArg } = {}) {
+  // port/token 优先取参数（host.js 每实例分配独立端口/token），否则回落 env（cli.js 单实例路径）。
+  const portEnv = Number(port);
+  const basePort = Number.isFinite(portEnv) && portEnv > 0 ? portEnv : (Number(process.env.BOTSCRIPT_HTTP_PORT) > 0 ? Number(process.env.BOTSCRIPT_HTTP_PORT) : DEFAULT_PORT);
+  const token = tokenArg
+    || process.env.BOTSCRIPT_HTTP_TOKEN
     || crypto.randomUUID().replaceAll('-', '').slice(0, 24);
 
   // 日志/动作/聊天环由 BotEngine 维护（单一出口、带单调 seq），这里只读不写。
