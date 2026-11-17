@@ -101,21 +101,42 @@ async function main() {
     connect,
   });
 
-  const shutdown = async () => {
+  const shutdown = async (exitCode = 0) => {
     console.log('\n[cli] 停机 = 进程退出（无 on_stop）');
     await engine.stop();
-    process.exit(0);
+    process.exit(exitCode);
   };
-  process.on('SIGINT', shutdown);
+  process.on('SIGINT', () => shutdown(0));
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (d) => {
     for (const line of d.toString().split(/\r?\n/)) {
       const t = line.trim();
       if (!t) continue;
-      if (t === 'quit' || t === 'exit') { shutdown(); return; }
+      if (t === 'quit' || t === 'exit') { shutdown(0); return; }
       engine.dispatchCommand(t, null, true);
     }
   });
+
+  // 每实例内存自监控（BOTSCRIPT_MEM_LIMIT_MB）：容器 cgroup 是整机多实例共享的，
+  // 一个实例涨满会把同容器所有实例一起被内核 OOM 杀掉（且无任何日志）。
+  // 这里按 RSS 自检，快到上限就主动优雅退出并打印明确原因——只牺牲超限的这个实例，
+  // 且 reason 会落 console.log（agent/grep 可读），不再"无声消失"。
+  // 注意：容器 mem_limit 仍须 > N×单实例上限留出余量（agent 自身 + 引擎外开销）。
+  const memCapMb = Number(process.env.BOTSCRIPT_MEM_LIMIT_MB) || 0;
+  if (memCapMb > 0) {
+    const capBytes = memCapMb * 1024 * 1024;
+    const poll = () => {
+      const rss = process.memoryUsage.rss();
+      if (rss >= capBytes) {
+        const used = (rss / 1048576).toFixed(0);
+        console.error(`[cli] 内存超限：RSS ${used}MB ≥ 单实例上限 ${memCapMb}MB（BOTSCRIPT_MEM_LIMIT_MB），主动退出以免拖垮同容器其他实例`);
+        shutdown(137);   // 137 = 128+SIGKILL 约定；agent 据此判定「内存超限」并给出可读 failed 原因
+        return;
+      }
+    };
+    const t = setInterval(poll, 2000);
+    t.unref?.();   // 不阻止正常退出
+  }
 
   await engine.start();
   await startHttpApi(engine, { log: (level, msg) => console.log(`[${level}] ${msg}`) });
