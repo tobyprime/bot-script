@@ -199,7 +199,7 @@ export function startHttpApi(engine, { log = console.log } = {}) {
           return undefined;
         }
 
-        // 操作者发消息/命令（与脚本动作同一 checkChatPolicy 门控：命令白名单 / say 限速 / 观察模式全拒）
+        // 操作者发消息/命令（console 级：不过脚本沙箱的 chat 策略——命令白名单 / say 限速只约束脚本）
         case '/chat': {
           if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
           const body = JSON.parse((await readBody(req)) || '{}');
