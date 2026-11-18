@@ -10,7 +10,7 @@ import { parse } from 'yaml';
 const KNOWN_PARAM_TYPES = new Set([
   'string', 'number', 'boolean', 'blockpos', 'region', 'list<blockpos>',
 ]);
-const KNOWN_TOP_KEYS = new Set(['name', 'scripts', 'params', 'persist', 'net']);
+const KNOWN_TOP_KEYS = new Set(['name', 'scripts', 'params', 'persist']);
 
 // 单文件编译：load 不执行——顶层副作用不会发生（validate 是静态的）
 async function makeLua() {
@@ -100,17 +100,6 @@ export async function validatePackage(pkgDir) {
   // 4) persist：可选，字符串路径
   if (pkg.persist !== undefined && typeof pkg.persist !== 'string') {
     err('persist 必须是字符串路径（或省略）', 'bot.yaml');
-  }
-
-  // 4.5) net：出站 HTTP 白名单（通配符），申请 ∩ 边界授权才生效
-  if (pkg.net !== undefined) {
-    if (!Array.isArray(pkg.net) || pkg.net.some((p) => typeof p !== 'string')) {
-      err('net 必须是字符串数组（URL 通配符，如 "https://api.example.com/*"）', 'bot.yaml');
-    } else {
-      for (const p of pkg.net) {
-        if (!/^https?:\/\//.test(p)) err(`net 模式必须以 http(s):// 开头: ${p}`, 'bot.yaml');
-      }
-    }
   }
 
   // 5) 目录内全部 .lua 编译（入口 + require 模块；load 只编译不执行）

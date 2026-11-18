@@ -223,8 +223,7 @@ log.info/warn/error(结构化字段)
 ```
 P0 全部。
 
-### 3.10 `persist` — 持久化（引擎 SQLite，后端零参与）
-```lua
+### 3.10 `persist` — 持久化（引擎 SQLite，后端零参与）```lua
 persist.table "Account" { player = "string:key", balance = "number" }
 persist.kv "cache"
 persist.log  "Intent"                 -- 追加日志（意图/对账，④）：L.append{...} -> id   L.find{...} -> [row]   L.mark(id, state)
@@ -263,30 +262,22 @@ P0。
 
 ---
 
-### 3.13 `net` — 出站 HTTP（2026-09-13 实装）
+### 3.13 `events` — 与宿主的事件往返
 
-> 定位：沙箱内唯一的出站通道。生效条件 = **bot.yaml 清单 `net` 申请 ∩ 实例边界 `net` 授权**（通配符白名单；默认全拒——清单不申请或边界不授权，一律 `net.denied`）。
+> 定位：脚本与外部世界交互的唯一通道。**下发**（宿主 → 脚本）与**上报**（脚本 → 宿主）都只走事件，
+> 投递地址与凭据完全由宿主持有，脚本不接触任何网络细节。
 
 ```lua
--- bot.yaml（申请）
--- net:
---   - "https://api.example.com/*"
---   - "http://127.0.0.1:18100/*"     # 回环须显式写出
+local ev = events.next(30000)         -- 阻塞到下一条宿主事件；超时返回 nil
+-- ev = { type, data, ts }
 
-local res = net.request({
-  url = "https://api.example.com/v1/ping",
-  method = "POST",                     -- GET/POST/PUT/PATCH/DELETE/HEAD
-  headers = { ["Content-Type"] = "application/json" },
-  body = '{"hello":1}',
-})
--- res = { status, headers(小写键), body(字符串), truncated }；10s 超时，响应 >2MB 截断（truncated=true）
-
-local status, data = net.jrequest({ url = "..." })   -- 便捷：body 按 JSON 解码
+events.emit("pay", { payer = "Steve", amount = 12.5 })   -- 上抛一条事件（非阻塞）
 ```
 
-- 通配符：`*` 匹配任意串（含 `/`）；匹配对象 = `origin + pathname`（query 不参与匹配，即放行任意 query）。
-- 安全默认：跳转不跟随（3xx 原样返回，防绕过白名单）；协议限 http/https；方案写入边界 JSON 的 `net` 键（如 `{"net":["https://api.example.com/*"]}`）。
-- 已知限制（MVP）：不做 DNS rebinding 防护（自托管单租户可接受）；请求体上限 256KB（引擎 MAX_BODY）。
+- 下发：托管部署由 agent 进程内写入；独立部署（`engine/cli.js`）可直接经控制通道 `POST /event {type, data}` 注入。
+- 上报：进入引擎实时流 `event` 通道，与 log / chat / action 同一条出口；托管部署由 agent 转发到控制面，
+  独立部署可经 `GET /stream` 消费，或由宿主自行决定去向。
+- `events.emit` 的 `data` 必须是 table；`type` 截断到 64 字符。
 
 ---
 

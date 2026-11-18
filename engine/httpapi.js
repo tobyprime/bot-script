@@ -168,6 +168,7 @@ export function startHttpApi(engine, { log = console.log, port, token: tokenArg 
             logs: engine._logRing.filter((e) => e.ts > since),
             actions: engine.actionLog.filter((e) => e.ts > since),
             chats: engine._chatRing.filter((e) => e.ts > since),
+            events: engine._eventRing.filter((e) => e.ts > since),
             next_seq: engine._streamSeq,
           });
         }
@@ -188,6 +189,7 @@ export function startHttpApi(engine, { log = console.log, port, token: tokenArg 
           for (const e of engine.ringSince('log', sinceSeq)) { send(e); lastSent = Math.max(lastSent, e.seq); }
           for (const e of engine.ringSince('action', sinceSeq)) { send(e); lastSent = Math.max(lastSent, e.seq); }
           for (const e of engine.ringSince('chat', sinceSeq)) { send(e); lastSent = Math.max(lastSent, e.seq); }
+          for (const e of engine.ringSince('event', sinceSeq)) { send(e); lastSent = Math.max(lastSent, e.seq); }
           res.write(': backfill done\n\n');
           const unsub = engine.subscribeStream((evt) => {
             if (evt.seq <= lastSent) return;
@@ -236,9 +238,7 @@ export function startHttpApi(engine, { log = console.log, port, token: tokenArg 
               scripts: engine.cfg.scripts ?? [],
               params: engine.cfg.params ?? {},
               persist: engine.cfg.persist ?? null,
-              net: engine.cfg.net ?? [],
             },
-            net: { manifest: engine.cfg.net ?? [], granted: engine.policy?.net ?? [] },
           });
         }
 
