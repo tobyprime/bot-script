@@ -868,7 +868,6 @@ function entity.nearest(pred)
       if sp then
         local dx, dy, dz = s.pos.x - sp.x, s.pos.y - sp.y, s.pos.z - sp.z
         d = dx * dx + dy * dy + dz * dz
-        if d < 0.25 then d = nil; goto continue end   -- 排除自己（fabric 实体快照含自身）
       end
       if not bd or (d and d < bd) then best, bd = s, d or 0 end
     end

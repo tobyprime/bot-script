@@ -471,6 +471,27 @@ test('观察模式：无 boundary 一切动作被拒、查询与 params 可用',
   await engine.stop();
 });
 
+test('entity.nearest：近距离玩家（<0.5 格）不得被当成自身排除', async () => {
+  // 曾经按 d²<0.25 硬排除（本意是剔除 fabric 快照里的自身实体），但两个驱动都已过滤自身，
+  // 结果变成「站到 bot 旁边反而看不见目标」——转向延迟的一个成因。
+  for (const dx of [0.1, 0.3, 0.49, 0.5, 1]) {
+    script(`near-${String(dx).replace('.', '_')}.lua`, `
+      __R_hit = nil
+      on_start(function()
+        task.spawn(function()
+          local e = entity.nearest{ type = 'player', alive = true, within = 10 }
+          __R_hit = e and e.name or 'nil'
+        end)
+      end)
+    `);
+    const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+    driver.addPlayer('Close', { x: dx, y: 64, z: 0 });
+    const { engine } = await makeEngine({ scripts: [`near-${String(dx).replace('.', '_')}.lua`], driver });
+    assert.ok(await waitFor(() => g(engine, '__R_hit') != null, 5000), `dx=${dx} 应能查到目标`);
+    assert.strictEqual(g(engine, '__R_hit'), 'Close', `dx=${dx} 格的目标不应被排除`);
+    await engine.stop();
+  }
+});
 test('boundary 安全边界：移动总开关 allow_move=false 同时禁用 nav/hop', async () => {
   script('t-move.lua', `
     __R_nav_err = nil
@@ -1284,6 +1305,19 @@ test('mineflayer 驱动：look 角度按度进、按弧度出；self 上报回�
   assert.equal(degToRad(undefined), undefined);
   assert.equal(radToDeg(Math.PI), 180);
   assert.equal(radToDeg(-Math.PI / 2), -90);
+});
+
+test('mineflayer 驱动：目标朝向取最短路径（跨 ±π 边界不得绕远路）', async () => {
+  const { serviceDegToBotYaw, shortestYaw } = await import('../../drivers/mineflayer/units.js');
+  const deg = (rad) => (rad * 180) / Math.PI;
+  const cur = serviceDegToBotYaw(179);   // bot 朝 179°
+  for (const [target, expectMaxAbs] of [[181, 5], [270, 95], [1, 180], [90, 95]]) {
+    const got = shortestYaw(serviceDegToBotYaw(target), cur);
+    const delta = Math.abs(deg(got - cur));
+    assert.ok(delta <= expectMaxAbs + 1, `179°→${target}° 应走最短一边（≤${expectMaxAbs}°），实际 ${delta.toFixed(0)}°`);
+  }
+  // 关键回归：181° 与 179° 只差 2°，修复前要绕 358°
+  assert.ok(Math.abs(deg(shortestYaw(serviceDegToBotYaw(181), cur) - cur)) < 5, '179°→181° 必须是 2° 而不是 358°');
 });
 
 // 断线可读性（2026-11-15 实测）：mineflayer 的 kicked/end 理由是 chat 组件或 JSON 文本，
