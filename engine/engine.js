@@ -1541,7 +1541,7 @@ ${e.stack ?? ''}`);
       return {};
     });
 
-    A('hop', {}, async () => {
+    A('hop', { mov: true }, async () => {
       await this.driver.hop();
       return {};
     });
@@ -1758,6 +1758,12 @@ ${e.stack ?? ''}`);
       this.settle(token, '{}', '');
       return token;
     }
+    // 发包速率（每秒；未配置 = 不限）。超限直接拒绝该动作，脚本收到 permission.denied 可自行退避。
+    const rateErr = this.actionRateCheck();
+    if (rateErr) {
+      this.settle(token, '', JSON.stringify(rateErr));
+      return token;
+    }
     this.actionCount(name);
     this.publish('action', { ts: nowMs(), task: taskId, action: name, args: safeBrief(args) });
 
@@ -1786,6 +1792,21 @@ ${e.stack ?? ''}`);
     }
   }
 
+  // 每秒发包速率（boundary.rate.actions_per_sec；未配置 = 不限）。
+  // 用 1 秒滑动窗口计数：超限的动作直接拒绝，脚本收到 permission.denied。
+  // 与 budget.actions_per_hour（超额整实例暂停）分工不同：这个只丢当次动作，不打断任务。
+  actionRateCheck() {
+    const limit = Number(this.policy?.rate?.actions_per_sec);
+    if (!limit || !Number.isFinite(limit) || limit <= 0) return null;
+    const t = nowMs();
+    this.actionStamps = (this.actionStamps ?? []).filter((ts) => t - ts < 1000);
+    if (this.actionStamps.length >= limit) {
+      return TYPE_ERR('permission.denied', `发包速率超限（${limit}/s）`);
+    }
+    this.actionStamps.push(t);
+    return null;
+  }
+
   // 操作者直接发消息/命令（HTTP POST /chat）。
   //
   // 门控口径：「操作者 = console 级」（与 POST /cmd、/eval 同权：HTTP token 持有者能跑任意 Lua，
@@ -1811,6 +1832,7 @@ ${e.stack ?? ''}`);
       const ns = first.includes(':') ? first.split(':').slice(1).join(':') : first;
       const ok = whitelist.includes(first) || whitelist.includes('/' + ns);
       if (!ok) throw TYPE_ERR('permission.denied', `命令白名单不含 /${ns}`);
+      this.checkCommandRegex(text);
     } else {
       // say 限速（令牌桶：say_rate "N/min"）
       const rate = String(this.policy?.chat?.say_rate ?? '10/min');
@@ -1827,6 +1849,33 @@ ${e.stack ?? ''}`);
     }
   }
 
+  // 命令文本的正则黑白名单（boundary.chat.commands_deny / commands_allow）。
+  // 语义：deny 先判，命中即拒；allow 非空时必须命中其一才放行。
+  // 两处都在精确白名单（boundary.chat.commands）之后执行，所以只能**更严**，不可能放宽。
+  // 正则来自部署配置（平台下发），写坏的正则在这里捕获并当拒绝处理，不让它抛到动作层。
+  checkCommandRegex(text) {
+    const deny = this.policy?.chat?.commands_deny ?? [];
+    const allow = this.policy?.chat?.commands_allow ?? [];
+    const matchAny = (pats) => {
+      for (const p of pats) {
+        let re;
+        try { re = new RegExp(String(p)); } catch { return 'bad-pattern'; }
+        if (re.test(text)) return true;
+      }
+      return false;
+    };
+    if (deny.length) {
+      const hit = matchAny(deny);
+      if (hit === 'bad-pattern') throw TYPE_ERR('permission.denied', '命令黑名单正则无效（instance boundary 配置错误）');
+      if (hit) throw TYPE_ERR('permission.denied', '命令命中黑名单（boundary.chat.commands_deny）');
+    }
+    if (allow.length) {
+      const hit = matchAny(allow);
+      if (hit === 'bad-pattern') throw TYPE_ERR('permission.denied', '命令白名单正则无效（instance boundary 配置错误）');
+      if (!hit) throw TYPE_ERR('permission.denied', '命令未命中正则白名单（boundary.chat.commands_allow）');
+    }
+  }
+
   policyCheck(name, args, opts) {
     const policy = this.policy;
     // 观察模式（DESIGN §5.1 默认全拒）：实例未配置 boundary -> 一切动作被拒
@@ -1835,6 +1884,11 @@ ${e.stack ?? ''}`);
     }
     // 授权形态：true / "allow"（或任意非 deny 值）；未配置 = 未授即禁
     const granted = (v) => v !== undefined && v !== null && v !== 'deny' && v !== false && v !== 'false';
+    // 移动总开关（boundary.allow_move）：只对带 mov 标记的动作（nav_goto / nav_follow / hop）生效。
+    // 显式 false 才禁；未配置 = 依各自原有授权（向后兼容）。
+    if (opts?.mov && policy.allow_move === false) {
+      return TYPE_ERR('policy.blocklist', '移动未授权（boundary.allow_move=false）');
+    }
     switch (name) {
       case 'nav_goto':
       case 'nav_follow': {
