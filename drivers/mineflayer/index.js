@@ -461,16 +461,22 @@ export class MineflayerDriver {
     this.bot.chat(text);
   }
 
-  async rot(yaw, pitch) {
+  rot(yaw, pitch) {
     if (!this.connected) return;
     // 引擎/Lua 侧 yaw 是「服务端度数」（0..360）；mineflayer 的 bot.look 用 bot.entity.yaw 坐标系。
     // 换算见 units.js：度数→botYaw，再取最短路径（否则跨 ±π 边界会绕远路，转得又慢又飘）。
-    // bot.look 内部按 maxDeltaYaw 限速推进，不会瞬移视角。
+    //
+    // 不 await：bot.look 内部会先把上一个 lookingTask 结束（= 取消上一次「等转到位」），
+    // 然后把 entity.yaw 设到新目标，之后再等发包追上。这个「等追上」对调用方没有价值——
+    // 高频跟随时目标一直在变，等旧目标到位既浪费时间又会被下一次调用作废。
+    // 实测 await 版本：脚本 100Hz 被压到 ~8Hz，每次阻塞中位 91ms / p90 240ms，
+    // 观感正是「转一下、停住、再转」。改为即发即忘后，发包仍由 mineflayer 按 tick 限速推进
+    // （不会瞬移、不会触发 invalid_player_movement），只是不等它。
     const curYaw = this.bot.entity.yaw;
     let botYaw = curYaw;
     if (yaw != null) botYaw = shortestYaw(serviceDegToBotYaw(yaw), curYaw);
     const botPitch = pitch == null ? this.bot.entity.pitch : Math.max(-Math.PI / 2, Math.min(Math.PI / 2, (-pitch * Math.PI) / 180));
-    await this.bot.look(botYaw, botPitch, false);
+    this.bot.look(botYaw, botPitch, false).catch(() => { /* 转发包期的临时错误不冒泡到动作层 */ });
   }
 
   async hop() {
