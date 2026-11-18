@@ -193,6 +193,10 @@ export class MockDriver {
       held: held ? { ...held } : null, heldSlot: this.heldSlot,
     };
   }
+  // 实时自身查询（与 mineflayer 驱动同契约）
+  query_self() {
+    return this.selfSnapshot();
+  }
 
   async path_cancel() { return; }
 

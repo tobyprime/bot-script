@@ -1349,7 +1349,7 @@ ${e.stack ?? ''}`);
     });
 
     G('__q_self', () => {
-      const s = this.self;
+      const s = this.driver.query_self?.() ?? this.self;
       if (!s) return '{}';
       return JSON.stringify({
         username: s.username ?? null,   // bot 自身用户名（TOB-522 最小暴露；接收门/收款判定默认锚定用）
@@ -1359,7 +1359,7 @@ ${e.stack ?? ''}`);
       });
     });
     G('__q_look', () => {
-      const s = this.self;
+      const s = this.driver.query_self?.() ?? this.self;
       if (!s) return '{}';
       // 脚本侧 0..360 约定
       return JSON.stringify({ yaw: (((s.yaw ?? 0) % 360) + 360) % 360, pitch: s.pitch ?? 0 });
@@ -1373,20 +1373,23 @@ ${e.stack ?? ''}`);
     G('__q_block', (j) => {
       const { pos } = JSON.parse(j || '{}');
       const key = posKey(pos);
-      let hit = this.world.get(key);
-      if (!hit && this.driver.query_block_sync) {
-        const name = this.driver.query_block_sync(pos);
-        if (name) {
-          hit = { name, ts: nowMs() };
-          this.world.set(key, hit);
-        }
+      // 实时优先：直接问驱动当前的方块（未被区块加载时返回 null，才回落到协议流观测到的值）
+      const live = this.driver.query_block_sync?.(pos) ?? null;
+      let hit = null;
+      let stale = false;
+      if (live) {
+        hit = { name: live, ts: nowMs() };
+        this.world.set(key, hit);
+      } else {
+        hit = this.world.get(key);
+        stale = !!hit;
       }
       if (!hit) return '{}';
       return JSON.stringify({
         name: hit.name,
-        is_container: CONTAINER_BLOCKS.has(String(hit.name).replace('minecraft:', '')
-          ? String(hit.name) : String(hit.name)),
+        is_container: CONTAINER_BLOCKS.has(String(hit.name).replace('minecraft:', '')),
         ts: hit.ts,
+        stale,
       });
     });
     G('__q_staleness', (j) => {

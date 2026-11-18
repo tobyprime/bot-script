@@ -172,9 +172,9 @@ entity.find{ type = "minecraft:zombie", equipment = { helmet = "minecraft:diamon
 ```
 P1。
 
-### 3.5 `world` — 世界查询（驱动流式推送 → 引擎快照缓存）
+### 3.5 `world` — 世界查询（实时优先，协议流观测作兜底）
 ```lua
-world.block(pos) -> {name, is_container}
+world.block(pos) -> {name, is_container, stale}  -- 实时读驱动当前方块；区块未加载时回落到观测值并置 stale=true
 world.scan(region, pred, opts) -> [blockpos]  -- pred {type="container"|name 列表}
                                               -- opts {limit, on_progress}；预算受限、异步（③）
 world.raycast(from, dir, max_dist)            -- P2

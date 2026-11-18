@@ -277,17 +277,14 @@ export class MineflayerDriver {
     clearInterval(this.windowTimer);
   }
 
-  pushSelf() {
+  // 自身状态实时查询（同步、直读 bot.entity，脚本查询不经任何缓存）：
+  // 之前 self 是 200ms 定时推送，引擎存缓存，__q_self/__q_look 读缓存 ——
+  // 任何「先读自己位置再算」的逻辑（瞄准角度、距离判断）都会用上最多 200ms 前的坐标，
+  // bot 走动时朝向计算持续偏差。
+  query_self() {
     const bot = this.bot;
-    if (!bot?.entity) return;
-    // 背包快照：主背包(9-35) + 快捷栏(36-44) 共 36 格，供仪表盘可视化
-    const inv = [];
-    for (const it of bot.inventory?.items() ?? []) {
-      if (it.slot >= 9 && it.slot <= 44) {
-        inv.push({ slot: it.slot, id: it.name, count: it.count, name: it.displayName ?? it.name });
-      }
-    }
-    this.emit('self', {
+    if (!bot?.entity) return null;
+    return {
       username: bot.username ?? null,
       pos: { x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z },
       yaw: radToDeg(bot.entity.yaw), pitch: radToDeg(bot.entity.pitch),
@@ -296,8 +293,21 @@ export class MineflayerDriver {
       held: itemOf(bot.heldItem),
       heldSlot: bot.quickBarSlot ?? 0,
       ping: bot.players?.[bot.username]?.ping ?? null,
-      inv,
-    });
+    };
+  }
+
+  pushSelf() {
+    const bot = this.bot;
+    if (!bot?.entity) return;
+    const s = this.query_self();
+    // 背包快照：主背包(9-35) + 快捷栏(36-44) 共 36 格，供仪表盘可视化
+    const inv = [];
+    for (const it of bot.inventory?.items() ?? []) {
+      if (it.slot >= 9 && it.slot <= 44) {
+        inv.push({ slot: it.slot, id: it.name, count: it.count, name: it.displayName ?? it.name });
+      }
+    }
+    this.emit('self', { ...s, inv });
   }
 
   // 实体实时查询（同步、直读 mineflayer 的活体对象，不维护任何快照）：

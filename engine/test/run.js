@@ -523,6 +523,48 @@ test('entity 句柄活读：句柄字段每次访问都取当前值', async () =
     `句柄字段应活读：拿到句柄后目标移动，再读应变（实际 ${first} → ${g(engine, '__R2')}）`);
   await engine.stop();
 });
+test('自身查询是实时的：移动后立刻读到新坐标（不经 200ms 推送缓存）', async () => {
+  script('live-self.lua', `
+    __R = nil
+    task('probe', { single = true }, function()
+      local before = string.format('%.2f', self.pos().x)
+      time.sleep(250)
+      local after = string.format('%.2f', self.pos().x)
+      __R = before .. '|' .. after
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  const { engine } = await makeEngine({ scripts: ['live-self.lua'], driver });
+  await new Promise((r) => setTimeout(r, 60));
+  driver.botPos = { x: 12, y: 64, z: 0 };   // bot 自己移动（不推 self 事件）
+  await waitFor(() => g(engine, '__R') != null, 3000);
+  const [before, after] = String(g(engine, '__R')).split('|');
+  assert.strictEqual(before, '0.00', '第一次读应是初始位置');
+  assert.strictEqual(after, '12.00', `移动后应立即读到新坐标（实际 ${after}）`);
+  await engine.stop();
+});
+
+test('方块查询实时优先：协议未推送也能读到当前方块，读到后标记非陈旧', async () => {
+  script('live-block.lua', `
+    __R = nil
+    task('probe', { single = true }, function()
+      local b = world.block({ x = 5, y = 64, z = 5 })
+      __R = (b and b.name or 'nil') .. '|' .. tostring(b and b.stale)
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  // 只设定驱动侧的世界状态（不 emit block_update → 引擎缓存为空）
+  driver.blocks.set('5,64,5', 'minecraft:chest');
+  const { engine } = await makeEngine({ scripts: ['live-block.lua'], driver });
+  await waitFor(() => g(engine, '__R') != null, 3000);
+  const [name, stale] = String(g(engine, '__R')).split('|');
+  assert.strictEqual(name, 'minecraft:chest', '实时查询应读到方块（缓存为空也不影响）');
+  assert.strictEqual(stale, 'false', '实时命中不应标记为陈旧');
+  await engine.stop();
+});
+
 test('entity.find 按装备名筛选：找戴钻石头盔的僵尸（不暴露槽位索引）', async () => {
   script('equip-find.lua', `
     __R = nil
