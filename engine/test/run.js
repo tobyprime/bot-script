@@ -1555,13 +1555,18 @@ test('bslib.look.at 单轮只发一个视角包（避免 invalid_player_movement
 // 即允许客户端一个 tick 内把视角瞬移到任意角度，原版客户端受鼠标灵敏度约束做不到，
 // 服务端反作弊据此判定非法移动。驱动必须用 force=false，让视角以 yawSpeed 逐步逼近。
 //
-    test('驱动 rot：不得使用 force=true（会绕过 mineflayer 视角限速，被判 invalid_player_movement）', async () => {
+    test('驱动 rot：不得使用 force=true，且不得 await（等转到位会把脚本循环压到 ~7Hz）', async () => {
   const fs = await import('node:fs');
   const src = fs.readFileSync(new URL('../../drivers/mineflayer/index.js', import.meta.url), 'utf8');
-  const rotBody = src.slice(src.indexOf('async rot(yaw, pitch)'), src.indexOf('async hop()'));
+  const start = Math.max(src.indexOf('rot(yaw, pitch) {'), src.indexOf('async rot(yaw, pitch)'));
+  assert.ok(start >= 0, '应能找到 rot 函数体');
+  const rotBody = src.slice(start, src.indexOf('hop() {'));
   assert.ok(rotBody.includes('false'), 'rot 的 bot.look 第三个参数应为 false（限速插值）');
   assert.ok(!/bot\.look\([\s\S]*?true,?\s*\)/.test(rotBody),
     'rot 不得传 force=true：它会直接把 lastSentYaw 赋成目标值，绕过限速');
+  // 高频跟随时目标一直在变，等「旧目标转到位」没有价值，且实测把 100Hz 压到 6.8Hz（每次阻塞 142ms）
+  assert.ok(!/await\s+this\.bot\.look/.test(rotBody),
+    'rot 不得 await bot.look：等转到位会把脚本循环压到 ~7Hz，观感「转一下停住再转」');
 });
 
 // 转向速率（2026-11-18 实测）：mineflayer 默认 physics.yawSpeed=3.0 rad/s →
