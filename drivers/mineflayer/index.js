@@ -2,7 +2,7 @@
 // L0 连接（mineflayer 代劳）+ L1 数据面（通道翻译）+ L2 动词（14 动词映射）+ L3 pathfinder。
 // 与引擎的事件/方法契约见 engine/engine.js 顶部注释与 README。
 import { Vec3 } from 'vec3';
-import { degToRad, radToDeg } from './units.js';
+import { degToRad, radToDeg, serviceDegToBotYaw, shortestYaw } from './units.js';
 import { reasonText } from './reason.js';
 
 import { installProtocolTrace } from './protocolTrace.js';
@@ -224,9 +224,12 @@ export class MineflayerDriver {
     bot.on('forcedMove', () => this.pushSelf());
     bot.on('health', () => this.pushSelf());
     bot.on('entitySwingArm', () => this.pushSelf());
-    // 实体：250ms 全量快照批（最后值胜语义由引擎消费）
+    // 实体：250ms 全量快照批（最后值胜语义由引擎消费）。
+    // 出现/消失立即补推一次：否则新玩家进视野最长要等一拍（250ms），叠加脚本循环周期
+    // 后感知上就是「站到旁边一两秒才转头」。
     this.entityTimer = setInterval(() => this.pushEntities(), 250);
-    bot.on('entityGone', (e) => this.pushEntities());
+    bot.on('entityGone', () => this.pushEntities());
+    bot.on('entitySpawn', () => this.pushEntities());
     // 窗口
     this.pushInventory();   // 初始背包快照（保证引擎 windows['0'] 存在）
     if (process.env.BS_PK) {
@@ -416,11 +419,11 @@ export class MineflayerDriver {
   async rot(yaw, pitch) {
     if (!this.connected) return;
     // 引擎/Lua 侧 yaw 是「服务端度数」（0..360）；mineflayer 的 bot.look 用 bot.entity.yaw 坐标系。
-    // mineflayer 内部：bot.entity.yaw = euclideanMod(π - deg2rad(服务端yaw), 2π)，pitch = -deg2rad(pitch)。
-    // 换算后再调 bot.look；它内部按 maxDeltaYaw 限速推进，不会瞬移视角。
-    const PI2 = Math.PI * 2;
-    const toBotYaw = (deg) => ((((Math.PI - (deg * Math.PI) / 180) % PI2) + PI2) % PI2);
-    const botYaw = yaw == null ? this.bot.entity.yaw : toBotYaw(yaw);
+    // 换算见 units.js：度数→botYaw，再取最短路径（否则跨 ±π 边界会绕远路，转得又慢又飘）。
+    // bot.look 内部按 maxDeltaYaw 限速推进，不会瞬移视角。
+    const curYaw = this.bot.entity.yaw;
+    let botYaw = curYaw;
+    if (yaw != null) botYaw = shortestYaw(serviceDegToBotYaw(yaw), curYaw);
     const botPitch = pitch == null ? this.bot.entity.pitch : Math.max(-Math.PI / 2, Math.min(Math.PI / 2, (-pitch * Math.PI) / 180));
     await this.bot.look(botYaw, botPitch, false);
   }
