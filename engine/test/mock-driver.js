@@ -64,29 +64,43 @@ export class MockDriver {
       id, type: 'player', name, pos: { ...pos }, alive: true, health: null,
       equipment: { hand: held },
     });
-    this.pushEntities();
+    this.emit('entity_appeared', { id, type: 'player', name });
+    return id;
+  }
+  // 任意实体（含装备）：type 用规范 id（如 'minecraft:zombie'），equipment 用部件名
+  addEntity(type, pos, opts = {}) {
+    const id = this.nextEntityId++;
+    this.entities.set(String(id), {
+      id, type, name: opts.name ?? null, pos: { ...pos }, alive: opts.alive !== false,
+      health: null, equipment: opts.equipment ?? {},
+    });
+    this.emit('entity_appeared', { id, type, name: opts.name ?? null });
     return id;
   }
   setPlayerHeld(name, held) {
     for (const e of this.entities.values()) {
       if (e.name === name) { e.equipment = { hand: held }; }
     }
-    this.pushEntities();
   }
   movePlayer(name, pos) {
     for (const e of this.entities.values()) {
       if (e.name === name) e.pos = { ...pos };
     }
-    this.pushEntities();
   }
   removePlayer(name) {
     for (const [id, e] of [...this.entities]) {
-      if (e.name === name) this.entities.delete(id);
+      if (e.name === name) {
+        this.entities.delete(id);
+        this.emit('entity_gone', { id: e.id, type: e.type, name: e.name });
+      }
     }
-    this.pushEntities();
   }
-  pushEntities() {
-    this.emit('entities', { list: [...this.entities.values()] });
+  // 实时查询（与 mineflayer 驱动同契约：直读当前状态，无快照层）
+  query_entities() {
+    return [...this.entities.values()];
+  }
+  query_entity(id) {
+    return this.entities.get(String(id)) ?? null;
   }
   playerSay(name, text) {
     this.emit('chat', { text, raw: `<${name}> ${text}`, sender: name, sender_kind: 'player', ts: Date.now() });
@@ -178,6 +192,10 @@ export class MockDriver {
       health: this.botHealth, food: this.botFood, gamemode: 'survival',
       held: held ? { ...held } : null, heldSlot: this.heldSlot,
     };
+  }
+  // 实时自身查询（与 mineflayer 驱动同契约）
+  query_self() {
+    return this.selfSnapshot();
   }
 
   async path_cancel() { return; }
@@ -405,7 +423,6 @@ export class MockDriver {
     this.emit('session', { state: 'playing', info: { version: '1.21.8', brand: 'mock' } });
     this.emit('self', this.selfSnapshot());
     this.pushInventory();
-    this.pushEntities();
   }
   async stop() {}
 }

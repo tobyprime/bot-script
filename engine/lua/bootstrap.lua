@@ -836,6 +836,19 @@ local function pred_match(s, pred)
     local h = s.equipment and s.equipment.hand
     if not (h and h.id == pred.holding) then return false end
   end
+  -- 装备谓词：按部件名匹配，与 s.equipment.<部件>.id 同一口径。
+  --   entity.find{ type = "minecraft:zombie", equipment = { helmet = "minecraft:diamond_helmet" } }
+  -- 未指定的部件不约束；显式写 false 表示「该部件必须为空」（例如找没戴头盔的僵尸）。
+  if pred.equipment then
+    for slot, want in pairs(pred.equipment) do
+      local got = s.equipment and s.equipment[slot]
+      if want == false then
+        if got ~= nil then return false end
+      elseif type(want) == "string" then
+        if not (got and got.id == want) then return false end
+      end
+    end
+  end
   if pred.region then
     local p, r = s.pos, pred.region
     if not p then return false end

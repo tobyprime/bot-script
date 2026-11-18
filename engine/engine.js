@@ -359,7 +359,6 @@ export class BotEngine {
     this.paused = false;
     this.pauseReason = null;
 
-    this.entities = new Map();    // id -> snapshot
     this.windows = new Map();     // id -> {id,type,title,size,slots:Map,cursor,revision,ts}
     this.currentWindowId = null;  // 打开的容器（null = 只有背包）
     this.self = null;             // {pos,yaw,pitch,health,food,held,heldSlot,gamemode,ts}
@@ -413,7 +412,8 @@ export class BotEngine {
     this.driver.on('session', (p) => this.onSession(p));
     this.driver.on('chat', (p) => this.onChat(p));
     this.driver.on('self', (p) => this.onSelf(p));
-    this.driver.on('entities', (p) => this.onEntities(p));
+    this.driver.on('entity_appeared', (p) => this.event('entity.appeared', p));
+    this.driver.on('entity_gone', (p) => this.event('entity.gone', p));
     this.driver.on('window', (p) => this.onWindow(p));
     this.driver.on('window_close', (p) => this.onWindowClose(p));
     this.driver.on('block_update', (p) => {
@@ -511,7 +511,7 @@ export class BotEngine {
     }
     if ((p.state === 'kicked' || p.state === 'disconnected') && !this.stopped) {
       this.log('warn', `[${this.name}] 会话 ${p.state}: ${p.reason ?? ''} -> 自动 pause`);
-      // 会话已终：旧会话缓存（entities/windows/world）全部失效，重连后由新会话重建
+      // 会话已终：旧会话缓存（windows/world）全部失效，重连后由新会话重建
       this.invalidateSessionCache();
       this.pause(p.state === 'kicked' ? 'kicked' : 'disconnect');
       this.scheduleReconnect();   // 基础能力：自动重连（退避 30s→120s 封顶，±20% jitter）
@@ -519,7 +519,6 @@ export class BotEngine {
   }
 
   invalidateSessionCache() {
-    this.entities.clear();
     this.windows.clear();
     this.currentWindowId = null;
     this.world.clear();
@@ -657,26 +656,6 @@ export class BotEngine {
     const [a, b] = fence;
     return pos.x >= Math.min(a[0], b[0]) && pos.x <= Math.max(a[0], b[0])
         && pos.z >= Math.min(a[1], b[1]) && pos.z <= Math.max(a[1], b[1]);
-  }
-
-  onEntities(p) {
-    const now = nowMs();
-    const seen = new Set();
-    for (const s of (p.list ?? [])) {
-      seen.add(String(s.id));
-      const prev = this.entities.get(String(s.id));
-      this.entities.set(String(s.id), { ...s, ts: now });
-      if (!prev) this.event('entity.appeared', { id: s.id, type: s.type, name: s.name });
-    }
-    if (!this.entitiesPruneAt || now > this.entitiesPruneAt) {
-      this.entitiesPruneAt = now + 3000;
-      for (const [id, s] of this.entities) {
-        if (!seen.has(id) && now - (s.ts ?? 0) > 5000) {
-          this.entities.delete(id);
-          this.event('entity.gone', { id: s.id, type: s.type, name: s.name });
-        }
-      }
-    }
   }
 
   onWindow(p) {
@@ -1370,7 +1349,7 @@ ${e.stack ?? ''}`);
     });
 
     G('__q_self', () => {
-      const s = this.self;
+      const s = this.driver.query_self?.() ?? this.self;
       if (!s) return '{}';
       return JSON.stringify({
         username: s.username ?? null,   // bot 自身用户名（TOB-522 最小暴露；接收门/收款判定默认锚定用）
@@ -1380,38 +1359,37 @@ ${e.stack ?? ''}`);
       });
     });
     G('__q_look', () => {
-      const s = this.self;
+      const s = this.driver.query_self?.() ?? this.self;
       if (!s) return '{}';
       // 脚本侧 0..360 约定
       return JSON.stringify({ yaw: (((s.yaw ?? 0) % 360) + 360) % 360, pitch: s.pitch ?? 0 });
     });
-    G('__q_entities', () => {
-      const list = [];
-      for (const e of this.entities.values()) list.push(e);
-      return JSON.stringify(list);
-    });
+    G('__q_entities', () => JSON.stringify(this.driver.query_entities?.() ?? []));
     G('__q_entity_snap', (j) => {
       const { id } = JSON.parse(j || '{}');
-      const e = this.entities.get(String(id));
+      const e = this.driver.query_entity?.(String(id));
       return e ? JSON.stringify(e) : '';
     });
     G('__q_block', (j) => {
       const { pos } = JSON.parse(j || '{}');
       const key = posKey(pos);
-      let hit = this.world.get(key);
-      if (!hit && this.driver.query_block_sync) {
-        const name = this.driver.query_block_sync(pos);
-        if (name) {
-          hit = { name, ts: nowMs() };
-          this.world.set(key, hit);
-        }
+      // 实时优先：直接问驱动当前的方块（未被区块加载时返回 null，才回落到协议流观测到的值）
+      const live = this.driver.query_block_sync?.(pos) ?? null;
+      let hit = null;
+      let stale = false;
+      if (live) {
+        hit = { name: live, ts: nowMs() };
+        this.world.set(key, hit);
+      } else {
+        hit = this.world.get(key);
+        stale = !!hit;
       }
       if (!hit) return '{}';
       return JSON.stringify({
         name: hit.name,
-        is_container: CONTAINER_BLOCKS.has(String(hit.name).replace('minecraft:', '')
-          ? String(hit.name) : String(hit.name)),
+        is_container: CONTAINER_BLOCKS.has(String(hit.name).replace('minecraft:', '')),
         ts: hit.ts,
+        stale,
       });
     });
     G('__q_staleness', (j) => {
@@ -1914,7 +1892,7 @@ ${e.stack ?? ''}`);
         if (!cp || !cp.targets) {
           return TYPE_ERR('policy.blocklist', 'combat 未授权（boundary.combat.targets）');
         }
-        const e = this.entities.get(String(args.id));
+        const e = this.driver.query_entity?.(String(args.id));
         if (!e) return TYPE_ERR('entity.gone', String(args.id));
         if (!String(e.type).includes(String(cp.targets))) {
           return TYPE_ERR('policy.blocklist', `combat.targets=${cp.targets} 不含 ${e.type}`);
@@ -1978,7 +1956,7 @@ ${e.stack ?? ''}`);
     const target = a.target;
     if (!target || target.x === undefined) {
       // 实体目标：取活位置
-      const e = this.entities.get(String(a.target?.id ?? a.target));
+      const e = this.driver.query_entity?.(String(a.target?.id ?? a.target));
       if (!e) {
         h.reject(TYPE_ERR('entity.gone', 'nav.walk 目标实体不存在'));
         return h;
@@ -2069,13 +2047,13 @@ ${e.stack ?? ''}`);
   navFollow(a, h) {
     const opts = a.opts ?? {};
     const want = opts.distance ?? 2;
-    const e = this.entities.get(String(a.entity_id));
+    const e = this.driver.query_entity?.(String(a.entity_id));
     if (!e) { h.resolve({ ok: false, reason: 'entity.gone' }); return h; }
     let alive = true;
     h.onCancel = () => { alive = false; this.driver.path_cancel?.(); };
     const loop = async () => {
       while (alive && !this.stopped) {
-        const cur = this.entities.get(String(a.entity_id));
+        const cur = this.driver.query_entity?.(String(a.entity_id));
         if (!cur || cur.alive === false) {
           alive = false;
           h.resolve({});

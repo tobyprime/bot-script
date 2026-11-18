@@ -155,20 +155,26 @@ inv.click(slot, opts) inv.cursor()  -- 背包窗口点击 / 光标查询：背�
 ```
 P0: count/has/held/slots；P1: equip/equip_best/drop/find/click/cursor。
 
-### 3.4 `entity` — 实体查询（读引擎实体缓存）
+### 3.4 `entity` — 实体查询（实时读驱动，无缓存层）
 ```lua
-entity.find(pred) -> [entity]     -- pred {type=, name=, uuid=, alive=, within=, region=, holding=item_id}
-                                  --   holding：主手物品 id，来自 equipment 流（协议端由 equipment 包维护；不可得时该谓词不匹配并打日志）
+entity.find(pred) -> [entity]     -- pred {type=, name=, uuid=, alive=, within=, region=, holding=item_id,
+                                  --       equipment={helmet/chestplate/leggings/boots/offhand/hand = item_id|false}}
+                                  --   holding：主手物品 id（= equipment.hand）
+                                  --   equipment：按部件名匹配；写 false = 该部件必须为空
 entity.nearest(pred) -> entity?   -- ②
 e.pos e.health e.alive            -- 动态字段活读；health 可能为 unknown（协议端看玩家血量）
+e.equipment.hand/.offhand/.boots/.leggings/.chestplate/.helmet   -- 每件 item 或 nil（槽位索引不外露）
 e:snapshot() e:id() e:exists()
 -- 事件（可选订阅）：entity.appeared / entity.gone
+
+-- 找头上戴钻石头盔的僵尸：
+entity.find{ type = "minecraft:zombie", equipment = { helmet = "minecraft:diamond_helmet" } }
 ```
 P1。
 
-### 3.5 `world` — 世界查询（驱动流式推送 → 引擎快照缓存）
+### 3.5 `world` — 世界查询（实时优先，协议流观测作兜底）
 ```lua
-world.block(pos) -> {name, is_container}
+world.block(pos) -> {name, is_container, stale}  -- 实时读驱动当前方块；区块未加载时回落到观测值并置 stale=true
 world.scan(region, pred, opts) -> [blockpos]  -- pred {type="container"|name 列表}
                                               -- opts {limit, on_progress}；预算受限、异步（③）
 world.raycast(from, dir, max_dist)            -- P2

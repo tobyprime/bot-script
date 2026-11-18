@@ -471,27 +471,177 @@ test('观察模式：无 boundary 一切动作被拒、查询与 params 可用',
   await engine.stop();
 });
 
-test('entity.nearest：近距离玩家（<0.5 格）不得被当成自身排除', async () => {
-  // 曾经按 d²<0.25 硬排除（本意是剔除 fabric 快照里的自身实体），但两个驱动都已过滤自身，
-  // 结果变成「站到 bot 旁边反而看不见目标」——转向延迟的一个成因。
-  for (const dx of [0.1, 0.3, 0.49, 0.5, 1]) {
-    script(`near-${String(dx).replace('.', '_')}.lua`, `
-      __R_hit = nil
-      on_start(function()
-        task.spawn(function()
-          local e = entity.nearest{ type = 'player', alive = true, within = 10 }
-          __R_hit = e and e.name or 'nil'
-        end)
-      end)
-    `);
-    const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
-    driver.addPlayer('Close', { x: dx, y: 64, z: 0 });
-    const { engine } = await makeEngine({ scripts: [`near-${String(dx).replace('.', '_')}.lua`], driver });
-    assert.ok(await waitFor(() => g(engine, '__R_hit') != null, 5000), `dx=${dx} 应能查到目标`);
-    assert.strictEqual(g(engine, '__R_hit'), 'Close', `dx=${dx} 格的目标不应被排除`);
-    await engine.stop();
+test('entity 查询是实时的：查询之间的目标移动立即可见（不经任何缓存层）', async () => {
+  script('live-ent.lua', `
+    __R_snaps = {}
+    task('probe', { single = true }, function()
+      for i = 1, 4 do
+        local e = entity.nearest{ type = 'player', alive = true, within = 30 }
+        __R_snaps[#__R_snaps + 1] = e and string.format('%.2f', e.pos.x) or 'nil'
+        time.sleep(150)
+      end
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addPlayer('Mover', { x: 1, y: 64, z: 0 });
+  const { engine } = await makeEngine({ scripts: ['live-ent.lua'], driver });
+
+  // 每轮查询之间挪动目标：有采样层的话读到的 x 会一直是同一个值
+  let moved = 0;
+  for (let round = 0; round < 3; round++) {
+    await waitFor(() => (g(engine, '__R_snaps') ?? []).length > moved, 3000);
+    moved += 1;
+    driver.movePlayer('Mover', { x: moved + 1, y: 64, z: 0 });
   }
+  await waitFor(() => (g(engine, '__R_snaps') ?? []).length >= 4, 3000);
+  const snaps = (g(engine, '__R_snaps') ?? []).map(String);
+  assert.ok(new Set(snaps).size >= 3, `目标持续移动时每轮应读到新位置，实际读到 ${JSON.stringify(snaps)}`);
+  await engine.stop();
 });
+
+test('entity 句柄活读：句柄字段每次访问都取当前值', async () => {
+  script('halt-ent.lua', `
+    __R = nil
+    task('grab', { single = true }, function()
+      local e = entity.nearest{ type = 'player', alive = true, within = 30 }
+      if not e then __R = 'no-entity' return end
+      __R = string.format('%.2f', e.pos.x)     -- 先记下拿到句柄时的位置
+      time.sleep(300)
+      __R2 = string.format('%.2f', e.pos.x)    -- 句柄仍是同一个，字段再读一次
+    end)
+    on_start(function() task.spawn('grab') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addPlayer('Mover', { x: 1, y: 64, z: 0 });
+  const { engine } = await makeEngine({ scripts: ['halt-ent.lua'], driver });
+  await waitFor(() => g(engine, '__R') != null, 3000);
+  const first = String(g(engine, '__R'));
+  driver.movePlayer('Mover', { x: 7, y: 64, z: 0 });   // 句柄已持有，挪动目标
+  await waitFor(() => g(engine, '__R2') != null, 3000);
+  assert.notStrictEqual(String(g(engine, '__R2')), first,
+    `句柄字段应活读：拿到句柄后目标移动，再读应变（实际 ${first} → ${g(engine, '__R2')}）`);
+  await engine.stop();
+});
+test('自身查询是实时的：移动后立刻读到新坐标（不经 200ms 推送缓存）', async () => {
+  script('live-self.lua', `
+    __R = nil
+    task('probe', { single = true }, function()
+      local before = string.format('%.2f', self.pos().x)
+      time.sleep(250)
+      local after = string.format('%.2f', self.pos().x)
+      __R = before .. '|' .. after
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  const { engine } = await makeEngine({ scripts: ['live-self.lua'], driver });
+  await new Promise((r) => setTimeout(r, 60));
+  driver.botPos = { x: 12, y: 64, z: 0 };   // bot 自己移动（不推 self 事件）
+  await waitFor(() => g(engine, '__R') != null, 3000);
+  const [before, after] = String(g(engine, '__R')).split('|');
+  assert.strictEqual(before, '0.00', '第一次读应是初始位置');
+  assert.strictEqual(after, '12.00', `移动后应立即读到新坐标（实际 ${after}）`);
+  await engine.stop();
+});
+
+test('方块查询实时优先：协议未推送也能读到当前方块，读到后标记非陈旧', async () => {
+  script('live-block.lua', `
+    __R = nil
+    task('probe', { single = true }, function()
+      local b = world.block({ x = 5, y = 64, z = 5 })
+      __R = (b and b.name or 'nil') .. '|' .. tostring(b and b.stale)
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  // 只设定驱动侧的世界状态（不 emit block_update → 引擎缓存为空）
+  driver.blocks.set('5,64,5', 'minecraft:chest');
+  const { engine } = await makeEngine({ scripts: ['live-block.lua'], driver });
+  await waitFor(() => g(engine, '__R') != null, 3000);
+  const [name, stale] = String(g(engine, '__R')).split('|');
+  assert.strictEqual(name, 'minecraft:chest', '实时查询应读到方块（缓存为空也不影响）');
+  assert.strictEqual(stale, 'false', '实时命中不应标记为陈旧');
+  await engine.stop();
+});
+
+test('entity.find 按装备名筛选：找戴钻石头盔的僵尸（不暴露槽位索引）', async () => {
+  script('equip-find.lua', `
+    __R = nil
+    task('probe', { single = true }, function()
+      local list = entity.find({ type = 'minecraft:zombie', equipment = { helmet = 'minecraft:diamond_helmet' } })
+      local names = {}
+      for _, e in ipairs(list) do names[#names + 1] = tostring(e.pos.x) end
+      __R_found = #list
+      __R_xs = table.concat(names, ',')
+      -- 谓词组合：头盔 + 主手，且必须不戴胸甲的
+      local list2 = entity.find({
+        type = 'minecraft:zombie',
+        equipment = { helmet = 'minecraft:diamond_helmet', chestplate = false },
+      })
+      __R_found2 = #list2
+      -- 读部件：e.equipment.helmet.id
+      local one = entity.nearest({ type = 'minecraft:zombie', equipment = { helmet = 'minecraft:diamond_helmet' } })
+      __R_helmet = one and one.equipment and one.equipment.helmet and one.equipment.helmet.id or 'nil'
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addEntity('minecraft:zombie', { x: 2, y: 64, z: 0 }, { equipment: { helmet: { id: 'minecraft:diamond_helmet', count: 1 } } });
+  driver.addEntity('minecraft:zombie', { x: 4, y: 64, z: 0 }, { equipment: { helmet: { id: 'minecraft:iron_helmet', count: 1 } } });
+  driver.addEntity('minecraft:zombie', { x: 6, y: 64, z: 0 }, { equipment: {} });
+  driver.addEntity('minecraft:zombie', { x: 8, y: 64, z: 0 }, {
+    equipment: {
+      helmet: { id: 'minecraft:diamond_helmet', count: 1 },
+      chestplate: { id: 'minecraft:diamond_chestplate', count: 1 },
+    },
+  });
+  driver.addEntity('minecraft:skeleton', { x: 3, y: 64, z: 0 }, { equipment: { helmet: { id: 'minecraft:diamond_helmet', count: 1 } } });
+
+  const { engine } = await makeEngine({ scripts: ['equip-find.lua'], driver });
+  assert.ok(await waitFor(() => g(engine, '__R_found') != null && g(engine, '__R_helmet') != null, 5000), '查询应完成');
+  assert.strictEqual(g(engine, '__R_found'), 2, '两个僵尸戴钻石头盔（x=2 与 x=8），骷髅不算');
+  assert.strictEqual(String(g(engine, '__R_xs')), '2,8', '命中的是两个戴钻石头盔的僵尸');
+  assert.strictEqual(g(engine, '__R_found2'), 1, '再要求不戴胸甲 → 只剩 x=2');
+  assert.strictEqual(String(g(engine, '__R_helmet')), 'minecraft:diamond_helmet', 'e.equipment.helmet.id 应可读');
+  await engine.stop();
+});
+
+test('entity 句柄装备按名字暴露：hand/offhand/boots/leggings/chestplate/helmet', async () => {
+  script('equip-slots.lua', `
+    __R = nil
+    task('probe', { single = true }, function()
+      local e = entity.nearest({ type = 'minecraft:zombie' })
+      if not e then __R = 'no-entity' return end
+      local parts = {}
+      for _, k in ipairs({ 'hand', 'offhand', 'boots', 'leggings', 'chestplate', 'helmet' }) do
+        local it = e.equipment and e.equipment[k]
+        parts[#parts + 1] = k .. '=' .. (it and it.id or 'nil')
+      end
+      __R = table.concat(parts, ' ')
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addEntity('minecraft:zombie', { x: 2, y: 64, z: 0 }, {
+    equipment: {
+      hand: { id: 'minecraft:iron_sword', count: 1 },
+      offhand: { id: 'minecraft:shield', count: 1 },
+      boots: { id: 'minecraft:leather_boots', count: 1 },
+      leggings: { id: 'minecraft:leather_leggings', count: 1 },
+      chestplate: { id: 'minecraft:leather_chestplate', count: 1 },
+      helmet: { id: 'minecraft:diamond_helmet', count: 1 },
+    },
+  });
+  const { engine } = await makeEngine({ scripts: ['equip-slots.lua'], driver });
+  await waitFor(() => g(engine, '__R') != null, 5000);
+  const r = String(g(engine, '__R'));
+  assert.ok(r.includes('helmet=minecraft:diamond_helmet'), `头盔应按名字可读，实际 ${r}`);
+  assert.ok(r.includes('chestplate=minecraft:leather_chestplate'), `胸甲应可读，实际 ${r}`);
+  assert.ok(r.includes('offhand=minecraft:shield'), `副手应可读，实际 ${r}`);
+  await engine.stop();
+});
+
 test('boundary 安全边界：移动总开关 allow_move=false 同时禁用 nav/hop', async () => {
   script('t-move.lua', `
     __R_nav_err = nil
@@ -875,7 +1025,7 @@ test('events：pushEvent 直付等待者、FIFO 排队、空队超时 nil', asyn
 // 10. 断线重连健壮化（TOB-475）
 // ============================================================
 
-test('断线缓存失效：entities/windows/world 旧会话数据清空，重连 playing 后自动 resume 不残留', async () => {
+test('断线缓存失效：world/windows 旧会话数据清空，重连 playing 后自动 resume 不残留', async () => {
   script('t12.lua', `
     __R_ready2 = false
     on_start(function() end)
@@ -887,17 +1037,18 @@ test('断线缓存失效：entities/windows/world 旧会话数据清空，重连
     runtime: { reconnect: { base_ms: 60, max_ms: 200 } },
   });
   await new Promise((r) => setTimeout(r, 50));
-  // 旧会话数据面：实体 / 世界方块 / 容器窗口
+  // 旧会话数据面：世界方块 / 容器窗口
   driver.addPlayer('Ghost', { x: 1, y: 64, z: 1 });
   driver.emit('block_update', { pos: { x: 3, y: 64, z: 3 }, name: 'minecraft:chest' });
   driver.emit('window', { id: '42', type: 'chest', title: '旧箱', size: 27, slots: [{ index: 0, item: { id: 'minecraft:dirt', count: 1 } }] });
-  assert.ok(engine.entities.size > 0 && engine.world.size > 0 && engine.windows.size > 0, '前置：旧会话缓存已灌入');
+  assert.ok(engine.world.size > 0 && engine.windows.size > 0, '前置：旧会话缓存已灌入');
+  assert.ok(await waitFor(() => engine.luaFn('__q_entities')() && JSON.parse(engine.luaFn('__q_entities')()).some((e) => e.name === 'Ghost'), 3000),
+    '前置：旧会话实体可查');
 
   driver.emit('session', { state: 'disconnected', reason: 'server closed' });
   await new Promise((r) => setTimeout(r, 20));
   assert.strictEqual(engine.paused, true, '断线应自动 pause');
   assert.strictEqual(engine.pauseReason, 'disconnect');
-  assert.strictEqual(engine.entities.size, 0, 'entities 旧会话残留应清空');
   assert.strictEqual(engine.windows.size, 0, 'windows 旧会话残留应清空');
   assert.strictEqual(engine.currentWindowId, null, 'currentWindowId 应复位');
   assert.strictEqual(engine.world.size, 0, 'world 旧会话方块观测应清空');
@@ -909,8 +1060,10 @@ test('断线缓存失效：entities/windows/world 旧会话数据清空，重连
   driver.addPlayer('Fresh', { x: 9, y: 64, z: 9 });
   assert.strictEqual(engine.reconAttempts, 0, 'playing 后 attempts 应清零');
   assert.strictEqual(engine.paused, false, '重连成功应自动 resume');
-  assert.ok(await waitFor(() => engine.entities.size === 1 && [...engine.entities.values()].some((e) => e.name === 'Fresh'), 3000),
-    '新会话实体面只含新会话数据');
+  assert.ok(await waitFor(() => {
+    const list = JSON.parse(engine.luaFn('__q_entities')() || '[]');
+    return list.length === 1 && list[0].name === 'Fresh';
+  }, 3000), '新会话实体面只含新会话数据');
   await engine.stop();
 });
 
