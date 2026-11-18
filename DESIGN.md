@@ -350,10 +350,21 @@ account: bot1                      # 凭据：用户名（offline）| {username,
                                    # | {auth: session, username, uuid, accessToken}（托管平台注入，引擎不做 OAuth）
 boundary:                          # 授权边界：默认全拒，未授即禁（§5.1）
   fence: [[80,-30],[140,20]]
+  allow_move: true                 # 移动总开关：false 同时禁用 nav_goto/nav_follow/hop
   blocks: { dig: deny, place: deny }
-  chat: { say_rate: "6/min", commands: ["/pay"] }
+  rate: { actions_per_sec: 20 }    # 每秒发包上限；省略 = 不限（与 budget.actions_per_hour 分工不同）
+  chat:
+    say_rate: "6/min"
+    commands: ["/msg", "/pay"]                # 精确白名单（先判）
+    commands_deny: ["^/gamemode\\s+creative"] # 正则黑名单（命中即拒，先于 allow）
+    commands_allow: ["^/msg\\s+.*"]           # 正则白名单（非空时必须命中其一）
+  budget: { actions_per_hour: 20000 }         # 每小时总量；超额整实例 pause
   authority: { op: ["Steve"] }
 ```
+
+**边界分层**：`chat.commands`（精确）→ `commands_deny`（正则）→ `commands_allow`（正则），逐层只能更严，
+配置写宽也无法绕过前一层。速率限制只丢弃当次动作（脚本收到 `permission.denied` 可退避），
+`budget.actions_per_hour` 则超额暂停整个实例。
 
 **不多配的**：业务参数不在部署配置里——包给默认，运行期经控制渠道设置后持久化，持久化值即实例事实；
 HTTP API 是宿主常开能力（只绑 127.0.0.1、默认端口冲突自动顺延、token 启动时生成并打印到控制台/日志），

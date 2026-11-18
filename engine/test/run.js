@@ -471,6 +471,130 @@ test('观察模式：无 boundary 一切动作被拒、查询与 params 可用',
   await engine.stop();
 });
 
+test('boundary 安全边界：移动总开关 allow_move=false 同时禁用 nav/hop', async () => {
+  script('t-move.lua', `
+    __R_nav_err = nil
+    __R_hop_err = nil
+    task("mover", function()
+      local ok, err = pcall(function() nav.walk({ x = 30, y = 64, z = 30 }, { timeout = 5 }) end)
+      if not ok and type(err) == "table" then __R_nav_err = err.kind end
+      local ok2, err2 = pcall(function() nav.hop() end)
+      if not ok2 and type(err2) == "table" then __R_hop_err = err2.kind end
+    end)
+    on_start(function() task.spawn("mover") end)
+  `);
+  const { engine } = await makeEngine({ scripts: ['t-move.lua'], boundary: { allow_move: false } });
+  assert.ok(await waitFor(() => g(engine, '__R_hop_err') !== undefined, 5000), 'hop 应被拒');
+  assert.strictEqual(g(engine, '__R_hop_err'), 'policy.blocklist', 'allow_move=false：hop 必须 policy.blocklist');
+  assert.strictEqual(g(engine, '__R_nav_err'), 'policy.blocklist', 'allow_move=false：nav 必须 policy.blocklist');
+  await engine.stop();
+
+  // 未配置 allow_move = 依各自授权（向后兼容），hop 放行
+  script('t-move2.lua', `
+    __R_hop_err = nil
+    task("mover", function()
+      local ok2, err2 = pcall(function() nav.hop() end)
+      if not ok2 and type(err2) == "table" then __R_hop_err = err2.kind end
+    end)
+    on_start(function() task.spawn("mover") end)
+  `);
+  const { engine: e2 } = await makeEngine({ scripts: ['t-move2.lua'], boundary: {} });
+  await new Promise((r) => setTimeout(r, 500));
+  assert.ok(!g(e2, '__R_hop_err'), '未配置 allow_move 时 hop 不应被拒');
+  await e2.stop();
+});
+
+test('boundary 发包速率：rate.actions_per_sec 超限拒绝，未配置不限', async () => {
+  script('t-rate.lua', `
+    __R_errs = 0
+    __R_ok = 0
+    task("spam", function()
+      for i = 1, 30 do
+        -- 用会等待结果的动作（hop 走 call_action 并 yield），fire-and-forget 的 look.yaw 测不到限流
+        local ok = pcall(function() nav.hop() end)
+        if ok then __R_ok = __R_ok + 1 else __R_errs = __R_errs + 1 end
+      end
+    end)
+    on_start(function() task.spawn("spam") end)
+  `);
+  const { engine } = await makeEngine({ scripts: ['t-rate.lua'], boundary: { rate: { actions_per_sec: 10 } } });
+  await waitFor(() => (g(engine, '__R_ok') ?? 0) + (g(engine, '__R_errs') ?? 0) >= 30, 5000);
+  const ok = g(engine, '__R_ok') ?? 0;
+  const errs = g(engine, '__R_errs') ?? 0;
+  assert.ok(errs > 0, `超过 10/s 应被拒，实际 ok=${ok} errs=${errs}`);
+  assert.ok(ok <= 12, `1 秒内最多放行 ~10 个（含边界容忍），实际 ${ok}`);
+  await engine.stop();
+
+  // 未配置速率 = 不限，全部放行
+  script('t-rate2.lua', `
+    __R_ok = 0
+    task("spam", function()
+      for i = 1, 30 do
+        if pcall(function() nav.hop() end) then __R_ok = __R_ok + 1 end
+      end
+    end)
+    on_start(function() task.spawn("spam") end)
+  `);
+  const { engine: e2 } = await makeEngine({ scripts: ['t-rate2.lua'], boundary: {} });
+  await waitFor(() => g(e2, '__R_ok') === 30, 5000);
+  assert.strictEqual(g(e2, '__R_ok'), 30, '未配置速率时不得限流');
+  await e2.stop();
+});
+
+test('boundary 命令正则：commands_deny 优先拒绝，commands_allow 必须命中', async () => {
+  script('t-cmd.lua', `
+    __R_denied = nil
+    __R_allowed = nil
+    task("runner", function()
+      for _, cmd in ipairs({ "/pay Steve 100", "/gamemode creative", "/msg Steve hi" }) do
+        local ok, err = pcall(function() chat.run_command(cmd) end)
+        if cmd == "/pay Steve 100" then __R_pay = ok and "ok" or (type(err) == "table" and err.kind or "err") end
+        if cmd == "/gamemode creative" then __R_gm = ok and "ok" or (type(err) == "table" and err.kind or "err") end
+        if cmd == "/msg Steve hi" then __R_msg = ok and "ok" or (type(err) == "table" and err.kind or "err") end
+      end
+    end)
+    on_start(function() task.spawn("runner") end)
+  `);
+  const boundary = {
+    chat: {
+      commands: ['/pay', '/gamemode', '/msg'],     // 精确白名单先放行
+      commands_deny: ['^/gamemode\\s+creative'],   // 黑名单拦截其中一种用法
+    },
+  };
+  const { engine } = await makeEngine({ scripts: ['t-cmd.lua'], boundary });
+  assert.ok(await waitFor(() => g(engine, '__R_msg') != null, 5000), '三个命令应都有结果');
+  assert.strictEqual(g(engine, '__R_pay'), 'ok', '/pay 应放行');
+  assert.strictEqual(g(engine, '__R_gm'), 'permission.denied', '/gamemode creative 应被黑名单拒绝');
+  assert.strictEqual(g(engine, '__R_msg'), 'ok', '/msg 应放行');
+  await engine.stop();
+
+  // allow 非空：未命中即拒（即使精确白名单包含）
+  script('t-cmd2.lua', `
+    __R_msg = nil
+    __R_pay = nil
+    __R_gm = nil
+    task("runner", function()
+      for _, cmd in ipairs({ "/pay Steve 100", "/gamemode creative", "/msg Steve hi" }) do
+        local ok, err = pcall(function() chat.run_command(cmd) end)
+        local v = ok and "ok" or (type(err) == "table" and err.kind or "err")
+        if cmd == "/pay Steve 100" then __R_pay = v end
+        if cmd == "/gamemode creative" then __R_gm = v end
+        if cmd == "/msg Steve hi" then __R_msg = v end
+      end
+    end)
+    on_start(function() task.spawn("runner") end)
+  `);
+  const { engine: e2 } = await makeEngine({
+    scripts: ['t-cmd2.lua'],
+    boundary: { chat: { commands: ['/pay', '/gamemode', '/msg'], commands_allow: ['^/msg\\s+Steve'] } },
+  });
+  await waitFor(() => g(e2, '__R_msg') != null, 5000);
+  assert.strictEqual(g(e2, '__R_msg'), 'ok', `\/msg Steve 命中 allow 应放行，实际 ${JSON.stringify(g(e2, '__R_msg'))}`);
+  assert.strictEqual(g(e2, '__R_pay'), 'permission.denied', '/pay 未命中 allow 应拒');
+  assert.strictEqual(g(e2, '__R_gm'), 'permission.denied', '/gamemode 未命中 allow 应拒');
+  await e2.stop();
+});
+
 test('未授即禁：blocks.dig / combat 未授权即拒，显式授权后放行', async () => {
   script('t9.lua', `
     __R_dig_err = nil
