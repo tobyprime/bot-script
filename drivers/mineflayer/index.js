@@ -170,6 +170,14 @@ export class MineflayerDriver {
     bot.loadPlugin(this.pf);
     const Movements = this.pfMod.Movements;
     bot.once('spawn', () => {
+      // mineflayer 的 physics 每 tick 只把「已发出的朝向」向目标推进 physics.yawSpeed × 50ms，
+      // 默认 3.0 rad/s → 每 tick 8.59°、每秒 172°。转向 90° 要 0.52s、180° 要 1.05s，
+      // 且脚本高频跟随时发包永远落后目标（实测持续滞后 100°+），观感就是「转一点停一下再转一点」。
+      // 原版客户端并不限速（physics.js 注释亦如此），限速只是 mineflayer 为「跟得上」做的保守处理。
+      // 提高到 20 rad/s ≈ 57°/tick，2 秒内可转满 360°，跟手且仍逐 tick 平滑推进。
+      // 注意：bot.look 的 force=true 会直接跳包（绕过限速但可能触发 anticheat），故仍用 force=false。
+      bot.physics.yawSpeed = 20;
+      bot.physics.pitchSpeed = 20;
       const movements = new Movements(bot, bot.registry);
       movements.allowSprinting = true;
       movements.allowParkour = true;

@@ -871,7 +871,6 @@ function entity.nearest(pred)
       end
       if not bd or (d and d < bd) then best, bd = s, d or 0 end
     end
-    ::continue::
   end
   return best and make_entity(best.id) or nil
 end
