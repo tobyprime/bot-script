@@ -523,6 +523,83 @@ test('entity 句柄活读：句柄字段每次访问都取当前值', async () =
     `句柄字段应活读：拿到句柄后目标移动，再读应变（实际 ${first} → ${g(engine, '__R2')}）`);
   await engine.stop();
 });
+test('entity.find 按装备名筛选：找戴钻石头盔的僵尸（不暴露槽位索引）', async () => {
+  script('equip-find.lua', `
+    __R = nil
+    task('probe', { single = true }, function()
+      local list = entity.find({ type = 'minecraft:zombie', equipment = { helmet = 'minecraft:diamond_helmet' } })
+      local names = {}
+      for _, e in ipairs(list) do names[#names + 1] = tostring(e.pos.x) end
+      __R_found = #list
+      __R_xs = table.concat(names, ',')
+      -- 谓词组合：头盔 + 主手，且必须不戴胸甲的
+      local list2 = entity.find({
+        type = 'minecraft:zombie',
+        equipment = { helmet = 'minecraft:diamond_helmet', chestplate = false },
+      })
+      __R_found2 = #list2
+      -- 读部件：e.equipment.helmet.id
+      local one = entity.nearest({ type = 'minecraft:zombie', equipment = { helmet = 'minecraft:diamond_helmet' } })
+      __R_helmet = one and one.equipment and one.equipment.helmet and one.equipment.helmet.id or 'nil'
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addEntity('minecraft:zombie', { x: 2, y: 64, z: 0 }, { equipment: { helmet: { id: 'minecraft:diamond_helmet', count: 1 } } });
+  driver.addEntity('minecraft:zombie', { x: 4, y: 64, z: 0 }, { equipment: { helmet: { id: 'minecraft:iron_helmet', count: 1 } } });
+  driver.addEntity('minecraft:zombie', { x: 6, y: 64, z: 0 }, { equipment: {} });
+  driver.addEntity('minecraft:zombie', { x: 8, y: 64, z: 0 }, {
+    equipment: {
+      helmet: { id: 'minecraft:diamond_helmet', count: 1 },
+      chestplate: { id: 'minecraft:diamond_chestplate', count: 1 },
+    },
+  });
+  driver.addEntity('minecraft:skeleton', { x: 3, y: 64, z: 0 }, { equipment: { helmet: { id: 'minecraft:diamond_helmet', count: 1 } } });
+
+  const { engine } = await makeEngine({ scripts: ['equip-find.lua'], driver });
+  assert.ok(await waitFor(() => g(engine, '__R_found') != null && g(engine, '__R_helmet') != null, 5000), '查询应完成');
+  assert.strictEqual(g(engine, '__R_found'), 2, '两个僵尸戴钻石头盔（x=2 与 x=8），骷髅不算');
+  assert.strictEqual(String(g(engine, '__R_xs')), '2,8', '命中的是两个戴钻石头盔的僵尸');
+  assert.strictEqual(g(engine, '__R_found2'), 1, '再要求不戴胸甲 → 只剩 x=2');
+  assert.strictEqual(String(g(engine, '__R_helmet')), 'minecraft:diamond_helmet', 'e.equipment.helmet.id 应可读');
+  await engine.stop();
+});
+
+test('entity 句柄装备按名字暴露：hand/offhand/boots/leggings/chestplate/helmet', async () => {
+  script('equip-slots.lua', `
+    __R = nil
+    task('probe', { single = true }, function()
+      local e = entity.nearest({ type = 'minecraft:zombie' })
+      if not e then __R = 'no-entity' return end
+      local parts = {}
+      for _, k in ipairs({ 'hand', 'offhand', 'boots', 'leggings', 'chestplate', 'helmet' }) do
+        local it = e.equipment and e.equipment[k]
+        parts[#parts + 1] = k .. '=' .. (it and it.id or 'nil')
+      end
+      __R = table.concat(parts, ' ')
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addEntity('minecraft:zombie', { x: 2, y: 64, z: 0 }, {
+    equipment: {
+      hand: { id: 'minecraft:iron_sword', count: 1 },
+      offhand: { id: 'minecraft:shield', count: 1 },
+      boots: { id: 'minecraft:leather_boots', count: 1 },
+      leggings: { id: 'minecraft:leather_leggings', count: 1 },
+      chestplate: { id: 'minecraft:leather_chestplate', count: 1 },
+      helmet: { id: 'minecraft:diamond_helmet', count: 1 },
+    },
+  });
+  const { engine } = await makeEngine({ scripts: ['equip-slots.lua'], driver });
+  await waitFor(() => g(engine, '__R') != null, 5000);
+  const r = String(g(engine, '__R'));
+  assert.ok(r.includes('helmet=minecraft:diamond_helmet'), `头盔应按名字可读，实际 ${r}`);
+  assert.ok(r.includes('chestplate=minecraft:leather_chestplate'), `胸甲应可读，实际 ${r}`);
+  assert.ok(r.includes('offhand=minecraft:shield'), `副手应可读，实际 ${r}`);
+  await engine.stop();
+});
+
 test('boundary 安全边界：移动总开关 allow_move=false 同时禁用 nav/hop', async () => {
   script('t-move.lua', `
     __R_nav_err = nil

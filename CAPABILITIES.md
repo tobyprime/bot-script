@@ -157,12 +157,18 @@ P0: count/has/held/slots；P1: equip/equip_best/drop/find/click/cursor。
 
 ### 3.4 `entity` — 实体查询（实时读驱动，无缓存层）
 ```lua
-entity.find(pred) -> [entity]     -- pred {type=, name=, uuid=, alive=, within=, region=, holding=item_id}
-                                  --   holding：主手物品 id，来自 equipment 流（协议端由 equipment 包维护；不可得时该谓词不匹配并打日志）
+entity.find(pred) -> [entity]     -- pred {type=, name=, uuid=, alive=, within=, region=, holding=item_id,
+                                  --       equipment={helmet/chestplate/leggings/boots/offhand/hand = item_id|false}}
+                                  --   holding：主手物品 id（= equipment.hand）
+                                  --   equipment：按部件名匹配；写 false = 该部件必须为空
 entity.nearest(pred) -> entity?   -- ②
 e.pos e.health e.alive            -- 动态字段活读；health 可能为 unknown（协议端看玩家血量）
+e.equipment.hand/.offhand/.boots/.leggings/.chestplate/.helmet   -- 每件 item 或 nil（槽位索引不外露）
 e:snapshot() e:id() e:exists()
 -- 事件（可选订阅）：entity.appeared / entity.gone
+
+-- 找头上戴钻石头盔的僵尸：
+entity.find{ type = "minecraft:zombie", equipment = { helmet = "minecraft:diamond_helmet" } }
 ```
 P1。
 

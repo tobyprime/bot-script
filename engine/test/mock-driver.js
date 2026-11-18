@@ -67,6 +67,16 @@ export class MockDriver {
     this.emit('entity_appeared', { id, type: 'player', name });
     return id;
   }
+  // 任意实体（含装备）：type 用规范 id（如 'minecraft:zombie'），equipment 用部件名
+  addEntity(type, pos, opts = {}) {
+    const id = this.nextEntityId++;
+    this.entities.set(String(id), {
+      id, type, name: opts.name ?? null, pos: { ...pos }, alive: opts.alive !== false,
+      health: null, equipment: opts.equipment ?? {},
+    });
+    this.emit('entity_appeared', { id, type, name: opts.name ?? null });
+    return id;
+  }
   setPlayerHeld(name, held) {
     for (const e of this.entities.values()) {
       if (e.name === name) { e.equipment = { hand: held }; }

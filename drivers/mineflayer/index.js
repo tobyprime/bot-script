@@ -305,6 +305,10 @@ export class MineflayerDriver {
   // 不存在采样周期，也就不会出现「追上旧目标 → 目标其实是 250ms 前的 → 停住再追」。
   snapshotOf(e) {
     const isPlayer = e.type === 'player';
+    // 装备按名字暴露（不暴露协议槽位索引，脚本无需查文档）：
+    // 协议槽位由 prismarine-entity 维护（1.9+：0 手持 / 1 副手 / 2 靴 / 3 腿 / 4 胸 / 5 头），
+    // 只会出现在这里；对脚本而言就是 e.equipment.helmet 这样读。
+    const eq = e.equipment ?? [];
     return {
       id: e.id,
       type: isPlayer ? 'player' : `minecraft:${e.name ?? e.type}`,
@@ -312,7 +316,14 @@ export class MineflayerDriver {
       pos: e.position ? { x: e.position.x, y: e.position.y, z: e.position.z } : null,
       alive: e.isValid?.(this.bot) !== false,
       health: null,        // 协议端对玩家血量不可见
-      equipment: { hand: itemOf(e.heldItem) },
+      equipment: {
+        hand: itemOf(eq[0] ?? e.heldItem),
+        offhand: itemOf(eq[1]),
+        boots: itemOf(eq[2]),
+        leggings: itemOf(eq[3]),
+        chestplate: itemOf(eq[4]),
+        helmet: itemOf(eq[5]),
+      },
     };
   }
 
