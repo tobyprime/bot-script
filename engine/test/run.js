@@ -1411,6 +1411,21 @@ test('bslib.look.at 单轮只发一个视角包（避免 invalid_player_movement
     'rot 不得传 force=true：它会直接把 lastSentYaw 赋成目标值，绕过限速');
 });
 
+// 转向速率（2026-11-18 实测）：mineflayer 默认 physics.yawSpeed=3.0 rad/s →
+// 每 tick 只推进 8.59°、每秒 172°，90° 要 0.55s、180° 要 1.05s，观感是「转一点停一下再转一点」。
+// 驱动必须在 spawn 后提高该值；这条测试锁住「不能退回默认」。
+test('驱动：必须提高 physics.yawSpeed（默认 3.0 rad/s 会让大角度转向耗时 >1 秒）', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../../drivers/mineflayer/index.js', import.meta.url), 'utf8');
+  const m = src.match(/bot\.physics\.yawSpeed\s*=\s*(\d+(?:\.\d+)?)/);
+  assert.ok(m, 'spawn 后必须显式设置 bot.physics.yawSpeed');
+  const speed = Number(m[1]);
+  assert.ok(speed >= 10, `yawSpeed=${speed} 太小：默认 3.0 时 90° 转向要 0.55s、180° 要 1.05s`);
+  // 换算校验：每 tick 转角 = yawSpeed × 0.05s，90° 应在 5 tick（0.25s）内完成
+  const perTick = (speed * 0.05 * 180) / Math.PI;
+  assert.ok(90 / perTick <= 5, `yawSpeed=${speed} → 每 tick ${perTick.toFixed(1)}°，90° 转向要 ${Math.ceil(90 / perTick)} tick`);
+});
+
 // 协议数据表（2026-11-15 实测事故）：mc.zenoxs.cn 下发的是带 dx/dy/dz + f32 角度 + u32 flags
 // 的 entity_teleport。minecraft-data 3.116.0 对同一协议给出旧布局（i8 角度），导致 play 阶段
 // 逐包「Chunk size is 67 but only 33 was read」，三秒后 EPIPE。3.119.0 起定义才正确。
