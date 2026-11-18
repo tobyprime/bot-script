@@ -155,7 +155,7 @@ inv.click(slot, opts) inv.cursor()  -- 背包窗口点击 / 光标查询：背�
 ```
 P0: count/has/held/slots；P1: equip/equip_best/drop/find/click/cursor。
 
-### 3.4 `entity` — 实体查询（读引擎实体缓存）
+### 3.4 `entity` — 实体查询（实时读驱动，无缓存层）
 ```lua
 entity.find(pred) -> [entity]     -- pred {type=, name=, uuid=, alive=, within=, region=, holding=item_id}
                                   --   holding：主手物品 id，来自 equipment 流（协议端由 equipment 包维护；不可得时该谓词不匹配并打日志）

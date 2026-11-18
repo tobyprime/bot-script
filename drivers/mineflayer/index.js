@@ -21,7 +21,6 @@ export class MineflayerDriver {
     this.cfg = {};
     this.windowSeq = 1;
     this.selfDirty = false;
-    this.entityTimer = null;
     this.pathWait = null; // { resolve }
     // 连接是否仍可写包：socket 关闭后置 false，动作动词据此静默跳过。没有这道守卫时，
     // 脚本里的 20Hz 循环（如 look_at_nearest_player 每 50ms 的 rot）会在死连接上持续写包，
@@ -232,12 +231,17 @@ export class MineflayerDriver {
     bot.on('forcedMove', () => this.pushSelf());
     bot.on('health', () => this.pushSelf());
     bot.on('entitySwingArm', () => this.pushSelf());
-    // 实体：250ms 全量快照批（最后值胜语义由引擎消费）。
-    // 出现/消失立即补推一次：否则新玩家进视野最长要等一拍（250ms），叠加脚本循环周期
-    // 后感知上就是「站到旁边一两秒才转头」。
-    this.entityTimer = setInterval(() => this.pushEntities(), 250);
-    bot.on('entityGone', () => this.pushEntities());
-    bot.on('entitySpawn', () => this.pushEntities());
+    // 实体出现/消失：直接由协议事件驱动（状态查询本身是实时的，这里只负责发事件）
+    bot.on('entitySpawn', (e) => {
+      if (e === bot.entity) return;
+      const s = this.snapshotOf(e);
+      this.emit('entity_appeared', { id: s.id, type: s.type, name: s.name });
+    });
+    bot.on('entityGone', (e) => {
+      if (e === bot.entity) return;
+      const isPlayer = e.type === 'player';
+      this.emit('entity_gone', { id: e.id, type: isPlayer ? 'player' : `minecraft:${e.name ?? e.type}`, name: e.username ?? null });
+    });
     // 窗口
     this.pushInventory();   // 初始背包快照（保证引擎 windows['0'] 存在）
     if (process.env.BS_PK) {
@@ -270,7 +274,6 @@ export class MineflayerDriver {
 
   stopSampling() {
     clearInterval(this.selfTimer);
-    clearInterval(this.entityTimer);
     clearInterval(this.windowTimer);
   }
 
@@ -297,24 +300,37 @@ export class MineflayerDriver {
     });
   }
 
-  pushEntities() {
+  // 实体实时查询（同步、直读 mineflayer 的活体对象，不维护任何快照）：
+  // 脚本每次 entity.find/nearest/句柄字段访问都走到这里，拿到的是「此刻」的位置，
+  // 不存在采样周期，也就不会出现「追上旧目标 → 目标其实是 250ms 前的 → 停住再追」。
+  snapshotOf(e) {
+    const isPlayer = e.type === 'player';
+    return {
+      id: e.id,
+      type: isPlayer ? 'player' : `minecraft:${e.name ?? e.type}`,
+      name: e.username ?? (isPlayer ? null : e.name),
+      pos: e.position ? { x: e.position.x, y: e.position.y, z: e.position.z } : null,
+      alive: e.isValid?.(this.bot) !== false,
+      health: null,        // 协议端对玩家血量不可见
+      equipment: { hand: itemOf(e.heldItem) },
+    };
+  }
+
+  query_entities() {
     const bot = this.bot;
-    if (!bot) return;
-    const list = [];
+    if (!bot?.entities) return [];
+    const out = [];
     for (const e of Object.values(bot.entities)) {
-      if (e === bot.entity) continue;
-      if (!e.position) continue;
-      list.push({
-        id: e.id,
-        type: e.type === 'player' ? 'player' : `minecraft:${e.name ?? e.type}`,
-        name: e.username ?? (e.type !== 'player' ? e.name : null),
-        pos: { x: e.position.x, y: e.position.y, z: e.position.z },
-        alive: true,
-        health: null, // 协议端对玩家血量不可见（CAPABILITIES §3.4）
-        equipment: { hand: itemOf(e.heldItem) },
-      });
+      if (e === bot.entity || !e.position) continue;
+      out.push(this.snapshotOf(e));
     }
-    this.emit('entities', { list });
+    return out;
+  }
+
+  query_entity(id) {
+    const e = this.bot?.entities?.[id];
+    if (!e || e === this.bot.entity || !e.position) return null;
+    return this.snapshotOf(e);
   }
 
   bindChat() {

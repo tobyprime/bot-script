@@ -64,29 +64,33 @@ export class MockDriver {
       id, type: 'player', name, pos: { ...pos }, alive: true, health: null,
       equipment: { hand: held },
     });
-    this.pushEntities();
+    this.emit('entity_appeared', { id, type: 'player', name });
     return id;
   }
   setPlayerHeld(name, held) {
     for (const e of this.entities.values()) {
       if (e.name === name) { e.equipment = { hand: held }; }
     }
-    this.pushEntities();
   }
   movePlayer(name, pos) {
     for (const e of this.entities.values()) {
       if (e.name === name) e.pos = { ...pos };
     }
-    this.pushEntities();
   }
   removePlayer(name) {
     for (const [id, e] of [...this.entities]) {
-      if (e.name === name) this.entities.delete(id);
+      if (e.name === name) {
+        this.entities.delete(id);
+        this.emit('entity_gone', { id: e.id, type: e.type, name: e.name });
+      }
     }
-    this.pushEntities();
   }
-  pushEntities() {
-    this.emit('entities', { list: [...this.entities.values()] });
+  // 实时查询（与 mineflayer 驱动同契约：直读当前状态，无快照层）
+  query_entities() {
+    return [...this.entities.values()];
+  }
+  query_entity(id) {
+    return this.entities.get(String(id)) ?? null;
   }
   playerSay(name, text) {
     this.emit('chat', { text, raw: `<${name}> ${text}`, sender: name, sender_kind: 'player', ts: Date.now() });
@@ -405,7 +409,6 @@ export class MockDriver {
     this.emit('session', { state: 'playing', info: { version: '1.21.8', brand: 'mock' } });
     this.emit('self', this.selfSnapshot());
     this.pushInventory();
-    this.pushEntities();
   }
   async stop() {}
 }
