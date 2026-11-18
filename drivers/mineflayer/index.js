@@ -324,7 +324,7 @@ export class MineflayerDriver {
       type: isPlayer ? 'player' : `minecraft:${e.name ?? e.type}`,
       name: e.username ?? (isPlayer ? null : e.name),
       pos: e.position ? { x: e.position.x, y: e.position.y, z: e.position.z } : null,
-      alive: e.isValid?.(this.bot) !== false,
+      alive: e.isValid !== false,   // prismarine-entity 的 isValid 是布尔属性，不是方法
       health: null,        // 协议端对玩家血量不可见
       equipment: {
         hand: itemOf(eq[0] ?? e.heldItem),
