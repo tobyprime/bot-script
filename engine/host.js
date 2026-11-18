@@ -57,6 +57,10 @@ async function deployInstance(body) {
   const { instanceId, epoch = 0, dir, memCapMb = 0, dryRun = false } = body;
   if (!instanceId || !dir) throw Object.assign(new Error('instanceId/dir 必填'), { code: 400 });
   if (workers.has(instanceId)) await stopInstance(instanceId);   // 幂等：先停旧的
+  // 新代次开始：清掉上一轮的退出记录。否则旧记录会一直留在 exitReport 里，
+  // 新 worker 尚在启动（present 瞬时为 false）时 agent 的探活会把「上一轮正常停止」
+  // 误读成「本次启动失败」——线上表现就是「实例 worker 退出 code=0（worker 已退出）」。
+  exitReport.delete(instanceId);
   const port = await freePort();
   const token = crypto.randomBytes(12).toString('hex');
   // 每实例 JS 堆硬限（isolate 级、V8 强制、可归属）：实测大服引擎 heapUsed ~70MB，默认上限 192MB
