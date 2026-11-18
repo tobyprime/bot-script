@@ -1463,14 +1463,44 @@ test('mineflayer 驱动：look 角度按度进、按弧度出；self 上报回�
 test('mineflayer 驱动：目标朝向取最短路径（跨 ±π 边界不得绕远路）', async () => {
   const { serviceDegToBotYaw, shortestYaw } = await import('../../drivers/mineflayer/units.js');
   const deg = (rad) => (rad * 180) / Math.PI;
-  const cur = serviceDegToBotYaw(179);   // bot 朝 179°
+  // 先把当前朝向归一化到 [-π,π]，与驱动实际喂入的值同域
+  const cur = shortestYaw(serviceDegToBotYaw(179), 0);
+  const shortestDelta = (target) => {
+    const a = deg(cur), b = deg(shortestYaw(serviceDegToBotYaw(target), cur));
+    let d = b - a;
+    if (d > 180) d -= 360;
+    if (d < -180) d += 360;
+    return Math.abs(d);
+  };
   for (const [target, expectMaxAbs] of [[181, 5], [270, 95], [1, 180], [90, 95]]) {
-    const got = shortestYaw(serviceDegToBotYaw(target), cur);
-    const delta = Math.abs(deg(got - cur));
+    const delta = shortestDelta(target);
     assert.ok(delta <= expectMaxAbs + 1, `179°→${target}° 应走最短一边（≤${expectMaxAbs}°），实际 ${delta.toFixed(0)}°`);
   }
   // 关键回归：181° 与 179° 只差 2°，修复前要绕 358°
-  assert.ok(Math.abs(deg(shortestYaw(serviceDegToBotYaw(181), cur) - cur)) < 5, '179°→181° 必须是 2° 而不是 358°');
+  assert.ok(shortestDelta(181) < 5, '179°→181° 必须是 2° 而不是 358°');
+});
+
+// 线上事故（2026-11-19）：yaw 漂到 -215.967°，超出 mineflayer 合法域 [-180°,180°]，
+// 服务端 containsInvalidValues 判非法直接踢人（multiplayer.disconnect.invalid_player_movement）。
+// 成因：mineflayer 的 lastSentYaw 本身无界累加，而驱动又用 curYaw + delta 的形式喂回，两个无界量互相推着漂。
+test('mineflayer 驱动：shortestYaw 输出必须归一化到 [-π, π]（不得无界漂移）', async () => {
+  const { serviceDegToBotYaw, shortestYaw } = await import('../../drivers/mineflayer/units.js');
+  const deg = (rad) => (rad * 180) / Math.PI;
+  const inRange = (r) => r >= -Math.PI && r <= Math.PI;
+  // 任意（含已越界的）当前值 + 任意目标，输出都必须在合法域内
+  for (const curDeg of [0, 90, 179, -179, -215.967, 5109, -30759]) {
+    const cur = curDeg * Math.PI / 180;
+    for (const target of [0, 45, 90, 180, 270, 359]) {
+      const out = shortestYaw(serviceDegToBotYaw(target), cur);
+      assert.ok(inRange(out), `cur=${curDeg}° target=${target}° 输出 ${deg(out).toFixed(1)}° 越界`);
+    }
+  }
+  // 连续追踪（实体持续移动）不得累积漂移：反复以输出为下一次输入，值必须始终在域内
+  let yaw = 0;
+  for (let i = 0; i < 200; i++) {
+    yaw = shortestYaw(serviceDegToBotYaw(i * 7 % 360), yaw);
+    assert.ok(inRange(yaw), `第 ${i} 步输出 ${deg(yaw).toFixed(1)}° 越界`);
+  }
 });
 
 // 断线可读性（2026-11-15 实测）：mineflayer 的 kicked/end 理由是 chat 组件或 JSON 文本，
