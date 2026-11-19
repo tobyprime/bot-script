@@ -102,8 +102,8 @@ export class MineflayerDriver {
     const bot = mineflayer.createBot(botOpts);
     this.bot = bot;
 
-    this.trace = installProtocolTrace(bot, (line) => this.log(line));
-    this._patchRuntime = installPatches(bot, { version: cfg.version, log: (line) => this.log(line) });
+    this.trace = installProtocolTrace(bot, (line, level) => this.log(line, level ?? 'debug'));
+    this._patchRuntime = installPatches(bot, { version: cfg.version, log: (line) => this.log(line, 'info') });
 
     bot._client.on('add_resource_pack', (p) => {
       bot._client.write('resource_pack_receive', { uuid: p.uuid, result: 3 });
@@ -143,7 +143,7 @@ export class MineflayerDriver {
       if (code === 'EPIPE' || code === 'ECONNRESET') {
         if (!this.transportErrLogged) {
           this.transportErrLogged = true;
-          this.log(`[mineflayer] 连接已断开（${code}）：对端关闭了连接，具体原因见 kick/end 事件`);
+          this.log(`[mineflayer] 连接已断开（${code}）：对端关闭了连接，具体原因见 kick/end 事件`, 'debug');
         }
         return;
       }

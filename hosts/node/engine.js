@@ -245,9 +245,15 @@ export class BotEngine {
       }
     }
     if ((p.state === 'kicked' || p.state === 'disconnected') && !this.stopped) {
-      this.obs.log('warn', `会话 ${p.state}: ${p.reason ?? ''} -> 自动 pause`);
       this.invalidateSessionCache();
-      this.pause(p.state === 'kicked' ? 'kicked' : 'disconnect');
+      const reason = p.reason ?? '';
+      if (!this.hub.paused) {
+        this.obs.log('warn', `会话 ${p.state}: ${reason} -> 自动 pause`);
+        this.pause(p.state === 'kicked' ? 'kicked' : 'disconnect');
+      } else {
+        // kicked 后 mineflayer 还会再发 end：此时已在暂停，降为 debug，避免重复告警
+        this.obs.log('debug', `会话 ${p.state}: ${reason}（已暂停：${this.pauseReason ?? '-'}）`);
+      }
       this.scheduleReconnect();
     }
   }

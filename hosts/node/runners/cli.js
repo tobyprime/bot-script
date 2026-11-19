@@ -20,7 +20,7 @@ export async function runBot(yamlPath, { dryRun = false, log = console.log } = {
   const { MineflayerDriver } = await import('../drivers/mineflayer/index.js');
   // 驱动输出投引擎日志出口（环 + 实时流 + stdout）；engine 构造前先转发到 console
   let engine = null;
-  const driver = new MineflayerDriver({ log: (m) => (engine ? engine.obs.log('console', String(m)) : log(String(m))) });
+  const driver = new MineflayerDriver({ log: (m, level) => (engine ? engine.obs.log(level ?? 'console', String(m)) : log(String(m))) });
 
   engine = new BotEngine(inst.pkgAbs, driver, engineOptions(inst, { dryRun }));
 

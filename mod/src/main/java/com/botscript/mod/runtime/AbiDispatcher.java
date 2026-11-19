@@ -104,10 +104,13 @@ public final class AbiDispatcher {
             rt.settle(token, "{}", "");
             return token;
         }
-        String rateErr = policy.rateCheck();
-        if (rateErr != null) { rt.settle(token, "", rateErr); return token; }
-        if (policy.countAction()) rt.pause("budget");
-        if (audit != null) audit.accept(op, args.toString());
+        // 只有协议动作（act.*）计入速率/预算并写动作审计；调度/查询类 op 不占预算、不刷动作日志。
+        if (op.startsWith("act.")) {
+            String rateErr = policy.rateCheck();
+            if (rateErr != null) { rt.settle(token, "", rateErr); return token; }
+            if (policy.countAction()) rt.pause("budget");
+            if (audit != null) audit.accept(op, args.toString());
+        }
         try {
             String result = h.run(token, args);
             if (result != null) rt.settle(token, result, "");

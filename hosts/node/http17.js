@@ -5,6 +5,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { ROUTES } from './http17.routes.generated.js';
+import { ABI_VERSION } from './abi.generated.js';
 
 const DEFAULT_PORT = 25580;
 const MAX_BODY = 1 << 20;
@@ -180,7 +181,7 @@ export function startHttpApi(engine, { log = console.log, port, token: tokenArg 
     },
     getCaps: (req, res) => json(res, 200, {
       host: 'node',
-      abi: 1,
+      abi: ABI_VERSION,
       runtime: `node ${process.version}`,
       flags: engine.driver.caps?.() ?? {},
       patches: engine.driver.patches?.() ?? [],

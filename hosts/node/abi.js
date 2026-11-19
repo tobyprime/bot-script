@@ -63,10 +63,15 @@ export class AbiDispatcher {
       hub.settle(token, '{}', '');
       return token;
     }
-    const rateErr = policy.rateCheck();
-    if (rateErr) { hub.settle(token, '', JSON.stringify(rateErr)); return token; }
-    if (policy.countAction()) this.s.control.pause('budget');
-    obs.publish('action', { ts: nowMs(), action: op, args: brief(args) });
+    // 只有协议动作（act.*）计入速率/预算并写动作审计。
+    // 调度/查询类 op（util.sleep、events.next、waiter.new、world.get…）不是「动作」，
+    // 不得占预算、不得刷动作日志。
+    if (op.startsWith('act.')) {
+      const rateErr = policy.rateCheck();
+      if (rateErr) { hub.settle(token, '', JSON.stringify(rateErr)); return token; }
+      if (policy.countAction()) this.s.control.pause('budget');
+      obs.publish('action', { ts: nowMs(), action: op, args: brief(args) });
+    }
 
     (async () => {
       try {
@@ -96,7 +101,7 @@ export class AbiDispatcher {
 
     const q = {
       // ---- 基础设施 ----
-      log: ({ level, msg }) => { obs.log(String(level), String(msg)); },
+      log: ({ level, msg }) => { obs.log(String(level), String(msg), 'script'); },
       'util.now': () => nowMs(),
       'util.regex_new': ({ pattern }) => {
         const id = ++this.rexSeq;

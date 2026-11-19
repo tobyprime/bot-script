@@ -38,7 +38,7 @@ parentPort?.on('message', (m) => {
 
 async function main() {
   const { MineflayerDriver } = await import('../drivers/mineflayer/index.js');
-  const driver = new MineflayerDriver({ log: (m) => (engine ? engine.obs.log('console', String(m)) : console.log(m)) });
+  const driver = new MineflayerDriver({ log: (m, level) => (engine ? engine.obs.log(level ?? 'console', String(m)) : console.log(m)) });
   engine = new BotEngine(inst.pkgAbs, driver, engineOptions(inst, { dryRun: !!dryRun }));
   // 每实例内存上限靠父进程 resourceLimits.maxOldGenerationSizeMb（isolate 级、可归属）。
   await engine.start();

@@ -36,9 +36,14 @@ export class Observation {
     return stamped;
   }
 
-  log(level, msg) {
-    const evt = this.publish('log', { ts: Date.now(), level, msg: `[${this.name}] ${msg}` });
-    this._outerLog(level, `[${this.name}] ${msg}`);
+  /**
+   * 统一日志出口。source 区分「引擎/宿主」与「脚本」日志——两者共用同一条流，
+   * 但不得互相冒名（引擎日志不挂脚本/包名，脚本日志也不冒充平台告警）。
+   */
+  log(level, msg, source = 'engine') {
+    const src = source === 'script' ? 'script' : 'engine';
+    const evt = this.publish('log', { ts: Date.now(), level, msg, source: src });
+    this._outerLog(level, `[${src}] ${msg}`);
     return evt;
   }
 

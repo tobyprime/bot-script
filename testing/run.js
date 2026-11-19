@@ -10,6 +10,7 @@ await import('./policy.test.js');
 await import('./containers.test.js');
 await import('./queries.test.js');
 await import('./events.test.js');
+await import('./logs.test.js');
 await import('./http.test.js');
 await import('./examples.test.js');
 await import('./driver.test.js');

@@ -9,7 +9,12 @@
 //
 // 记录内容只含包名与关键数值，不含 token 等凭据。
 const TRACE_ENV = 'BOTSCRIPT_PROTO_TRACE';
-const FOLLOW_NAMES = ['look', 'position', 'position_look', 'flying', 'teleport_confirm'];
+const FOLLOW_NAMES = [
+  'look', 'position', 'position_look', 'flying', 'teleport_confirm',
+  // 连接被服务器/代理主动终止时，最需要看到的是「断前发了什么」：
+  // keep_alive（保活是否被答）、resource_pack_receive（资源包状态是否被接受）
+  'keep_alive', 'resource_pack_receive',
+];
 const RING_MAX = 40;   // 环形缓冲条数：足够覆盖「被踢前的几秒」
 
 export function traceVerbose(env = process.env) {
@@ -58,17 +63,33 @@ export function installProtocolTrace(bot, log = console.log, opts = {}) {
   };
   client.on('position', onPosition);
 
+  // 结论性事件：服务器主动断开 / 转移 / 资源包要求 / 配置阶段切换。
+  // 这些包名此前不在环里，导致断线只能看到「socketClosed」，看不到服务器意图。
+  const extraListeners = [
+    ['add_resource_pack', (p) => push(`← add_resource_pack forced=${p.forcedPrompt ?? p.forced ?? '?'} `
+      + `url=${String(p.url ?? '').slice(0, 120)}`)],
+    ['resource_pack_send', (p) => push(`← resource_pack_send url=${String(p.url ?? '').slice(0, 120)}`)],
+    ['disconnect', (p) => push(`← disconnect reason=${JSON.stringify(p.reason ?? '').slice(0, 300)}`)],
+    ['transfer', (p) => push(`← transfer host=${String(p.host ?? '')} port=${p.port}`)],
+    ['start_configuration', () => push('← start_configuration（进入 configuration 阶段）')],
+    ['keep_alive', (p) => push(`← keep_alive id=${p.keepAliveId}`)],
+  ];
+  for (const [name, fn] of extraListeners) client.on(name, fn);
+
   // 一次性倒出（重复调用无副作用）
   const flush = (reason) => {
     if (flushed || !ring.length) return;
     flushed = true;
-    log(`[trace] 断线诊断（${reason}）——最近 ${ring.length} 条协议记录：`);
-    for (const line of ring) log(`  ${line}`);
+    log(`[trace] 断线诊断（${reason}）——最近 ${ring.length} 条协议记录：`, 'debug');
+    for (const line of ring) log(`  ${line}`, 'debug');
   };
 
   const off = () => {
     client.write = origWrite;
     try { client.removeListener('position', onPosition); } catch { /* ignore */ }
+    for (const [name, fn] of extraListeners) {
+      try { client.removeListener(name, fn); } catch { /* ignore */ }
+    }
   };
 
   return { flush, off };
@@ -92,5 +113,11 @@ function summarize(name, params) {
     return `pos=(${fmt(p.x)},${fmt(p.y)},${fmt(p.z)})` + (p.yaw !== undefined ? ` yaw=${fmt(p.yaw)}°` : '');
   }
   if (name === 'look') return `yaw=${fmt(p.yaw)}° pitch=${fmt(p.pitch)}°`;
+  if (name === 'resource_pack_receive') {
+    const RESULTS = ['successfully_loaded', 'declined', 'failed_download', 'accepted',
+      'downloaded', 'invalid_url', 'failed_reload', 'discarded'];
+    return `uuid=${String(p.uuid ?? '').slice(0, 8)} result=${p.result}(${RESULTS[p.result] ?? '?'})`;
+  }
+  if (name === 'keep_alive') return `id=${p.keepAliveId}`;
   return JSON.stringify(p).slice(0, 120);
 }
