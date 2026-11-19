@@ -105,34 +105,11 @@ export class MineflayerDriver {
     this.trace = installProtocolTrace(bot, (line, level) => this.log(line, level ?? 'debug'));
     this._patchRuntime = installPatches(bot, { version: cfg.version, log: (line) => this.log(line, 'info') });
 
-    // 资源包应答只能有一套。mineflayer 的内部插件在 `inject_allowed`（setTimeout 0）之后才注入，
-    // 所以不能在这里 removeAllListeners —— 那时插件的 handler 还没挂上，删不到。
-    // 线上 trace 实测：插件与驱动各应答一次，同一 uuid 发出 3,0,3,0，代理随后 ~15s 静默断开。
-    // 等 inject_allowed 后用源码特征摘掉插件 handler，保留 trace 自己的监听，
-    // 再按原版客户端序列只应答一次：ACCEPTED → DOWNLOADED → SUCCESSFULLY_LOADED。
-    let lastPack = null;
-    const ackPack = (p, uuidFromOldPacket) => {
-      const key = (p.uuid !== undefined && !uuidFromOldPacket) ? { uuid: p.uuid } : { hash: p.hash ?? p.uuid };
-      const sig = `${key.uuid ?? key.hash}`;
-      if (sig === lastPack?.sig && Date.now() - lastPack.at < 2000) return;   // 同一包双事件去重
-      lastPack = { sig, at: Date.now() };
-      const reply = (result) => {
-        try { bot._client.write('resource_pack_receive', { ...key, result }); } catch { /* 断线中忽略 */ }
-      };
-      reply(3);                        // ACCEPTED
-      setTimeout(() => reply(4), 100); // DOWNLOADED
-      setTimeout(() => reply(0), 250); // SUCCESSFULLY_LOADED
-    };
-    bot.once('inject_allowed', () => {
-      const isMineflayerPackHandler = (fn) => /latestUUID|latestHash|activeResourcePacks|acceptResourcePack/
-        .test(Function.prototype.toString.call(fn));
-      for (const evt of ['add_resource_pack', 'resource_pack_send']) {
-        for (const fn of bot._client.listeners(evt)) {
-          if (isMineflayerPackHandler(fn)) bot._client.removeListener(evt, fn);
-        }
-      }
-      bot._client.on('add_resource_pack', (p) => ackPack(p, false));
-      bot._client.on('resource_pack_send', (p) => ackPack(p, true));
+    // 配置阶段资源包：必须用字符串 uuid 应答 ACCEPTED+LOADED。mineflayer 内置插件传
+    // uuid-1345 对象，服务器（如 Velocity 群组服）无法匹配其推送，形同未确认。
+    bot._client.on('add_resource_pack', (p) => {
+      bot._client.write('resource_pack_receive', { uuid: p.uuid, result: 3 });   // ACCEPTED
+      bot._client.write('resource_pack_receive', { uuid: p.uuid, result: 0 });   // SUCCESSFULLY_LOADED
     });
 
     bot.once('login', () => this.emit('session', { state: 'logged_in' }));

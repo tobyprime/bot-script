@@ -9,12 +9,7 @@
 //
 // 记录内容只含包名与关键数值，不含 token 等凭据。
 const TRACE_ENV = 'BOTSCRIPT_PROTO_TRACE';
-const FOLLOW_NAMES = [
-  'look', 'position', 'position_look', 'flying', 'teleport_confirm',
-  // 连接被服务器/代理主动终止时，最需要看到的是「断前发了什么」：
-  // keep_alive（保活是否被答）、resource_pack_receive（资源包状态是否被接受）
-  'keep_alive', 'resource_pack_receive',
-];
+const FOLLOW_NAMES = ['look', 'position', 'position_look', 'flying', 'teleport_confirm'];
 const RING_MAX = 40;   // 环形缓冲条数：足够覆盖「被踢前的几秒」
 
 export function traceVerbose(env = process.env) {
@@ -32,16 +27,8 @@ export function installProtocolTrace(bot, log = console.log, opts = {}) {
 
   const t0 = Date.now();
   const ring = [];
-  const allRing = [];       // 全部包名（不含载荷）：断线前「服务器最后做了什么」需要完整顺序
   const lastByKind = {};
   let flushed = false;
-
-  const onPacket = (data, meta) => {
-    if (!meta?.name) return;
-    allRing.push(`${Date.now() - t0}ms ${meta.state ?? '?'} ← ${meta.name}`);
-    if (allRing.length > 40) allRing.shift();
-  };
-  client.on('packet', onPacket);
 
   const push = (line) => {
     const entry = `[trace ${Date.now() - t0}ms] ${line}`;
@@ -80,7 +67,6 @@ export function installProtocolTrace(bot, log = console.log, opts = {}) {
     ['disconnect', (p) => push(`← disconnect reason=${JSON.stringify(p.reason ?? '').slice(0, 300)}`)],
     ['transfer', (p) => push(`← transfer host=${String(p.host ?? '')} port=${p.port}`)],
     ['start_configuration', () => push('← start_configuration（进入 configuration 阶段）')],
-    ['keep_alive', (p) => push(`← keep_alive id=${p.keepAliveId}`)],
   ];
   for (const [name, fn] of extraListeners) client.on(name, fn);
 
@@ -90,15 +76,10 @@ export function installProtocolTrace(bot, log = console.log, opts = {}) {
     flushed = true;
     log(`[trace] 断线诊断（${reason}）——最近 ${ring.length} 条协议记录：`, 'debug');
     for (const line of ring) log(`  ${line}`, 'debug');
-    if (allRing.length) {
-      log(`[trace] 断线前全部入站包（最近 ${allRing.length} 个）：`, 'debug');
-      for (const line of allRing) log(`  [all] ${line}`, 'debug');
-    }
   };
 
   const off = () => {
     client.write = origWrite;
-    try { client.removeListener('packet', onPacket); } catch { /* ignore */ }
     try { client.removeListener('position', onPosition); } catch { /* ignore */ }
     for (const [name, fn] of extraListeners) {
       try { client.removeListener(name, fn); } catch { /* ignore */ }
@@ -126,11 +107,5 @@ function summarize(name, params) {
     return `pos=(${fmt(p.x)},${fmt(p.y)},${fmt(p.z)})` + (p.yaw !== undefined ? ` yaw=${fmt(p.yaw)}°` : '');
   }
   if (name === 'look') return `yaw=${fmt(p.yaw)}° pitch=${fmt(p.pitch)}°`;
-  if (name === 'resource_pack_receive') {
-    const RESULTS = ['successfully_loaded', 'declined', 'failed_download', 'accepted',
-      'downloaded', 'invalid_url', 'failed_reload', 'discarded'];
-    return `uuid=${String(p.uuid ?? '').slice(0, 8)} result=${p.result}(${RESULTS[p.result] ?? '?'})`;
-  }
-  if (name === 'keep_alive') return `id=${p.keepAliveId}`;
   return JSON.stringify(p).slice(0, 120);
 }
