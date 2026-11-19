@@ -105,12 +105,11 @@ export class MineflayerDriver {
     this.trace = installProtocolTrace(bot, (line, level) => this.log(line, level ?? 'debug'));
     this._patchRuntime = installPatches(bot, { version: cfg.version, log: (line) => this.log(line, 'info') });
 
-    // 资源包应答只能有一套。mineflayer 自带插件在 configuration 阶段会应答 3+0，
-    // 驱动此前又挂了一个 handler 也应答 3+0 —— 线上 trace 观测到同一 uuid 连发
-    // 3,0,3,0。Velocity/后端的状态机会停在非法状态，随后静默断开（~15s）。
-    // 这里摘掉插件监听，按原版客户端序列只应答一次：ACCEPTED → DOWNLOADED → SUCCESSFULLY_LOADED。
-    bot._client.removeAllListeners('add_resource_pack');
-    bot._client.removeAllListeners('resource_pack_send');
+    // 资源包应答只能有一套。mineflayer 的内部插件在 `inject_allowed`（setTimeout 0）之后才注入，
+    // 所以不能在这里 removeAllListeners —— 那时插件的 handler 还没挂上，删不到。
+    // 线上 trace 实测：插件与驱动各应答一次，同一 uuid 发出 3,0,3,0，代理随后 ~15s 静默断开。
+    // 等 inject_allowed 后用源码特征摘掉插件 handler，保留 trace 自己的监听，
+    // 再按原版客户端序列只应答一次：ACCEPTED → DOWNLOADED → SUCCESSFULLY_LOADED。
     let lastPack = null;
     const ackPack = (p, uuidFromOldPacket) => {
       const key = (p.uuid !== undefined && !uuidFromOldPacket) ? { uuid: p.uuid } : { hash: p.hash ?? p.uuid };
@@ -124,8 +123,17 @@ export class MineflayerDriver {
       setTimeout(() => reply(4), 100); // DOWNLOADED
       setTimeout(() => reply(0), 250); // SUCCESSFULLY_LOADED
     };
-    bot._client.on('add_resource_pack', (p) => ackPack(p, false));
-    bot._client.on('resource_pack_send', (p) => ackPack(p, true));
+    bot.once('inject_allowed', () => {
+      const isMineflayerPackHandler = (fn) => /latestUUID|latestHash|activeResourcePacks|acceptResourcePack/
+        .test(Function.prototype.toString.call(fn));
+      for (const evt of ['add_resource_pack', 'resource_pack_send']) {
+        for (const fn of bot._client.listeners(evt)) {
+          if (isMineflayerPackHandler(fn)) bot._client.removeListener(evt, fn);
+        }
+      }
+      bot._client.on('add_resource_pack', (p) => ackPack(p, false));
+      bot._client.on('resource_pack_send', (p) => ackPack(p, true));
+    });
 
     bot.once('login', () => this.emit('session', { state: 'logged_in' }));
     bot.once('spawn', () => {
