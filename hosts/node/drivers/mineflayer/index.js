@@ -105,10 +105,27 @@ export class MineflayerDriver {
     this.trace = installProtocolTrace(bot, (line, level) => this.log(line, level ?? 'debug'));
     this._patchRuntime = installPatches(bot, { version: cfg.version, log: (line) => this.log(line, 'info') });
 
-    bot._client.on('add_resource_pack', (p) => {
-      bot._client.write('resource_pack_receive', { uuid: p.uuid, result: 3 });
-      bot._client.write('resource_pack_receive', { uuid: p.uuid, result: 0 });
-    });
+    // 资源包应答只能有一套。mineflayer 自带插件在 configuration 阶段会应答 3+0，
+    // 驱动此前又挂了一个 handler 也应答 3+0 —— 线上 trace 观测到同一 uuid 连发
+    // 3,0,3,0。Velocity/后端的状态机会停在非法状态，随后静默断开（~15s）。
+    // 这里摘掉插件监听，按原版客户端序列只应答一次：ACCEPTED → DOWNLOADED → SUCCESSFULLY_LOADED。
+    bot._client.removeAllListeners('add_resource_pack');
+    bot._client.removeAllListeners('resource_pack_send');
+    let lastPack = null;
+    const ackPack = (p, uuidFromOldPacket) => {
+      const key = (p.uuid !== undefined && !uuidFromOldPacket) ? { uuid: p.uuid } : { hash: p.hash ?? p.uuid };
+      const sig = `${key.uuid ?? key.hash}`;
+      if (sig === lastPack?.sig && Date.now() - lastPack.at < 2000) return;   // 同一包双事件去重
+      lastPack = { sig, at: Date.now() };
+      const reply = (result) => {
+        try { bot._client.write('resource_pack_receive', { ...key, result }); } catch { /* 断线中忽略 */ }
+      };
+      reply(3);                        // ACCEPTED
+      setTimeout(() => reply(4), 100); // DOWNLOADED
+      setTimeout(() => reply(0), 250); // SUCCESSFULLY_LOADED
+    };
+    bot._client.on('add_resource_pack', (p) => ackPack(p, false));
+    bot._client.on('resource_pack_send', (p) => ackPack(p, true));
 
     bot.once('login', () => this.emit('session', { state: 'logged_in' }));
     bot.once('spawn', () => {
