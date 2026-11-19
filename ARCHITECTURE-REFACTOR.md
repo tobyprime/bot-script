@@ -535,6 +535,8 @@ NODE_PATH=$PWD/node_modules node /tmp/stack-compare.cjs
 - **动作按原版发包**：删除 hop / move_input / use_item.duration / chat_reply / respawn；
   改为 look / input / player_action / interact / use_item(start|release) / select_slot / drop / window_*。
 - **tick_end 不是能力**：从 capabilities 删除；版本适配只登记在 `drivers/mineflayer/patches`，`/caps.patches` 可见。
+  **补丁必须常装**（26.x 必须、1.21.8 无害）：线上回归——1.21.8 配置 + Velocity/26.3 后端，
+  按 `major>=26` 收窄补丁后实例加入约 15s 被静默断开；旧驱动一直是无条件安装。
 - **补全数据面**：self.effects/attributes、world block_state/block_entity/reach、真实 time_of_day/weather、实体全状态。
 - 能力清单收敛为 `nav.pathfinder` / `item.components` / `world.block_entity`（只有 nav.pathfinder 改变核心分支）。
 
