@@ -39,16 +39,20 @@ let engine = null;
 let stopped = false;
 const send = (msg) => { try { parentPort.postMessage(msg); } catch { /* 父已退 */ } };
 
-const shutdown = async (exitCode = 0, reason = null) => {
+// 退出上报：kind 是分类语义，detail 是给用户看的可读文案，full 只进内部日志。
+//   user        用户主动停止（console stop / undeploy）
+//   foreseeable 可预见的用户侧问题（登录失败、被踢、脚本运行时错误、内存超限…）
+//   internal    未预期异常（我们的问题）：用户只看得到一个追踪 ID，细节留给日志
+const shutdown = async ({ code = 0, kind = 'internal', detail = null, full = null } = {}) => {
   if (stopped) return;
   stopped = true;
   try { await engine?.stop(); } catch { /* ignore */ }
-  send({ t: 'exit', instance: instanceId, code: exitCode, reason });
-  process.exit(exitCode);
+  send({ t: 'exit', instance: instanceId, code, kind, detail, full });
+  process.exit(code);
 };
 // 父进程要求停机（agent 下发 undeploy）：优雅停。
 parentPort.on('message', (m) => {
-  if (m === 'stop') shutdown(0, 'worker stopped');
+  if (m === 'stop') shutdown({ code: 0, kind: 'user', detail: '实例已停止' });
   else if (m && m.t === 'cmd') { try { engine.dispatchCommand(String(m.cmd ?? ''), null, true); } catch { /* ignore */ } }
 });
 
@@ -77,7 +81,20 @@ async function main() {
   send({ t: 'ready', instance: instanceId });
 }
 main().catch((e) => {
-  console.error(`[worker:${instanceId}] 启动失败:`, e);
-  send({ t: 'exit', instance: instanceId, code: 1, reason: String(e?.message ?? e) });
+  // 启动失败要区分「用户的包/配置问题」与「我们自己的问题」：
+  // 前者给可执行提示（用户能自己改），后者只留追踪 ID、细节进日志。
+  const message = String(e?.message ?? e);
+  const kind = e?.kind;   // 引擎抛出的类型化错误（lua.compile / persist.* / param.* 等）
+  const full = `${message}${e?.stack ? `\n${String(e.stack).split('\n').slice(0, 6).join('\n')}` : ''}`;
+  console.error(`[worker:${instanceId}] 启动失败 kind=${kind ?? ''}:`, full);
+  if (kind === 'lua.compile') {
+    send({ t: 'exit', instance: instanceId, code: 1, kind: 'foreseeable', detail: '脚本编译失败：请检查包的 Lua 源码', full });
+  } else if (String(kind ?? '').startsWith('param.')) {
+    send({ t: 'exit', instance: instanceId, code: 1, kind: 'foreseeable', detail: '实例参数不合法：请检查参数配置', full });
+  } else if (/bot\.yaml|manifest|deploy\.yaml|ENOENT/.test(message)) {
+    send({ t: 'exit', instance: instanceId, code: 1, kind: 'foreseeable', detail: '程序包或部署配置不完整：请重新上传程序包', full });
+  } else {
+    send({ t: 'exit', instance: instanceId, code: 1, kind: 'internal', detail: null, full });
+  }
   process.exit(1);
 });

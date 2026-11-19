@@ -80,19 +80,33 @@ async function deployInstance(body) {
   worker.stderr?.pipe(process.stderr);
   worker.on('message', (m) => {
     if (m.t === 'ready') { w.ready = true; }
-    if (m.t === 'exit') { w.exitMsg = m; }
+    if (m.t === 'exit') { w.exitMsg = m; }   // { code, kind, detail, full }
   });
   worker.on('error', (e) => {
     console.error(`[host] worker ${instanceId} 错误:`, e?.code ?? e?.message);
     const oom = e?.code === 'ERR_WORKER_OUT_OF_MEMORY';
-    w.exitMsg = w.exitMsg ?? { code: oom ? 137 : 1, reason: oom ? '内存超限（JS 堆超出 resourceLimits）' : (e?.message ?? 'worker error') };
+    // worker 自身抛出的错误携带分类（用户可自解 / 我们的问题）；OOM 属于可预见（实例内存配额可调）
+    const kind = e?.exitKind ?? (oom ? 'foreseeable' : 'internal');
+    w.exitMsg = w.exitMsg ?? {
+      code: oom ? 137 : 1,
+      kind,
+      detail: oom ? '实例内存超限：可在实例设置里调高内存上限后重试' : null,
+      full: e?.stack ?? (e?.message ?? 'worker error'),
+    };
     exitReport.set(instanceId, w.exitMsg);
   });
   worker.on('exit', (code) => {
     const cur = workers.get(instanceId);
     if (cur && cur.worker === worker) {
       if (!cur.stopping) {
-        const rep = cur.exitMsg ?? { code, reason: code === 137 ? '内存超限' : `worker exit ${code}` };
+        // 没有 exit 消息 = worker 未经 shutdown 就没了（被 terminate / 超限 / 进程内崩溃），
+        // 这类属于未预期异常，细节只留在日志里，对用户只给追踪 ID
+        const rep = cur.exitMsg ?? {
+          code,
+          kind: code === 137 ? 'foreseeable' : 'internal',
+          detail: code === 137 ? '实例内存超限：可在实例设置里调高内存上限后重试' : null,
+          full: `worker exited without exit message (code=${code})`,
+        };
         exitReport.set(instanceId, rep);
       }
       workers.delete(instanceId);
