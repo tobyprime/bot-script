@@ -13,11 +13,11 @@
 
 ### ② 追杀 bot
 - 步骤：收到命令（鉴权）→ 查实体 → 循环{检查目标存活 → 选最强武器 → 距离远则追（目标在动！）、近则瞄准+攻击（受攻击冷却约束）} → 目标死亡报告 → 随时可中止。
-- **逼出**：实体查询与**活体句柄**语义（`e.pos` 每次读取都取最新值，非快照）；`nav.follow` 与重发路径；引擎内置物品数据表（攻击力/攻击速度排序 → `equip_best`；1.9+ 冷却计算，旧版本为 0）；控制命令通道（类型化参数 + 权限 + 回复）；战斗黑名单策略；任务取消与 `on cancel` 清理；自身死亡/重生时的任务处置。
+- **逼出**：实体查询与**活体句柄**语义（`e.pos` 每次读取都取最新值，非快照）；`nav.follow` 与重发路径；物品属性从 **ItemStack 组件**读（`attribute_modifiers` 的 attack_damage/attack_speed 排序 → `equip_best`；冷却按 attack_speed 计算）；聊天触发与客栈鉴权（`on_chat` + `bslib.authorized`）；战斗黑名单策略；任务取消与 `on cancel` 清理；自身死亡/重生时的任务处置。
 
 ### ③ 整理 bot
 - 步骤：定时触发 → 开输入箱 → 逐物品决策（不满盒缓存 → 开箱校验缓存 → 尽量放入；溢出 → 该物品库存箱；无缓存 → 告警/跳过）→ 回写缓存 → 关箱。
-- **逼出**：带 schema 的持久化表 + 查询助手（`find` 不满盒、按填充度排序）；**堆叠上限知识**（`stack_size(id)`，64/16/1，来自引擎物品表）才能算 `free_space` 和 `min(剩余, 空间)`；世界区域扫描 `world.scan`（发现库存区箱子，做缓存冷启动；不可用时降级为 params 手工播种）；**缓存开箱校验/闭箱回写**的一致性规则；params 外部增删不满盒列表；进度看门狗（连续无净进度即中止）。
+- **逼出**：带 schema 的持久化表 + 查询助手（`find` 不满盒、按填充度排序）；**堆叠上限知识**（`item.stack` 读 ItemStack 组件的 `max_count`，不按 id 猜）才能算 `free_space` 和 `min(剩余, 空间)`；世界区域扫描 `world.scan`（发现库存区箱子，做缓存冷启动；不可用时降级为 params 手工播种）；**缓存开箱校验/闭箱回写**的一致性规则；params 外部增删不满盒列表；进度看门狗（连续无净进度即中止）。
 
 ### ④ 银行 bot
 - 步骤：聊天正则匹配入账（区分真实玩家/系统消息）→ 去重 → 事务入账；取款命令 → 余额校验 → 发服务器命令 → 等回执（超时回滚）→ 回复。
@@ -41,9 +41,9 @@
 
 物品过滤无专门类型：普通 table（按字段匹配，如 `{ id = "minecraft:x" }`）或谓词函数，与 entity.find 的谓词同构。
 
-引擎内置数据表（**知识放引擎，不依赖后端查询**，按服务端版本选表）：
-- 物品属性表：`stack_size(id)`、攻击伤害、攻击速度（→1.9+ 冷却）、武器类别 —— 服务于 ②③
-- 方块属性表：容器类方块清单、硬度 —— 服务于 ③
+物品知识（**真值来自 ItemStack 组件，不按 item id 查表**）：
+- 物品属性：`item.stack` 读 ItemStack 组件（max_stack_size / max_damage / damage / attribute_modifiers 的攻击伤害与攻速）—— 服务于 ②③
+- 方块属性：`world.block` 返回 block_state（属性 map）、硬度、方块实体；容器类方块清单（`contracts/data/containers.json`）—— 服务于 ③
 - 规范名 ↔ 各版本 id 映射 —— 全部
 
 ---
@@ -137,7 +137,7 @@ container.close(win)
 
 -- bslib 复合（构建在点击之上，脚本层名称不变，§13）：
 --   withdraw/deposit/transfer(...) -> moved（moved<count=箱满 成为 bslib 约定而非引擎契约）
---   container.move 多趟、free_space（用 data.stack_size）
+--   container.move 多趟、free_space（用 data.stack.max_count）
 -- ⚠ 安全规则：未知窗口（win:type()=="custom"）上禁跑 bslib 传送复合——点击可能触发任意命令；
 --   脚本应先 title()/已知布局识别，再决定精确点击还是复合传送
 ```
@@ -149,7 +149,7 @@ P0：open/close/slots/peek/click/click_hotbar/drop_slot/drop_cursor；P1：curre
 inv.count(filter) inv.has(filter)
 inv.find(filter) -> slot?           -- 首个匹配槽位
 inv.equip(filter|slot) -> bool      -- 换到主手（②）
-inv.equip_best(kind) -> itemstack   -- kind:"weapon"，按引擎物品表排序（②）
+inv.equip_best(kind) -> itemstack   -- kind:"weapon"，按 ItemStack 组件 attack_score 排序（②）
 inv.held() inv.drop(filter, count)
 inv.click(slot, opts) inv.cursor()  -- 背包窗口点击 / 光标查询：背包 = 0 号窗口，与 win.click 同一动词，引擎侧展开
 ```
@@ -182,7 +182,7 @@ world.staleness(pos) -> duration              -- 新鲜度显式暴露
 -- 事件（可选）：world.block_changed(pos)
 ```
 P0: block/staleness；P1: scan；P2: raycast。
-降级：驱动不支持世界流（`caps.world_stream=false`）→ 查询转为驱动定点查询，慢但可用。
+降级：`world.block` 走驱动实时定点查询 + `world.block_changed` 事件（无 chunk 流；ABI v2 已移除 `world_stream` 能力位）。
 
 ### 3.6 `combat` / 交互
 ```lua
@@ -290,7 +290,7 @@ events.emit("pay", { payer = "Steve", amount = 12.5 })   -- 上抛一条事件�
 ## 4. 事件目录（统一 `域.事件` 点分命名）
 
 > 命名规范：`域.事件`，全小写下划线，域 = 能力域名；目录**参考 mineflayer 事件系选取核心集**。
-> 订阅统一 `on_event("域.事件", fn)`，handler 即任务（可挂起/可取消）；`on_chat / on_command / on_timer / on_start` 等专用 on_* 是高频糖，事件名不变（`on_chat` 即订阅 `chat.message` 加正则过滤）。
+> 订阅统一 `on_event("域.事件", fn)`，handler 即任务（可挂起/可取消）；`on_chat / on_timer / on_start` 等专用 on_* 是高频糖，事件名不变（`on_chat` 即订阅 `chat` 加正则过滤 + `source` 过滤）。**没有命令事件/命令声明**。
 > **纪律：目录只收"状态跃迁"，高频连续量不进事件**——20Hz 位置流、逐包窗口刷新进缓存（§15 合帧），脚本用查询/wait_until 消化。这是 mineflayer 生态的直接教训：直接订阅 entityMove 会淹死调度器。唯一例外是 `engine.tick`：它不是状态流而是**调度原语**（每逻辑帧一次），帧体必须同步微操作。
 
 ### 生命周期钩子（不进总线）
@@ -405,14 +405,14 @@ params schema 校验（包默认合并持久化值）→ persist 打开/迁移 �
 | ③整理 | goto_near | free_space/deposit/count | — | — | scan/block | — | log | 表+校验回写 | params、看门狗 |
 | ④银行 | — | — | — | — | — | — | on_chat/await/run_command/seen | txn+意图日志 | 命令白名单、authority、限速 |
 
-结论：四列并集无缺口；②③共同逼出的"引擎物品表"、①③共同逼出的"容器复合语义"、④独有的"事务+回执"均为公共能力，无场景需要目录之外的机制。
+结论：四列并集无缺口；②③共同逼出的"ItemStack 组件读取"、①③共同逼出的"容器复合语义"、④独有的"事务+回执"均为公共能力，无场景需要目录之外的机制。
 （§13/§3.2 定稿后注：矩阵中的 withdraw/deposit/free_space/move/equip_best 由 bslib 提供，脚本层名称不变；HAL 对应面为点击协议全集。）
 
 ## 10. 优先级汇总
 
-- **P0（M1，mineflayer，验收=①④）**：nav 基础、container 全部、inv 基础、chat 全部、控制命令、self 基础、time/task/log、persist 全部、params、策略（围栏/禁挖/命令白名单/authority/内建 pause）、HTTP 控制通道（§17）、dry_run、动作日志。
-- **P1（M2，验收=②③）**：entity、follow、combat 四件套、equip_best+物品表、world.scan、caps、seen 之外的生命周期事件（death/suspend/resume）、看门狗、stack_size 表。
-- **P2**：raycast、dig/place、effects、webhook 告警、metrics 导出。
+- **P0（M1，mineflayer，验收=①④）**：nav 基础、container 全部、inv 基础、chat 全部、宿主控制（HTTP `/pause` `/resume`）、self 基础、time/task/log、persist 全部、params、策略（围栏/禁挖/命令白名单/authority/容器门控）、HTTP 控制通道（§17）、dry_run、动作日志。
+- **P1（M2，验收=②③）**：entity、follow、combat 四件套、equip_best（按 ItemStack 组件排序）、world.scan、caps、seen 之外的生命周期事件（death/suspend/resume）、看门狗、`item.stack` 组件全量。
+- **P2**：raycast、webhook 告警、metrics 导出。
 
 ---
 
@@ -490,11 +490,11 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 | 层 | 实现者 | 内容 | 判据 |
 |---|---|---|---|
-| 宿主动作 [H] | 各栈原生桥（engine.js · LuaHost+McRuntime · mcc 桥） | open/close / **点击协议全集**（click/click_hotbar/drop/drag/swap_offhand）/ attack / use_item / dig / place / path_to / 聊天收发与包流 | 一次网络往返或一次客户端动作 |
-| 引擎核心 | 引擎原生代码 | 调度、资源仲裁（移动权/**窗口互斥**）、窗口内容同步与失效语义、persist、params、引擎侧正则、**数据表**（stack_size / weapon_score / 工具速度） | 必须成立的跨后端不变量；需要引擎内部状态或事务保证 |
+| 宿主动作 [H] | 各栈原生桥（engine.js+abi.js · AbiDispatcher+McRuntime · mcc 桥） | look / input / dig / use_block / use_entity / swing / use_item / select_slot / drop / 窗口点击协议全集 / chat_send / path_to / 包流 | 一次网络往返或一次客户端动作 |
+| 引擎核心 | 引擎原生代码 | 调度、资源仲裁（移动权/**窗口互斥**）、窗口内容同步与失效语义、persist、params、引擎侧正则；**不做物品数据表**（属性读 ItemStack 组件） | 必须成立的跨后端不变量；需要引擎内部状态或事务保证 |
 | bslib 内置 Lua 库 | 引擎随附（Lua 源码，可读、可覆盖） | withdraw / deposit / transfer（moved<count 约定）/ container.move 多趟、eat_until_full、equip_best、ensure_holding、entity.pickup、is_combat_ready、find_ground / is_dangerous 等谓词 | **行为策略**——用户可能想调整的决策逻辑 |
 
-场景落点：②的"会吃饭、换最强武器"是 bslib 的职责（如 `bslib/combat.lua`），HAL 只保证 `combat.use_item`、`inv.equip`、`data.weapon_score(id)` 这些底层件存在。
+场景落点：②的"会吃饭、换最强武器"是 bslib 的职责（如 `bslib/combat.lua`），HAL 只保证 `combat.use_item`、`inv.equip`、`item.stack`（组件属性）这些底层件存在。
 
 收益：
 
@@ -519,36 +519,37 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 |---|---|---|
 | L0 连接 | 登录 / keepalive / 重连 / 版本与能力协商 | 小（mineflayer/mcc 协议库代劳大半） |
 | L1 数据面（入） | 包流 → **规范化事件通道**（通道目录与合并语义见 §15）：chunk/方块更新、实体流、自身状态、窗口内容、聊天/HUD、sound/particle、kick/teleport | 纯翻译无业务逻辑；版本适配由底层协议库消化大半 |
-| L2 动作面（出） | 下表 **14 个动词** | 每动词 = 一两个包的发送 |
+| L2 动作面（出） | 下表 **15 个动作 op** | 每 op = 一两个原版包的发送（无按键模拟） |
 | L3 可选智能 | 寻路器（Baritone / mineflayer-pathfinder / mcc 内建） | 仅 `caps.nav.pathfinder` 驱动提供；缺失时 goto 退化为直线可达执行（§14.3） |
 
-### 14.2 L2 动作动词（全表）
+### 14.2 L2 动作 op（全表）
 
-| 动词 | 覆盖的脚本层 API | 说明 |
+| op | 覆盖的脚本层 API | 说明 |
 |---|---|---|
-| `chat.send(text)` | chat.say **+** chat.run_command | 以 `/` 前缀区分，驱动不做语义区分 |
-| `window.open(target)` / `window.close()` | container.open/close | target: blockpos\|entity |
-| `window.click(slot, button, mode, n?)` | win.click / click_hotbar / drop_slot / drop_cursor / drag 全部 | mode = vanilla ClickType 枚举（pickup/quick_move/swap/drop/drop_all/drag…）；具名糖在引擎侧展开 |
-| `use_entity(id, kind, pos?)` | combat.attack、interact_entity | kind = attack / interact / interact_at |
-| `use_block(pos, face, cursor?)` | use_block（开箱/按钮/门）**与 place** | 同一协议动作，结果由手持物+潜行态决定，语境引擎知道 |
-| `use_item(phase)` | combat.use_item（吃/喝/拉弓） | phase = start/release；蓄力时长由 bslib 掐表 |
-| `dig(pos, phase)` | combat.dig | phase = start/cancel；**完成以该方块的 block_update 事件确认为准**，引擎数据表时长仅作超时上限与前置校验（急迫/水下/onGround 等状态修正由真实事件兜住） |
-| `rot(yaw, pitch)` | look.yaw / look.pitch | 一次姿态同步 |
-| `move_input({fwd,strafe,jump,sneak,sprint})` | 底盘控制 | fabric=注入按键；mineflayer/mcc=setControlState 类翻译 |
-| `hop()` | "边跑边跳"等移动修饰（脚本循环调用） | 一次跳跃：按下 ~100ms |
-| `path_to(target, opts)` / `path_cancel()` 〔L3〕 | nav.walk / follow | 唯一的驱动侧智能，进度事件回传 |
-| `respawn()` | self 重生 | 一个状态包 |
+| `act.chat_send(text, kind)` | chat.say / run_command / msg / reply | kind = chat / command / reply；command 层由核心补 `/`，宿主按 kind 走策略 |
+| `act.window_open(target)` / `act.window_close()` | container.open/close | target: blockpos\|entity；同时至多一个窗口 |
+| `act.window_click(slot, button, mode, state_id?, n?)` | win.click / click_hotbar / drop_slot / drop_cursor / drag 全部 | mode = vanilla ClickType；**state_id 由客户端维护**并随包回传 |
+| `act.use_entity(target, kind, hand?)` | combat.attack、interact_entity | kind = attack / interact / interact_at |
+| `act.use_block(pos, face, hand, intent, cursor?)` | use_block（开箱/按钮/门）**与 place** | face 0..5 + cursor 精确命中；intent=place 走 place 门控 |
+| `act.use_item(phase, hand?)` | combat.use_item（吃/喝/拉弓） | phase = start/release；蓄力时长由 bslib 掐表 |
+| `act.dig(pos, face?)` / `act.dig_stop()` | combat.dig / combat.dig_stop | player_action START / STOP；**完成以方块变空为准**（真实状态，不按硬度猜） |
+| `act.look(yaw, pitch)` | look.yaw / look.pitch / look.aim | 一次 rotation 包 |
+| `act.input(forward, right, up, sprint, sneak)` | 底盘控制（nav 直线退化 / nav.hop） | player_input 状态位，前后左右为**有符号轴**（forward=1 前进、=0.5 潜行速度等由协议层处理）；不注入按键、不模拟玩家操作 |
+| `act.swing(hand?)` | 攻击/挥手的显式包 | 与 attack 分开，便于无伤害交互 |
+| `act.select_slot(slot)` | inv.equip | 选主手槽（服务器确认） |
+| `act.drop(all?)` | inv.drop | 丢弃手持物 |
+| `act.path_to(target, arrive, timeout_ms)` / `act.path_cancel()` 〔L3〕 | nav.walk / follow | 唯一的驱动侧智能，进度事件回传 |
 
-共 14 个动词。**策略门控与限速全部在引擎**，驱动不做二次判断。
+共 15 个动作 op。**策略门控与限速全部在宿主 dispatch 一处**，驱动不做二次判断。
 
 ### 14.3 边界决定
 
-- `say` 与 `run_command` 合并为驱动侧同一动词；`place` 与 `use_block` 合并（同一协议动作、语境区分）；
+- `say` 与 `run_command` 合并为 `act.chat_send`，由 `kind` 区分（策略按 kind 分别门控）；`place` 与 `use_block` 合并（同一协议动作，`intent` 区分）；
 - **窗口点击的 revision/stateId 记账**：mineflayer/mcc 复用其库内窗口模型（驱动内既有状态，非新增逻辑）；fabric 走原版客户端 screen handler（§16.3）。"纯翻译"指**无业务逻辑**，不排斥协议层既有的会话状态；
-- 挖掘/蓄力的**完成判定以事件为准**，引擎数据表时长只做超时上限——不在引擎侧猜服务器判定；
-- 脚本层具名糖（win.click_hotbar 等）由引擎展开为动词参数——脚本 API 人体工学不缩水，驱动面不膨胀；
-- **L3 缺失时 goto 退化为直线可达执行**（引擎 move_input 直走 + 单格跳跃，开阔地形），复杂地形显式 `nav.unreachable`——不在引擎里重造寻路器，P2 亦不评估完整降级寻路；
-- 版本差异被压缩到 L1 通道翻译（§15.3）+ 物品/方块 id 映射表（引擎按版本选表）；L2 动词跨版本稳定（点击/交互动词语义自 1.8 起未变）。
+- 挖掘/蓄力的**完成判定以真实状态为准**（方块变空 / 物品消耗），不按硬度或时长猜服务器判定；
+- 脚本层具名糖（win.click_hotbar 等）由引擎展开为 op 参数——脚本 API 人体工学不缩水，驱动面不膨胀；
+- **L3 缺失时 nav.walk 退化为直线可达执行**（核心用 `act.input` 直走 + `act.look` 转向，开阔地形），复杂地形显式 `nav.unreachable`——不在引擎里重造寻路器，P2 亦不评估完整降级寻路；
+- 版本差异被压缩到 L1 通道翻译（§15.3）+ 物品/方块 id 映射；**物品属性不查表**（直接读 Stack 组件）——L2 op 跨版本稳定（点击/交互动词语义自 1.8 起未变）。
 
 ### 14.4 三宿主的预期实现量（粗估）
 
@@ -556,7 +557,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 |---|---|---|
 | mineflayer | 协议库+世界模型现成，API 与动词几乎一一对应 | 薄翻译层 ✅ 已实装（wasmoon 桥） |
 | mcc | 协议+移动控制现成（注意：其世界模型较薄，L1 chunk 通道需评估补齐） | 薄翻译层（规划） |
-| fabric mod | 输入/渲染/Baritone 现成；v2 standalone（Luaj 内嵌，无 Node 依赖） | 中等（LuaHost 桥 + McRuntime + L1 采样挂点，随版本需重验，见 §16.6）✅ 已实装 |
+| fabric mod | 输入/渲染/Baritone 现成；v2 standalone（Luaj 内嵌，无 Node 依赖） | 中等（LuaRuntime + AbiDispatcher + McRuntime/McState + L1 采样挂点，随版本需重验，见 §16.6）✅ 已实装 |
 
 > 收益视角：驱动从"半个 bot 框架"缩到"通道翻译 + 14 个动词"；新增后端或跟进新版本的边际成本随之最小化。
 > 现实注记：真服务器高对抗场景（②）会因反作弊把部署重心推向 fabric——三驱动中唯一"中等"成本的那个，
@@ -591,7 +592,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 - **缓存所有权**：引擎缓存是由 L1 流构建的**查询投影**；L3 寻路器在后端内部仍用其自有世界模型——世界状态双份是结构性的（DESIGN §1 注），引擎缓存不追求替代后端内部模型。
 - **staleness**：引擎按通道记录最后更新时间；`world.staleness(pos)` 与实体活读字段受其约束；驱动不替引擎遮掩滞后。
-- **降级**：`caps.world_stream=false` 的驱动可不上报 chunk 通道，查询下沉驱动定点执行（慢速路径，显式暴露）。
+- **降级**：无 chunk 流时 `world.block` 走驱动定点查询（慢速路径，显式暴露）；ABI v2 已移除 `world_stream` 能力位。
 
 ### 15.3 版本适配责任边界
 
@@ -601,7 +602,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 ## 16. 客户端 mod 驱动（fabric）能力定义
 
-> **v2 现状**：mod 已 standalone——内嵌 Luaj（LuaHost）直接加载 `<游戏目录>/botscript/<包名>/` 脚本包，
+> **v2 现状**：mod 已 standalone——内嵌 Luaj（LuaRuntime）经 AbiDispatcher 直接服务 `<游戏目录>/botscript/<包名>/` 脚本包，
 > 无 Node 进程依赖。v1 的 WS 连接层实现已随 v2 清理删除（原 `mod/legacy-ws-client/` 归档）；
 > 其余（§16.2 采样挂点、§16.3 动词映射、§16.4 flags、§16.6 跟进面）仍然有效。
 > 定位：mod 寄生在**真实客户端进程**内，天然持有全部客户端状态与原版交互路径——三宿主中唯一
@@ -630,22 +631,26 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 | `chat` / `hud.*` | 聊天栏、BossBar、Title、ActionBar、TabList、Scoreboard、Teams——全量只读 |
 | `sound` / `particle` | 客户端声音/粒子管理器 hook |
 
-### 16.3 L2 动词实现映射（14 动词 → 客户端机制）
+### 16.3 L2 动作 op → 客户端机制
 
-| 动词 | 客户端机制 |
+| op | 客户端机制 |
 |---|---|
-| `chat.send` | 客户端聊天发送（`/` 前缀即命令） |
-| `window.open/close/click` | 原版 handledScreen 点击路径（ClickType 全集）；**stateId/revision 由客户端维护** |
-| `use_entity` / `use_block` / `use_item` | 客户端 GameMode 交互入口（attack/interact/use；startUseItem/release） |
-| `dig` | startDestroyBlock / stopDestroyBlock——**客户端自身计挖掘进度**，引擎表仅校验（§14.2） |
-| `rot` | 客户端 rotation 直写（本地即权威） |
-| `move_input` / `hop` | KeyMapping 注入：fwd/strafe/jump/sneak/sprint = 真实按键态，冲刺/物理由客户端维持 |
-| `path_to` / `path_cancel` 〔L3〕 | **Baritone 桥**：`arrive`→GoalNear、`timeout`→引擎侧墙钟、进度 = PathEvent 映射 nav 进度事件；settings 白名单（allowSprint/allowParkour/allowPlace…）受引擎 blocks 策略二次门控 |
-| `respawn` | 死亡屏幕确认按钮 |
+| `act.chat_send` | 客户端聊天发送（kind=command 时 `/` 前缀） |
+| `act.window_open/close/click` | 原版 handledScreen 点击路径（ClickType 全集）；**stateId/revision 由客户端维护** |
+| `act.use_entity` / `act.use_block` / `act.use_item` | 客户端 GameMode 交互入口（attack/interact/use；startUseItem/release），带 face/cursor 精确命中 |
+| `act.dig` / `act.dig_stop` | startDestroyBlock / stopDestroyBlock + 持续 player_action——**客户端自身计挖掘进度**，完成以方块变空为准 |
+| `act.look` | 客户端 rotation 直写（本地即权威） |
+| `act.input` | **player_input 状态位**（forward/right 有符号轴 + jump/sprint/sneak），不注入 KeyMapping、不模拟玩家操作；物理由客户端维持 |
+| `act.swing` / `act.select_slot` / `act.drop` | 独立的原版包（挥手 / 选槽 / 丢弃） |
+| `act.path_to` / `act.path_cancel` 〔L3〕 | **Baritone 桥**：`arrive`→GoalNear、`timeout`→引擎侧墙钟、进度 = PathEvent 映射 nav 进度事件；settings 白名单受 blocks 策略二次门控 |
+
+死亡重生由宿主自动处理（ABI v2 无 `respawn` 动作 op）。
 
 ### 16.4 能力 flags（协商上报）
 
-`world_stream=true · entity.equipment=true · entity.holding=true · nav.pathfinder=true（挂 Baritone 时）· input.move=true · window.click_authentic=true · hud.full=true · ui.gui=true（§16.5）`
+`abi=2 · nav.pathfinder=true（挂 Baritone 时）· item.components=true · world.block_entity=true`
+
+`/caps` 另列 `patches`（已应用的版本适配补丁 id）。能力位只增不删；缺省 = false。
 
 ### 16.5 GUI 管理 / 配置界面（人类可读，mod 内建）
 
@@ -677,15 +682,15 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 版本敏感面切分：
 
-- **版本无关（一份，跨版本共享）**：LuaHost、bootstrap.lua/bslib.lua、Policy、PersistStore、CommandBus、HTTP API、GameTables（按 server_version 选表）、GUI 抽象层；
+- **版本无关（一份，跨版本共享）**：LuaRuntime、runtime/lua/core（bootstrap/bslib）、AbiDispatcher、Policy、PersistStore、McState/WindowLayout、DataRegistry（ItemStack 组件读取）、HTTP API、GUI 抽象层；
 - **版本自适应（每版本薄一层）**：McRuntime 的 MC 接线 + mixins（§16.2 挂点）+ Screen 实现 + 映射名——全部集中在**版本适配层**（DriverHooks 模式）。
 
 工程方案：
 
 - **Stonecutter 多版本构建**：单代码库、按版本预处理面；1.21.x 线与 26.x 线跨版本方案边界（两套 mapping 家族），CI 矩阵**每版本出一个 jar**；
 - 挂点收敛单一 DriverHooks 类，优先用 Fabric API 事件入口（tick/chat 等跨版本稳定），mixin 数量压到最少；
-- 数据表（物品/方块属性）按 server_version 选表机制跟进，新版本表差异用生成脚本处理；
-- 新版本纳入流程：loader/API 升级 → 适配层重编译 → 挂点重验 → 数据表 diff → 并入 CI 矩阵。
+- 数据类差异（物品组件字段、方块属性名）随协议/注册表自动到位；较老版本缺组件时字段为 null（不造假），新版本字段只加不改；
+- 新版本纳入流程：loader/API 升级 → 适配层重编译 → 挂点重验 → 组件字段 diff → 并入 CI 矩阵。
 - 成本现实：0.5–2 人日/版本（同线内补丁版本 ≤1 人日）；1.x→26.x 方案切换的适配高峰由适配层一次吸收。
 
 ---
@@ -700,14 +705,15 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 > **`/eval`（2026-09-10 改拍板，原为"无 /eval"沙箱纪律）**：控制面提供 one-shot Lua——提交的代码
 > 编译为具名任务进入运行时，与包脚本**同环境、同边界**（每个动作仍过 Policy，脚本不可借 eval 绕过
 > 授权）；Bearer token 即 console 级操作者身份。适合探索、临时驱动与无命令面覆盖的场景；
-> 固定操作面仍优先走 `/cmd` 与 `/params`。
+> 固定操作面仍优先走 `/params` 与脚本自己的 `on_chat` 处理。
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
 | `/state` | GET | 快照：session、pos、health/food、当前任务列表与状态、窗口、caps；含断线重连可观测（reconnecting/attempts/next_retry_in，TOB-475）与 `credential_updated_at`（最近一次 POST /session 生效时刻，无则 null） |
 | `/session` | POST | **mineflayer 宿主**：会话凭据更新（TOB-489，MC 凭据轮换引擎侧）。`{"access_token":"<新 token>","username"?:"…","uuid"?:"…"}` → `200 {"applied":true,"effective":"next_connect"\|"next_reconnect"}`。写入 `connectCfg.account.accessToken`：在线连接零动作（MC 协议无会话中重认证，accessToken 仅 join 期消费）；断线/重连环路中下一次重连即用新 token（不重置退避、不打断在途计划）。可选拖带 username/uuid 对账，与当前 account 不匹配 409；账号非 `auth:'session'` 模式（offline/密码式）409；access_token 缺失/空 400；同值重复 POST 幂等 200。token 值不进任何日志或 /state。fabric mod 宿主不在托管链路、暂不实现 |
 | `/params` | GET / POST | 读 / 改 params（schema 校验 + 持久化，等价控制总线写） |
-| `/cmd` | POST | 执行控制命令 `{"cmd":"balance Steve"}`（与游戏内/CLI 同总线同鉴权） |
+| `/pause` | POST | 暂停：`{"reason":"manual"}`（可选，默认 manual）；冻结任务、停走、取消寻路 |
+| `/resume` | POST | 恢复被 pause 冻结的任务（于冻结点重抛，走正常重试） |
 | `/eval` | POST | 一次性 Lua：`{"name":"relocate","code":"nav.walk{...}"}` 作为具名任务运行；编译错误 400，返回值/失败走 `/logs`，任务可在 `/tasks` 取消 |
 | `/tasks` | GET | 任务列表：id、name、status、运行时长、最近进度（`task.progress` 输入） |
 | `/tasks/cancel` | POST | `{"name":"organize"}` 协作式取消 |
@@ -719,5 +725,5 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 约定：全部 JSON；异步动作返回受理 id；三宿主的端点与载荷 schema 完全一致（MCP 工具不感知宿主差异）。
 
-**无头测试闭环**：`POST /cmd` 触发任务 → 轮询 `/tasks` 看完成 → `/logs` 核对动作序列 → `/persist` 对账断言。
+**无头测试闭环**：`POST /params` 或 `POST /eval` 触发任务 → 轮询 `/tasks` 看完成 → `/logs` 核对动作序列 → `/persist` 对账断言。
 配合 RCON 注入服务器事件（tellraw 模拟系统消息等），验收全程无需真人客户端；computer-use 仅留给"必须真人操作"的场景。

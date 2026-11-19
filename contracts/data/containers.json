@@ -1,0 +1,13 @@
+{
+  "note": "可交互容器方块（打开带玩家背包区的 GUI）。path 为注册表路径（去掉 minecraft: 前缀）。",
+  "paths": [
+    "chest", "trapped_chest", "barrel", "ender_chest",
+    "furnace", "blast_furnace", "smoker", "hopper", "dispenser", "dropper",
+    "brewing_stand", "crafter", "chiseled_bookshelf", "decorated_pot", "lectern",
+    "shulker_box",
+    "white_shulker_box", "orange_shulker_box", "magenta_shulker_box", "light_blue_shulker_box",
+    "yellow_shulker_box", "lime_shulker_box", "pink_shulker_box", "gray_shulker_box",
+    "light_gray_shulker_box", "cyan_shulker_box", "purple_shulker_box", "blue_shulker_box",
+    "brown_shulker_box", "green_shulker_box", "red_shulker_box", "black_shulker_box"
+  ]
+}

@@ -142,7 +142,8 @@ public final class BotGuiScreen extends Screen {
     private void layoutState() {
         boolean paused = state.has("paused") && state.get("paused").getAsBoolean();
         addDrawableChild(ButtonWidget.builder(Text.literal(paused ? "继续（resume）" : "急停（pause）"),
-                b -> api.localCall("/cmd", "POST", cmdBody(paused ? "resume" : "pause")))
+                b -> api.localCall(paused ? "/resume" : "/pause", "POST",
+                        paused ? new JsonObject() : reasonBody()))
                 .dimensions(8, height - 24, 150, 18).build());
     }
 
@@ -154,7 +155,7 @@ public final class BotGuiScreen extends Screen {
             int y = 32 + row * 14;
             if (y > height - 40) break;
             addDrawableChild(ButtonWidget.builder(Text.literal("取消"), b ->
-                            api.localCall("/tasks/cancel", "POST", cmdBody(str(t, "name", ""))))
+                            api.localCall("/tasks/cancel", "POST", nameBody(str(t, "name", ""))))
                     .dimensions(bx, y - 1, 44, 12).build());
         }
     }
@@ -477,9 +478,15 @@ public final class BotGuiScreen extends Screen {
         }
     }
 
-    private static JsonObject cmdBody(String cmd) {
+    private static JsonObject nameBody(String name) {
         JsonObject o = new JsonObject();
-        o.addProperty("cmd", cmd);
+        o.addProperty("name", name);
+        return o;
+    }
+
+    private static JsonObject reasonBody() {
+        JsonObject o = new JsonObject();
+        o.addProperty("reason", "operator");
         return o;
     }
 }

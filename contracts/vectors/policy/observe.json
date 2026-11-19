@@ -1,0 +1,13 @@
+{
+  "name": "观察模式：任何动作都是 permission.denied",
+  "boundary": null,
+  "op": "act.chat_send",
+  "args": {
+    "text": "hi",
+    "kind": "chat"
+  },
+  "expect": {
+    "allow": false,
+    "error": "permission.denied"
+  }
+}

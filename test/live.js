@@ -8,8 +8,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Vec3 } from 'vec3';
 import mineflayer from 'mineflayer';
-import { BotEngine } from '../engine/engine.js';
-import { MineflayerDriver } from '../drivers/mineflayer/index.js';
+import { BotEngine } from '../hosts/node/engine.js';
+import { MineflayerDriver } from '../hosts/node/drivers/mineflayer/index.js';
 
 const RUN_DIR = path.resolve('run');
 const HOST = '127.0.0.1';
@@ -268,7 +268,7 @@ async function main() {
     }
     // 守恒不变量：羊毛 70 / 圆石 12 应在登记箱或 bot 背包中（不含世界损耗）
     const all = [...chestItems(POS.partial), ...chestItems(POS.stock)];
-    const invView = JSON.parse(engines.organizer.lua.global.get('__q_window')('{"window":"0"}') || '{}');
+    const invView = JSON.parse(engines.organizer.abi.sync('window.get', '{"window":"0"}') || '{}');
     const invAll = (invView.slots ?? []).filter((s) => s.item).map((s) => s.item);
     const cnt = (arr, id) => arr.filter((i) => i.id === id).reduce((n, i) => n + i.count, 0);
     const wool = cnt(all, 'minecraft:pink_wool') + cnt(invAll, 'minecraft:pink_wool');

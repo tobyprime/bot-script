@@ -7,7 +7,7 @@
 -- 环境假设：平坦平台 + 一只含材料的箱子（params.chest）；放置落点 pad
 --       下方一格必须是可右键的实心地面（combat.place 落在 pos.up()）。
 -- 已知宿主局限（fabric）：inv_drop 为 no-op（跳过丢物实体链）；
---       world.scan 只扫描容器；无 world_stream（on_event block 流靠 P3 mixin）。
+--       world.scan 只扫描容器；无 chunk 流（world.block_changed 仅覆盖客户端可见变更）。
 -- ============================================================
 
 params {
@@ -81,15 +81,17 @@ local function suite_sense()
   local w = world.weather()
   if w == nil then warnskip("world.weather", "宿主未实现该查询（fabric 端未注册）")
   else check("world.weather", w == "clear" or w == "rain" or w == "thunder", tostring(w)) end
-  check("world.staleness", (world.staleness(PAD) or -1) >= 0, tostring(world.staleness(PAD)))
+  check("world.block.stale", type(world.block(PAD).stale) == "boolean", tostring(world.block(PAD).stale))
 
-  check("caps.pathfinder=false", caps.has("nav.pathfinder") == false)
-  check("caps.window.click_authentic", caps.has("window.click_authentic") == true)
+  check("caps.item.components", caps.has("item.components") == true)
   check("caps.server_version", (caps.server_version() or "") ~= "", tostring(caps.server_version()))
   check("session.state", session.state() == "playing", tostring(session.state()))
-  check("session.info", session.info() and session.info().state == "playing", tostring(session.info()))
-  check("data.stack_size", data.stack_size(MAT) == 64, tostring(data.stack_size(MAT)))
-  check("data.weapon_score(wooden_sword)", (data.weapon_score("minecraft:wooden_sword") or 0) > 0)
+  check("session.info", session.info() and session.info().version ~= nil, tostring(session.info()))
+  local stack = data.stack({ id = MAT })
+  check("data.stack.max_count", stack.max_count == 64, tostring(stack.max_count))
+  local sword = data.stack({ id = "minecraft:wooden_sword" })
+  check("data.stack(wooden_sword)", sword.attributes and sword.attributes.attack_damage ~= nil or sword.max_damage ~= nil,
+    tostring(sword.attributes or sword.max_damage))
 end
 
 -- ============================================================

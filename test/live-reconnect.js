@@ -9,9 +9,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
-import { BotEngine } from '../engine/engine.js';
-import { MineflayerDriver } from '../drivers/mineflayer/index.js';
-import { startHttpApi } from '../engine/httpapi.js';
+import { BotEngine } from '../hosts/node/engine.js';
+import { MineflayerDriver } from '../hosts/node/drivers/mineflayer/index.js';
+import { startHttpApi } from '../hosts/node/http17.js';
 
 const HOST = '127.0.0.1', PORT = 25565;
 const SERVER_DIR = path.resolve(process.env.BOTSCRIPT_TEST_SERVER_DIR ?? path.join(process.env.HOME, 'paper-475'));
@@ -89,7 +89,7 @@ try {
       }
     }
     console.log('  recon_a 缓存面: entities=%d world=%d windows=%d',
-      bots[0].engine.entities.size, bots[0].engine.world.size, bots[0].engine.windows.size);
+      bots[0].engine.driver.query_entities?.().length ?? 0, bots[0].engine.world.cache.size, bots[0].engine.windows.windows.size);
   });
 
   for (let round = 1; round <= 2; round++) {
@@ -97,10 +97,10 @@ try {
       rcon('stop');
       // rcon stop 服务器会踢出 bot：pauseReason 为 'kicked'；链路故障（崩服/断网）才是 'disconnect'，两者都应 pause
       for (const b of bots) await waitFor(() => b.engine.paused && (b.engine.pauseReason === 'disconnect' || b.engine.pauseReason === 'kicked'), 20000, 200, 'disconnect pause');
-      const ticks0 = bots.map((b) => Number(b.engine.lua.global.get('__ticks')));
+      const ticks0 = bots.map((b) => Number(b.engine.lua.lua.global.get('__ticks')));
       for (const b of bots) {
-        if (b.engine.entities.size || b.engine.windows.size || b.engine.world.size || b.engine.currentWindowId !== null) {
-          throw new Error(`断线后缓存未清空: entities=${b.engine.entities.size} windows=${b.engine.windows.size} world=${b.engine.world.size} winId=${b.engine.currentWindowId}`);
+        if ((b.engine.driver.query_entities?.().length ?? 0) || b.engine.windows.windows.size || b.engine.world.cache.size || b.engine.currentWindowId !== null) {
+          throw new Error(`断线后缓存未清空: entities=${b.engine.driver.query_entities?.().length ?? 0} windows=${b.engine.windows.windows.size} world=${b.engine.world.cache.size} winId=${b.engine.currentWindowId}`);
         }
         const s = await b.state();
         if (s.reconnecting !== true) throw new Error(`reconnecting 应为 true: ${s.reconnecting}`);
@@ -112,7 +112,7 @@ try {
       }
       // pause 冻结 timer：断线暂停期 on_timer 不再走
       await sleep(4000);
-      const ticks1 = bots.map((b) => Number(b.engine.lua.global.get('__ticks')));
+      const ticks1 = bots.map((b) => Number(b.engine.lua.lua.global.get('__ticks')));
       if (bots.some((b, i) => ticks1[i] !== ticks0[i])) throw new Error(`暂停期 timer 未冻结: ${ticks0} -> ${ticks1}`);
       console.log(`  attempts=${bots.map((b) => b.engine.reconAttempts)} next_retry_in=[${delays.slice(-2)}] 暂停期 ticks 冻结 ${ticks0}->${ticks1}`);
     });
@@ -129,9 +129,9 @@ try {
         }
       }
       // resume 后 timer 恢复
-      const t0 = bots.map((b) => Number(b.engine.lua.global.get('__ticks')));
+      const t0 = bots.map((b) => Number(b.engine.lua.lua.global.get('__ticks')));
       await sleep(2500);
-      const t1 = bots.map((b) => Number(b.engine.lua.global.get('__ticks')));
+      const t1 = bots.map((b) => Number(b.engine.lua.lua.global.get('__ticks')));
       if (bots.some((b, i) => t1[i] <= t0[i])) throw new Error(`resume 后 timer 未恢复: ${t0} -> ${t1}`);
       console.log('  重连成功，attempts 清零，ticks 恢复行走', t0, '->', t1);
     });

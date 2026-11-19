@@ -1,0 +1,18 @@
+{
+  "name": "containers=false：打开容器被拒",
+  "boundary": {
+    "containers": false
+  },
+  "op": "act.window_open",
+  "args": {
+    "target": {
+      "x": 0,
+      "y": 64,
+      "z": 0
+    }
+  },
+  "expect": {
+    "allow": false,
+    "error": "policy.blocklist"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "容器打开：背包合并视图 + 背包槽点击映射到玩家区",
+  "raw": {
+    "id": "7", "type": "chest", "title": "箱", "size": 27,
+    "slots": [
+      { "index": 0, "item": { "id": "minecraft:pink_wool", "count": 64 } },
+      { "index": 27, "item": { "id": "minecraft:dirt", "count": 5 } },
+      { "index": 54, "item": { "id": "minecraft:coal", "count": 3 } }
+    ],
+    "cursor": null
+  },
+  "expect": {
+    "window": { "size": 27, "occupied": { "0": "minecraft:pink_wool", "27": "minecraft:dirt", "54": "minecraft:coal" } },
+    "inventory": { "size": 36, "occupied": { "9": "minecraft:dirt", "0": "minecraft:coal" } },
+    "clicks": [
+      { "slot": 10, "target": "7", "target_slot": 28 },
+      { "slot": 0, "target": "7", "target_slot": 54 }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "未配置 containers：背包点击沿用旧行为（允许）",
+  "boundary": {},
+  "op": "act.window_click",
+  "args": {
+    "window": "0",
+    "slot": 1,
+    "button": 0,
+    "mode": 0
+  },
+  "expect": {
+    "allow": true,
+    "error": null
+  }
+}

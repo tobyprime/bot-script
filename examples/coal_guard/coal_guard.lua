@@ -3,7 +3,7 @@
 -- 触发：指定范围内有玩家主手拿着煤炭
 -- 行为：空手、一边旋转跳跃一边跑向该玩家并攻击；
 --       该玩家主手不再是煤炭（或死亡/离开）即停止，回到警戒。
--- 停止：guard stop 命令（op）或内建 pause；无 Stop 时任务持续警戒。
+-- 停止：guard stop 聊天指令（op 名单）或内建 pause；无 Stop 时任务持续警戒。
 -- 动作覆盖：move.path/hop/rot + interact.entity(attack) + window.click(收起主手)
 -- 关键能力：entity 谓词 holding / equipment.hand 活读、伴随任务、keep_rotation、
 --           on_cancel 清理钩
@@ -27,14 +27,11 @@ local function find_target()
 end
 
 on_start(function()
-  if not caps.has("entity.equipment") then
-    log.warn("当前驱动不暴露实体装备（equipment=unknown），本脚本无法工作")
-    return
-  end
   task.spawn("guard")
 end)
 
-on_command("guard stop", { perm = "op" }, function()
+on_chat(rex[[^guard stop$]], { source = "player" }, function(m)
+  if not bslib.authorized(m.sender, "op") then return end
   task.cancel("guard")
   chat.reply("警戒已停止")
 end)

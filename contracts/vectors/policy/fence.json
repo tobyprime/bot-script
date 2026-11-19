@@ -1,0 +1,1 @@
+{ "name": "寻路目标在围栏外 => permission.denied", "boundary": { "fence": [[0, 0], [10, 10]] }, "op": "act.path_to", "args": { "target": { "x": 20, "y": 64, "z": 20 } }, "expect": { "allow": false, "error": "permission.denied" } }

@@ -1,0 +1,1 @@
+{ "name": "combat 授权 + 接战距离内 => 允许", "boundary": { "combat": { "targets": "player", "max_engage": 10 } }, "op": "act.use_entity", "args": { "id": "1", "kind": "attack" }, "entity": { "id": "1", "type": "player", "pos": { "x": 3, "y": 64, "z": 0 } }, "self_pos": { "x": 0, "y": 64, "z": 0 }, "expect": { "allow": true, "error": null } }

@@ -95,10 +95,10 @@ on_chat(rex[[^已向 (?<to>\w+)]], { source = "system" }, function(m)
   end)
 end)
 
--- 运维命令（bot.yaml 配 msg_command → reply 走私聊，余额不进公屏）
-on_command("balance <who:player>", { perm = "op" }, function(a)
-  -- 回复给操作者（a.sender = 命令发送者，引擎注入）；余额不进公屏
-  chat.reply(a.sender or a.who, "余额: " .. bal(a.who) .. "c")
+-- 运维查询（无命令体系：聊天正则 + 只读授权名单；bot.yaml 配 msg_command → reply 走私聊）
+on_chat(rex[[^balance (?<who>\w+)$]], { source = "player" }, function(m)
+  if not bslib.authorized(m.sender, "op") then return end
+  chat.reply(m.sender, "余额: " .. bal(m.who) .. "c")
 end)
 
 -- 恢复对账：启动/暂停恢复后扫描挂账，提醒运维（不自动退款）

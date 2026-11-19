@@ -1,0 +1,145 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bot-script/contracts/policy.schema.json",
+  "title": "boundary（实例授权边界；缺省 = 观察模式，动作全拒）",
+  "type": "object",
+  "properties": {
+    "authority": {
+      "type": "object",
+      "properties": {
+        "owner": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "op": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "whitelist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "description": "（兼容保留）命令体系已移除，本字段不再参与策略判定"
+    },
+    "chat": {
+      "type": "object",
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "命令白名单（精确前缀）"
+        },
+        "commands_deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "命令正则黑名单（先判）"
+        },
+        "commands_allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "命令正则白名单（非空时必须命中）"
+        },
+        "say_rate": {
+          "type": "string",
+          "pattern": "^\\d+/(min|sec)$"
+        },
+        "msg_command": {
+          "type": "string",
+          "description": "私聊命令前缀（如 /msg）"
+        }
+      },
+      "additionalProperties": false
+    },
+    "blocks": {
+      "type": "object",
+      "properties": {
+        "dig": {
+          "type": [
+            "boolean",
+            "string"
+          ]
+        },
+        "place": {
+          "type": [
+            "boolean",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "combat": {
+      "type": "object",
+      "properties": {
+        "targets": {
+          "type": "string",
+          "description": "实体类型子串（如 player / minecraft:zombie）"
+        },
+        "max_engage": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "fence": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {
+          "type": "number"
+        }
+      },
+      "description": "活动围栏 [[x1,z1],[x2,z2]]：越界自动 pause，寻路目标越界拒"
+    },
+    "allow_move": {
+      "type": "boolean"
+    },
+    "rate": {
+      "type": "object",
+      "properties": {
+        "actions_per_sec": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "actions_per_hour": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "containers": {
+      "type": [
+        "boolean",
+        "string"
+      ],
+      "description": "容器访问授权（window_open/click/close）；缺省=未授权"
+    }
+  },
+  "additionalProperties": false
+}
