@@ -29,13 +29,14 @@
 const TICK_MS = 50;
 const MOVE_PACKETS = new Set(['position', 'position_look', 'look', 'flying']);
 
-/** 版本适配登记（§3.8）：26.x 需要；纯净 1.21.8 发了也无回归，故未知版本一律装 */
+/** 版本适配登记（§3.8）：常装；26.x 必须，1.21.8 无害（2026-11-19 线上回归：收窄后 15s 被踢） */
 export const id = 'tick-end-26x';
 export const reason = '26.x 服务端靠 client_tick_end 清零「本 tick 已收到位置包」；mineflayer 从不发';
-export function match(version) {
-  if (!version) return true;
-  const major = Number(String(version).split('.')[0].replace(/[^0-9]/g, ''));
-  return Number.isFinite(major) ? major >= 26 : true;
+export function match() {
+  // 常装：26.x 服务端必须；1.21.8 发了也无回归（空载荷包，服务端忽略）。
+  // v2 改造曾按 major>=26 收窄，结果 1.21.8 实例在 Velocity/26.3 后端上 ~15s 被踢；
+  // 旧驱动是无条件安装的，这里恢复「常装」，不再按 config 里的版本号误裁。
+  return true;
 }
 export function install(bot, ctx = {}) {
   const sender = installTickEndSender(bot, ctx.tickMs ? { tickMs: ctx.tickMs } : {});

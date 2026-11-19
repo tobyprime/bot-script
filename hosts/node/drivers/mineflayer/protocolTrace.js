@@ -32,8 +32,16 @@ export function installProtocolTrace(bot, log = console.log, opts = {}) {
 
   const t0 = Date.now();
   const ring = [];
+  const allRing = [];       // 全部包名（不含载荷）：断线前「服务器最后做了什么」需要完整顺序
   const lastByKind = {};
   let flushed = false;
+
+  const onPacket = (data, meta) => {
+    if (!meta?.name) return;
+    allRing.push(`${Date.now() - t0}ms ${meta.state ?? '?'} ← ${meta.name}`);
+    if (allRing.length > 40) allRing.shift();
+  };
+  client.on('packet', onPacket);
 
   const push = (line) => {
     const entry = `[trace ${Date.now() - t0}ms] ${line}`;
@@ -82,10 +90,15 @@ export function installProtocolTrace(bot, log = console.log, opts = {}) {
     flushed = true;
     log(`[trace] 断线诊断（${reason}）——最近 ${ring.length} 条协议记录：`, 'debug');
     for (const line of ring) log(`  ${line}`, 'debug');
+    if (allRing.length) {
+      log(`[trace] 断线前全部入站包（最近 ${allRing.length} 个）：`, 'debug');
+      for (const line of allRing) log(`  [all] ${line}`, 'debug');
+    }
   };
 
   const off = () => {
     client.write = origWrite;
+    try { client.removeListener('packet', onPacket); } catch { /* ignore */ }
     try { client.removeListener('position', onPosition); } catch { /* ignore */ }
     for (const [name, fn] of extraListeners) {
       try { client.removeListener(name, fn); } catch { /* ignore */ }
