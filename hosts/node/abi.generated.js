@@ -55,7 +55,10 @@ export const SYNC_OPS = {
     "flag": {"type":"string","required":true},
   }, result: "boolean" },
   "caps.list": { args: {}, result: "object" },
-  "entities.list": { args: {}, result: "Entity[]" },
+  "entities.list": { args: {
+    "type": {"type":"string","required":false},
+    "within": {"type":"number","required":false},
+  }, result: "Entity[]" },
   "entities.get": { args: {
     "id": {"type":"string","required":true},
   }, result: "Entity|null" },

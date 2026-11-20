@@ -136,10 +136,12 @@ bridge.caps.list = function()
   return q("caps.list", {
 })
 end
---- entities.list() → Entity[]
-bridge.entities.list = function()
+--- entities.list(type, within) → Entity[]
+bridge.entities.list = function(type, within)
   return q("entities.list", {
-})
+    type = type,
+    within = within,
+  })
 end
 --- entities.get(id) → Entity|null
 bridge.entities.get = function(id)

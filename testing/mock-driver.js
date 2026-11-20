@@ -85,7 +85,18 @@ export class MockDriver {
       }
     }
   }
-  query_entities() { return [...this.entities.values()]; }
+  query_entities(filter = {}) {
+    const wantType = filter.type == null ? null : String(filter.type);
+    const within = filter.within == null ? null : Number(filter.within);
+    return [...this.entities.values()].filter((e) => {
+      if (wantType != null && String(e.type) !== wantType) return false;
+      if (within != null && Number.isFinite(within) && e.pos) {
+        const dx = e.pos.x - this.botPos.x, dy = e.pos.y - this.botPos.y, dz = e.pos.z - this.botPos.z;
+        if (Math.sqrt(dx * dx + dy * dy + dz * dz) > within) return false;
+      }
+      return true;
+    });
+  }
   query_entity(id) { return this.entities.get(String(id)) ?? null; }
   playerSay(name, text) {
     this.emit('chat', { text, raw: `<${name}> ${text}`, sender: name, sender_kind: 'player', ts: Date.now() });

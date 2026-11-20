@@ -179,3 +179,21 @@ test('world 观测缓存有界：持续 block_update 不得让 Map 只增不减'
   assert.ok(w.cache.size <= 4096, `cache 应有界，实际 ${w.cache.size}`);
   assert.ok(w.cache.has('5999,64,0'), '最近更新的位置必须保留');
 });
+
+test('entities.list 支持宿主侧过滤：高频 entity.nearest 不再序列化无关实体', async () => {
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addPlayer('Near', { x: 3, y: 64, z: 3 }, null);
+  for (let i = 0; i < 200; i++) {
+    driver.addEntity('minecraft:zombie', { x: 20 + (i % 20), y: 64, z: 20 + Math.floor(i / 20) }, {});
+  }
+  const { engine } = await makeEngine({ scripts: [], driver });
+  const raw = JSON.parse(engine.abi.sync('entities.list', '{"type":"player"}'));
+  assert.ok(raw.ok, 'Result 应成功');
+  assert.strictEqual(raw.value.length, 1, 'type=player 只应返回玩家');
+  assert.strictEqual(raw.value[0].name, 'Near');
+  const near = JSON.parse(engine.abi.sync('entities.list', '{"type":"player","within":10}'));
+  assert.strictEqual(near.value.length, 1, 'within 过滤保留近处玩家');
+  const far = JSON.parse(engine.abi.sync('entities.list', '{"type":"player","within":2}'));
+  assert.strictEqual(far.value.length, 0, 'within 过滤应排除范围外玩家');
+  await engine.stop();
+});

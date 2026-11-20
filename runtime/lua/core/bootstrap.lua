@@ -1017,7 +1017,7 @@ local function pred_match(s, pred)
 end
 
 function entity.find(pred)
-  local list = rv(bridge.entities.list(), {}) or {}
+  local list = rv(bridge.entities.list(pred and pred.type, pred and pred.within), {}) or {}
   local out = {}
   for _, s in ipairs(list) do
     if within_ok(s, pred) and pred_match(s, pred) then
@@ -1028,7 +1028,7 @@ function entity.find(pred)
 end
 
 function entity.nearest(pred)
-  local list = rv(bridge.entities.list(), {}) or {}
+  local list = rv(bridge.entities.list(pred and pred.type, pred and pred.within), {}) or {}
   local sp = self_pos()
   local best, bd
   for _, s in ipairs(list) do

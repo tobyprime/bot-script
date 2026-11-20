@@ -194,7 +194,7 @@ export class AbiDispatcher {
       }),
 
       // ---- 实体 ----
-      'entities.list': () => (driver.query_entities?.() ?? []).map(entityOf),
+      'entities.list': ({ type, within }) => (driver.query_entities?.({ type, within }) ?? []).map(entityOf),
       'entities.get': ({ id }) => entityOf(driver.query_entity?.(String(id)) ?? null),
 
       // ---- 世界 ----

@@ -94,7 +94,9 @@ sync_ops:
 
   # ---------------- 实体 ----------------
   - name: entities.list
-    args: {}
+    args:
+      type: { type: string }       # 精确匹配 Entity.type（player / minecraft:zombie）
+      within: { type: number }     # 与自身的 3D 距离上限（减少高频脚本的序列化量）
     result: Entity[]
   - name: entities.get
     args: { id: { type: string, required: true } }

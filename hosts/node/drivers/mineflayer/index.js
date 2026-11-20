@@ -324,12 +324,25 @@ export class MineflayerDriver {
     };
   }
 
-  query_entities() {
+  query_entities(filter = {}) {
     const bot = this.bot;
     if (!bot?.entities) return [];
+    const wantType = filter.type == null ? null : String(filter.type);
+    const within = filter.within == null ? null : Number(filter.within);
+    const selfPos = bot.entity?.position;
     const out = [];
     for (const e of Object.values(bot.entities)) {
       if (e === bot.entity || !e.position) continue;
+      // 与服务端同一口径的 Entity.type；高频 entity.nearest 脚本只取 players 时
+      // 不必把 187 个实体全量序列化过 WASM（这是脚本运行时 CPU 的主因）
+      const rawType = String(e.type ?? '');
+      const snapType = rawType === 'player' ? 'player'
+        : (rawType.includes(':') ? rawType : `minecraft:${e.name ?? rawType}`);
+      if (wantType != null && snapType !== wantType) continue;
+      if (within != null && selfPos && Number.isFinite(within)) {
+        const dx = e.position.x - selfPos.x, dy = e.position.y - selfPos.y, dz = e.position.z - selfPos.z;
+        if (Math.sqrt(dx * dx + dy * dy + dz * dz) > within) continue;
+      }
       out.push(this.snapshotOf(e));
     }
     return out;
