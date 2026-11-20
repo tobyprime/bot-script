@@ -10,13 +10,14 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
-import { lintSource, loadSurface, collectPersistGlobals } from './api-lint.mjs';
+import { lintSource, loadSurface } from './api-lint.mjs';
 import { validateDeploy } from '../hosts/node/deploy.js';
 
 const KNOWN_PARAM_TYPES = new Set([
-  'string', 'number', 'boolean', 'blockpos', 'region', 'list<blockpos>',
+  'string', 'number', 'boolean', 'blockpos', 'region', 'list<blockpos>', 'json',
 ]);
-const KNOWN_TOP_KEYS = new Set(['name', 'scripts', 'params', 'persist']);
+const KNOWN_PARAM_KEYS = new Set(['type', 'default', 'required', 'help', 'visible']);
+const KNOWN_TOP_KEYS = new Set(['name', 'scripts', 'params']);
 
 async function makeLua() {
   const { LuaFactory } = await import('wasmoon');
@@ -71,7 +72,7 @@ export async function validatePackage(pkgDir, { strictApi = true } = {}) {
 
   // 1) 顶层字段 lint（拼写错误防护：引擎对未知键静默忽略）
   for (const k of Object.keys(pkg)) {
-    if (!KNOWN_TOP_KEYS.has(k)) warn(`未知顶层字段 "${k}"（引擎会忽略；拼写错误？）`, 'bot.yaml');
+    if (!KNOWN_TOP_KEYS.has(k)) err(`未知顶层字段 "${k}"（bot.yaml 只允许 name/scripts/params；persist 路径已移除）`, 'bot.yaml');
   }
   if (pkg.name !== undefined && (typeof pkg.name !== 'string' || !pkg.name.trim())) {
     err('name 必须是非空字符串', 'bot.yaml');
@@ -91,44 +92,48 @@ export async function validatePackage(pkgDir, { strictApi = true } = {}) {
     }
   }
 
-  // 3) params：schema 形态 {type,default,...} 或字面量默认值；类型/形状检查
+  // 3) params：每项必须是 schema 对象（type 必填）；不再接受裸字面量
   if (pkg.params !== undefined) {
     if (typeof pkg.params !== 'object' || pkg.params === null || Array.isArray(pkg.params)) {
       err('params 必须是映射', 'bot.yaml');
     } else {
       for (const [k, entry] of Object.entries(pkg.params)) {
-        const isSchema = entry !== null && typeof entry === 'object' && !Array.isArray(entry)
-          && entry.type !== undefined;
-        if (!isSchema) continue;   // 字面量默认值形态：任何 JSON 值合法
-        const t = entry.type;
-        if (typeof t !== 'string' || !KNOWN_PARAM_TYPES.has(t)) {
-          warn(`参数 "${k}" 类型 "${t}" 不在已知集合（${[...KNOWN_PARAM_TYPES].join('/')}）；引擎将按原值透传`, 'bot.yaml');
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+          err(`参数 "${k}" 必须是 schema 对象（{ type = ... }）；裸字面量已不再支持`, 'bot.yaml');
           continue;
         }
+        for (const key of Object.keys(entry)) {
+          if (!KNOWN_PARAM_KEYS.has(key)) err(`参数 "${k}" 含未知字段 "${key}"（可用：${[...KNOWN_PARAM_KEYS].join('/')}）`, 'bot.yaml');
+        }
+        const t = entry.type;
+        if (typeof t !== 'string' || !KNOWN_PARAM_TYPES.has(t)) {
+          err(`参数 "${k}" 类型缺失或未知（${JSON.stringify(t)}；可用：${[...KNOWN_PARAM_TYPES].join('/')}）`, 'bot.yaml');
+          continue;
+        }
+        if (entry.required !== undefined && typeof entry.required !== 'boolean') err(`参数 "${k}" required 必须是布尔`, 'bot.yaml');
+        if (entry.visible !== undefined && typeof entry.visible !== 'boolean') err(`参数 "${k}" visible 必须是布尔`, 'bot.yaml');
+        if (entry.help !== undefined && typeof entry.help !== 'string') err(`参数 "${k}" help 必须是字符串`, 'bot.yaml');
         if (entry.default === undefined) continue;
         const d = entry.default;
         const shapeOk = t === 'blockpos' ? isBlockpos(d)
           : t === 'region' ? Array.isArray(d) && d.length === 2 && d.every(isBlockpos)
           : t === 'list<blockpos>' ? Array.isArray(d) && d.every(isBlockpos)
+          : t === 'number' ? typeof d === 'number' && Number.isFinite(d)
+          : t === 'string' ? typeof d === 'string'
+          : t === 'boolean' ? typeof d === 'boolean'
           : true;
         if (!shapeOk) err(`参数 "${k}" 默认值与类型 ${t} 形状不符: ${JSON.stringify(d)}`, 'bot.yaml');
       }
     }
   }
 
-  // 4) persist：可选，字符串路径
-  if (pkg.persist !== undefined && typeof pkg.persist !== 'string') {
-    err('persist 必须是字符串路径（或省略）', 'bot.yaml');
-  }
-
-  // 5) 目录内全部 .lua：API lint + Lua 编译（入口 + require 模块；load 只编译不执行）
+  // 4) 目录内全部 .lua：API lint + Lua 编译（入口 + require 模块；load 只编译不执行）
   const luaFiles = listLua(pkgDir);
   if (luaFiles.length === 0) warn('包目录没有任何 .lua 文件');
   const surface = loadSurface();
-  const extraGlobals = collectPersistGlobals(luaFiles.map((f) => readFileSync(f, 'utf8')));
   for (const f of luaFiles) {
     const rel = path.relative(pkgDir, f);
-    for (const p of lintSource(readFileSync(f, 'utf8'), { file: rel, surface, strict: strictApi, extraGlobals })) {
+    for (const p of lintSource(readFileSync(f, 'utf8'), { file: rel, surface, strict: strictApi })) {
       problems.push(p);
     }
   }
@@ -190,7 +195,7 @@ export async function validateFromArgv(arg, opts = {}) {
   let manifest = null;
   try {
     const pkg = parse(readFileSync(path.join(pkgDir, 'bot.yaml'), 'utf8')) ?? {};
-    manifest = { name: pkg.name ?? null, scripts: pkg.scripts ?? [], params: pkg.params ?? {}, persist: pkg.persist ?? null };
+    manifest = { name: pkg.name ?? null, scripts: pkg.scripts ?? [], params: pkg.params ?? {} };
   } catch { /* 清单已在前面的校验里报错 */ }
   process.stdout.write(`__BS_VALIDATE__ ${JSON.stringify({ ok, report: problems, manifest })}\n`, () => process.exit(0));
   return ok;

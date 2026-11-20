@@ -149,69 +149,27 @@ sync_ops:
     args: { stack: { type: object, required: true } }
     result: StackInfo              # {id,count,max_count,damage,max_damage,components?,attributes?,enchantments?,custom_name?}
 
-  # ---------------- 聊天策略（只读） ----------------
-  - name: chat.config
+  # ---------------- state（实例级 localStorage 语义；固定路径，包不可指定） ----------------
+  # 语义：key -> JSON value；无 schema/查询/多键事务。单值 ≤16KB、总量 ≤256KB，
+  # 超限以 state.quota 拒绝（不静默淘汰）。落盘合并由宿主负责（100ms + 停机 flush）。
+  - name: state.get
+    args: { key: { type: string, required: true } }
+    result: any
+  - name: state.all
     args: {}
-    result: object                 # {msg_command: string|null}
-
-  # ---------------- persist（语义由 vectors/persist 锁定） ----------------
-  - name: persist.table
-    args: { name: { type: string, required: true }, schema: { type: object, required: true } }
-    result: void
-  - name: persist.find
-    args: { name: { type: string, required: true }, where: { type: object } }
-    result: object|null
-  - name: persist.all
-    args: { name: { type: string, required: true } }
-    result: object[]
-  - name: persist.upsert
-    args: { name: { type: string, required: true }, row: { type: object, required: true } }
-    result: void
-  - name: persist.del
-    args: { name: { type: string, required: true }, where: { type: object } }
-    result: void
-  - name: persist.adjust
+    result: object                 # {key: value, ...}
+  - name: state.set
     args:
-      name: { type: string, required: true }
-      key: { type: any, required: true }
-      delta: { type: number, required: true }
-    result: object                 # 主键/数值字段由 persist.table 的 schema 推导
-  - name: persist.seen
-    args: { key: { type: string, required: true }, window_ms: { type: number, required: true } }
-    result: number
-  - name: kv.get
-    args: { name: { type: string, required: true }, key: { type: string, required: true } }
-    result: string
-  - name: kv.set
-    args:
-      name: { type: string, required: true }
       key: { type: string, required: true }
-      value: { type: string, required: true }
-    result: void
-  - name: persist.log_declare
-    args: { name: { type: string, required: true } }
-    result: void
-  - name: persist.log_append
-    args: { name: { type: string, required: true }, fields: { type: object } }
-    result: number
-  - name: persist.log_find
-    args: { name: { type: string, required: true }, where: { type: object } }
-    result: object[]
-  - name: persist.log_mark
-    args:
-      name: { type: string, required: true }
-      id: { type: number, required: true }
-      state: { type: string, required: true }
-    result: void
-  - name: txn.begin
-    args: {}
-    result: void
-  - name: txn.commit
-    args: {}
-    result: void
-  - name: txn.rollback
-    args: {}
-    result: void
+      value: { type: any }
+    result: object                 # 成功 {}；超限 -> Result error code=state.quota
+  - name: state.delete
+    args: { key: { type: string, required: true } }
+    result: object
+  - name: state.seen
+    args: { key: { type: string, required: true }, window_ms: { type: number, default: 5000 } }
+    result: boolean                # true = 窗口内已见过（重复）
+
 
 async_ops:
   # ---------------- 调度原语 ----------------
@@ -238,7 +196,7 @@ async_ops:
     gate: chat
     args:
       text: { type: string, required: true }
-      kind: { type: string, default: chat }   # chat | command | reply（reply=私聊包，策略按正文 say 限速）
+      kind: { type: string, default: chat }   # chat | command
     result: object
   - name: act.look
     args: { yaw: { type: number|null }, pitch: { type: number|null } }   # 度；一个 rotation 包

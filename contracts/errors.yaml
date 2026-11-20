@@ -55,8 +55,10 @@ errors:
   driver.error:            { category: internal,    description: 驱动层异常 }
   event.bad_request:       { category: user,        description: events.emit 参数不合法 }
 
-  # ---- persist / params ----
-  persist.txn_yielded:     { category: user,        description: 事务体内出现挂起点（已回滚） }
+  # ---- state / params ----
+  state.quota:             { category: user,        description: 实例状态超出配额（单值 16KB / 总量 256KB） }
+  state.bad_request:       { category: user,        description: state key/value 不合法 }
+  state.update_yielded:    { category: user,        description: state.update 的回调内出现挂起点（未写入） }
   param.unknown:           { category: user,        description: 设置未声明的参数 }
   param.rejected:          { category: user,        description: 脚本校验钩拒绝该值 }
   params.readonly:         { category: user,        description: params 只能经控制总线修改 }

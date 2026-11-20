@@ -31,10 +31,6 @@
         "say_rate": {
           "type": "string",
           "pattern": "^\\d+/(min|sec)$"
-        },
-        "msg_command": {
-          "type": "string",
-          "description": "私聊命令前缀（如 /msg）"
         }
       },
       "additionalProperties": false

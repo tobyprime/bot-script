@@ -1,7 +1,7 @@
 // testing/vector-host.mjs — 调度向量的假宿主（只验证契约逻辑，不做根因定位）
 //
 // 这是 vectors/scheduler 的执行器：核心 Lua 在真实运行时上跑，宿主侧用虚拟时钟 +
-// 内存 persist，产出确定的事件/日志序列。Node（wasmoon）与 Java（Luaj）跑同一份向量，
+// 内存 state，产出确定的事件/日志序列。Node（wasmoon）与 Java（Luaj）跑同一份向量，
 // 输出序列必须一致 —— 这是防 Lua 拷贝漂移的唯一可行机制（ARCHITECTURE-REFACTOR §5）。
 import { LuaVm } from '../hosts/node/vm.js';
 
@@ -17,8 +17,7 @@ export async function runSchedulerVector(vec, { scriptDir = null } = {}) {
   let depth = 0;
   const paramValues = {};
 
-  const tables = new Map();
-  const kv = new Map();
+  const state = new Map();
   const seen = new Map();
 
   const flush = () => {
@@ -68,50 +67,16 @@ export async function runSchedulerVector(vec, { scriptDir = null } = {}) {
     'timer.interval': () => 2,
     'events.emit': ({ type }) => { logs.push(`event|${type}`); return 1; },
     'caps.get': () => false,
-    'persist.table': ({ name }) => tables.set(name, new Map()),
-    'persist.find': ({ name, where }) => {
-      const t = tables.get(name);
-      if (!t) return null;
-      for (const row of t.values()) {
-        if (Object.entries(where ?? {}).every(([k, v]) => row[k] === v)) return { ...row };
-      }
-      return null;
-    },
-    'persist.all': ({ name }) => [...(tables.get(name)?.values() ?? [])].map((r) => ({ ...r })),
-    'persist.upsert': ({ name, row }) => {
-      if (!tables.has(name)) tables.set(name, new Map());
-      const keyField = Object.keys(row).find((k) => k === 'k' || k === 'id' || k === 'player' || k === 'pos');
-      tables.get(name).set(String(row[keyField] ?? tables.get(name).size), { ...row });
-    },
-    'persist.del': ({ name, where }) => {
-      const t = tables.get(name);
-      if (!t) return;
-      for (const [k, row] of [...t]) {
-        if (Object.entries(where ?? {}).every(([kk, v]) => row[kk] === v)) t.delete(k);
-      }
-    },
-    'persist.adjust': ({ name, key, delta, key_field: kf, num_field: nf }) => {
-      const t = tables.get(name) ?? tables.set(name, new Map()).get(name);
-      let row = [...t.values()].find((r) => r[kf] === key);
-      if (!row) { row = { [kf]: key, [nf]: 0 }; t.set(String(key), row); }
-      row[nf] = (row[nf] ?? 0) + Number(delta);
-      return { ...row };
-    },
-    'persist.seen': ({ key, window_ms: win }) => {
+    'state.get': ({ key }) => (state.has(key) ? JSON.parse(state.get(key)) : null),
+    'state.all': () => Object.fromEntries([...state].map(([k, v]) => [k, JSON.parse(v)])),
+    'state.set': ({ key, value }) => { state.set(key, JSON.stringify(value ?? null)); return {}; },
+    'state.delete': ({ key }) => { state.delete(key); return {}; },
+    'state.seen': ({ key, window_ms: win }) => {
       const prev = seen.get(key);
-      if (prev != null && now - prev <= win) return 1;
+      if (prev != null && now - prev <= win) return true;
       seen.set(key, now);
-      return 0;
+      return false;
     },
-    'kv.get': ({ name, key }) => kv.get(`${name}/${key}`) ?? '',
-    'kv.set': ({ name, key, value }) => kv.set(`${name}/${key}`, String(value)),
-    'persist.log_declare': () => {},
-    'persist.log_append': () => 1,
-    'persist.log_find': () => [],
-    'persist.log_mark': () => {},
-    'txn.begin': () => {},
-    'txn.commit': () => {},
-    'txn.rollback': () => {},
     'self.get': () => ({ username: 'VecBot', pos: { x: 0, y: 64, z: 0 }, yaw: 0, pitch: 0, held_slot: 0 }),
     'entities.list': () => [],
     'entities.get': () => null,

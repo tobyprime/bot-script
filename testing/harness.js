@@ -16,7 +16,7 @@ export function script(name, src) {
   writeFileSync(path.join(TEST_DIR, name), src);
 }
 
-export async function makeEngine({ yaml = {}, scripts = [], driver, boundary, runtime, instanceParams, dryRun } = {}) {
+export async function makeEngine({ yaml = {}, scripts = [], driver, boundary, runtime, instanceParams, dryRun, statePath } = {}) {
   const d = driver ?? new MockDriver();
   const engine = new BotEngine({
     name: 'test-bot',
@@ -24,6 +24,7 @@ export async function makeEngine({ yaml = {}, scripts = [], driver, boundary, ru
     scripts,
   }, d, {
     scriptDir: TEST_DIR,
+    statePath,
     // v2：边界经 opts.boundary（实例部署层）；缺省给空 boundary（= 不限制），
     // boundary: null 同样表示不限制（用于验证默认开放）
     boundary: boundary !== undefined ? boundary : (yaml.boundary ?? yaml.policy ?? {}),

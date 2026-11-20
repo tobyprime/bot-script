@@ -1,7 +1,7 @@
 -- ============================================================
 -- runtime/lua/core/bootstrap.lua — 核心调度器（唯一源码，Node/Fabric 共用）
 --
--- yield 协议：任务体在挂起点 yield "<token>, <txnflag>"
+-- yield 协议：任务体在挂起点 yield "<token>, 0"
 --   宿主对每个挂起点调用 bridge.token.bind(task_id, token, kind) 登记；
 --   结算经 __core_resume(id, resultJson, ctlJson) 交付：
 --     resultJson = {ok:true,value:...} | {ok:false,error:{code,message}}——所有确定性结果；
@@ -39,6 +39,7 @@ __IN_CLEANUP = false
 __EPOCH = 0
 __SELF = nil
 __SELF_EPOCH = -1
+__YIELD_COUNT = 0     -- 挂起点计数：state.update 用来判定回调是否发生挂起
 
 local TASK_ERR_BYPASS = __COMPAT_TASK_ERR == true   -- LuaJ 由 compat/luaj.lua 置真
 
@@ -136,7 +137,8 @@ end
 -- 动作 await：始终返回 Result（{ok,value} | {ok=false,error={code,message}}），不向脚本抛错。
 -- 取消/内部任务失败走独立控制通道：取消 => 展开当前任务；内部失败 => 按任务级失败处理。
 local function await(token)
-  local resultj, ctlj = coroutine.yield(token, __TXN_FLAG and 1 or 0)
+  __YIELD_COUNT = __YIELD_COUNT + 1
+  local resultj, ctlj = coroutine.yield(token, 0)
   __EPOCH = __EPOCH + 1   -- 挂起点返回 = 新的一帧：句柄/self 快照失效
   if ctlj ~= nil and ctlj ~= "" then
     local c = decode(ctlj)
@@ -273,18 +275,7 @@ local function pump()
               j.waiter = t.id
             end
           else
-            if r2 == 1 or r2 == true then
-              -- 事务体内出现挂起点：回滚 + 于挂起点注入 persist.txn_yielded
-              bridge.txn.rollback()
-              __TXN_FLAG = false
-              bridge.token.detach(tok)
-              __READY[#__READY + 1] = { id = t.id, ej = encode({
-                kind = "persist.txn_yielded",
-                detail = "txn 体内出现挂起点，事务已回滚",
-              }) }
-            else
-              bridge.token.bind(t.id, tok, "a")
-            end
+            bridge.token.bind(t.id, tok, "a")
           end
         end
       end
@@ -696,11 +687,10 @@ function wait_until(pred, opts)
   end
 end
 
--- ---------- params（参数归核心；宿主 HTTP 经 __core_call） ----------
+-- ---------- params（schema 只来自 bot.yaml；核心不再接受 params{...} 声明） ----------
 
 __PARAM_SCHEMA = {}
 __PARAM_VALUES = {}
-__PARAM_PERSIST = {}
 
 local function coerce_param(v, t)
   if t == "blockpos" then
@@ -724,14 +714,11 @@ local function coerce_param(v, t)
 end
 
 params = setmetatable({}, {
-  __call = function(_, schema)
-    for k, v in pairs(schema) do __PARAM_SCHEMA[k] = v end
-  end,
   __index = function(_, k) return __PARAM_VALUES[k] end,
   __newindex = function() error{ kind = "params.readonly", detail = "params 只能经控制总线修改" } end,
 })
 
--- params 校验钩（TOB-522）：脚本对单个参数注册校验函数，控制总线 setParam 同步调用。
+-- params 校验钩：脚本对单个参数注册校验函数，控制总线 setParam 同步调用。
 -- 约定：fn(value) -> true 通过；nil/false[, 消息] 或 error = 拒绝（消息回传调用方，旧值继续生效）。
 __PARAM_VALIDATORS = {}
 
@@ -755,50 +742,30 @@ function __params_validate(key, valuej)
   return tostring(r1)
 end
 
-local function persist_params()
-  bridge.kv.set("bot", "params", encode(__PARAM_PERSIST))
-end
-
 local function params_bind(manifest, instance)
-  manifest = manifest or {}
-  local defaults = {}
-  for k, entry in pairs(manifest) do
-    if type(entry) == "table" and entry.type ~= nil then
-      if __PARAM_SCHEMA[k] == nil then __PARAM_SCHEMA[k] = entry end   -- Lua 声明优先
-      if entry.default ~= nil then defaults[k] = entry.default end
+  __PARAM_SCHEMA = {}
+  local values = {}
+  for k, entry in pairs(manifest or {}) do
+    if type(entry) ~= "table" or entry.type == nil then
+      bridge.log("warn", "参数 " .. k .. " 声明缺少 type（bot.yaml 参数必须是 schema 对象），已忽略")
     else
-      defaults[k] = entry
+      __PARAM_SCHEMA[k] = entry
+      if entry.default ~= nil then values[k] = entry.default end
     end
   end
-  local values = {}
-  for k, v in pairs(defaults) do values[k] = v end
   for k, v in pairs(instance or {}) do values[k] = v end
   for k, schema in pairs(__PARAM_SCHEMA) do
     local v = values[k]
     if v == nil then v = schema.default end
     if v == nil then
-      -- v2 流程（DESIGN §5.3）：required 未设不阻塞启动（默认开放，先 boot 再补参数）
       if schema.required then
-        bridge.log("warn", "参数 " .. k .. " 必填：暂未设置（运行期经控制渠道设置后持久化）")
+        bridge.log("warn", "参数 " .. k .. " 必填：暂未设置（运行期经控制渠道设置）")
       end
     else
       values[k] = coerce_param(v, schema.type)
     end
   end
-  -- 持久化值优先于清单初值（DESIGN §5.3）
-  local saved = rv(bridge.kv.get("bot", "params"), nil)
-  if saved ~= nil and saved ~= "" then
-    local ok, obj = pcall(decode, saved)
-    if ok and type(obj) == "table" then
-      for k, v in pairs(obj) do
-        local schema = __PARAM_SCHEMA[k]
-        values[k] = coerce_param(v, schema and schema.type or nil)
-        __PARAM_PERSIST[k] = values[k]
-      end
-    end
-  end
   __PARAM_VALUES = values
-  persist_params()
   return { schema = __PARAM_SCHEMA, values = __PARAM_VALUES }
 end
 
@@ -816,94 +783,50 @@ local function params_set(k, v)
     end
   end
   __PARAM_VALUES[k] = coerced
-  __PARAM_PERSIST[k] = coerced
-  persist_params()
   bridge.log("info", "param " .. k .. " = " .. encode(coerced))
   return { ok = true, value = coerced }
 end
 
--- ---------- persist（宿主实现；语义由 vectors/persist 锁定） ----------
+-- ---------- state（实例级 localStorage 语义；固定路径由宿主管理，包无权指定） ----------
+-- key -> JSON value；无 schema/查询/多键事务。配额与落盘由宿主实现：
+-- 单值 ≤16KB、总量 ≤256KB；超限以 state.quota 拒绝（不静默淘汰）。
 
-persist = {}
+state = {}
 
-__TXN_FLAG = false
-
-function txn(fn)
-  if __TXN_FLAG then return fn() end
-  __TXN_FLAG = true
-  bridge.txn.begin()
-  local ok, err = pcall(fn)
-  if ok then bridge.txn.commit() else bridge.txn.rollback() end
-  __TXN_FLAG = false
-  if not ok then error(err, 0) end
+function state.get(key, default)
+  local v = rv(bridge.state.get(tostring(key)), nil)
+  if v == nil then return default end
+  return v
 end
 
-function persist.seen(key, window_ms)
-  return rv(bridge.persist.seen(key, math.floor(window_ms or 5000)), 0) == 1
+function state.all()
+  return rv(bridge.state.all(), {}) or {}
 end
 
--- persist.table "Name" { schema } 语法 = 柯里化调用
-function persist.table(name)
-  return function(schema)
-  bridge.persist.table(name, schema)
-  local key_field, num_field
-  for f, t in pairs(schema) do
-    if tostring(t):find(":key", 1, true) then key_field = f end
-    if tostring(t):gsub("%?", "") == "number" and not num_field then num_field = f end
-  end
-  local T = {}
-  T.find = function(where) return rv(bridge.persist.find(name, where or {}), nil) end
-  T.all = function()
-    local rows = rv(bridge.persist.all(name), {}) or {}
-    local i = 0
-    return function() i = i + 1; return rows[i] end
-  end
-  T.upsert = function(row) bridge.persist.upsert(name, row) end
-  T.del = function(where) bridge.persist.del(name, where or {}) end
-  T.adjust = function(key, delta)
-    -- 主键/数值字段由宿主按 persist.table 的 schema 推导
-    return rv(bridge.persist.adjust(name, key, delta), nil)
-  end
-  -- 条件原子加减：协程单线程 + 同步原语（无挂起点）=> 读-判-写天然串行，双花不可能
-  T.adjust_if = function(key, pred, delta)
-    local row = T.find{ [key_field] = key }
-    if not row then
-      row = { [key_field] = key }
-      for f, t in pairs(schema) do
-        if tostring(t):gsub("%?", "") == "number" then row[f] = 0 end
-      end
-    end
-    local okp, verdict = pcall(pred, row)
-    if not okp then error(verdict, 0) end
-    if not verdict then return false end
-    row[num_field] = (row[num_field] or 0) + delta
-    bridge.persist.upsert(name, row)
-    return true
-  end
-  _G[name] = T
-  end
+function state.set(key, value)
+  return bridge.state.set(tostring(key), value)
 end
 
-function persist.kv(name)
-  local K = {
-    get = function(k)
-      local j = rv(bridge.kv.get(name, k), nil)
-      if j == nil or j == "" then return nil end
-      return decode(j)
-    end,
-    set = function(k, v) bridge.kv.set(name, k, encode(v)) end,
-  }
-  _G[name] = K
+function state.delete(key)
+  return bridge.state.delete(tostring(key))
 end
 
-function persist.log(name)
-  bridge.persist.log_declare(name)
-  local L = {
-    append = function(fields) return rv(bridge.persist.log_append(name, fields), nil) end,
-    find = function(where) return rv(bridge.persist.log_find(name, where or {}), nil) or {} end,
-    mark = function(id, state) bridge.persist.log_mark(name, id, state) end,
-  }
-  _G[name] = L
+--- 原子读改写：fn(旧值) 返回新值。回调内禁止挂起点（挂起会被拒绝且不写入）。
+function state.update(key, fn)
+  if type(fn) ~= "function" then
+    error({ kind = "state.bad_request", detail = "state.update 的第二个参数必须是函数" }, 0)
+  end
+  local before = __YIELD_COUNT
+  local cur = state.get(key)
+  local nextv = fn(cur)
+  if __YIELD_COUNT ~= before then
+    error({ kind = "state.update_yielded", detail = "state.update 回调内出现挂起点，未写入" }, 0)
+  end
+  return state.set(key, nextv)
+end
+
+function state.seen(key, window_ms)
+  return rv(bridge.state.seen(tostring(key), math.floor(window_ms or 5000)), false) == true
 end
 
 -- ---------- chat / rex（命令体系已移除：没有命令声明、没有命令参数注入） ----------
@@ -921,19 +844,14 @@ function chat.run_command(str)
   if t:sub(1, 1) == "/" then t = t:sub(2) end   -- 契约 text 不带前导 /，kind 决定发包类型
   return say(t, "command")
 end
-function chat.msg(to, text)
-  if to == nil then return say(text, "chat") end
-  local cfg = rv(bridge.chat.config(), {})
-  local msg_cmd = cfg and cfg.msg_command
-  local out
-  if msg_cmd ~= nil and msg_cmd ~= "" then out = msg_cmd .. " " .. tostring(to) .. " " .. tostring(text)
-  else out = tostring(to) .. " " .. tostring(text) end
-  return say(out, "reply")
-end
 function chat.reply(m, text)
-  if text == nil then return say(m, "chat") end     -- 单参：公开回复
-  local to = type(m) == "table" and (m.sender or m.from) or m
-  return chat.msg(to, text)
+  -- 私聊已从 ABI 移除：原版没有私聊频道，私聊是服务器命令（/msg、/tell…）。
+  -- 双参形式保留失败结果，避免老脚本把“接收者”当公屏文本发出去。
+  if text ~= nil then
+    return { ok = false, error = { code = "chat.private_reply_removed",
+                                   message = "私聊已移除：请用 chat.run_command('/msg 玩家 文本')" } }
+  end
+  return say(m, "chat")
 end
 
 local function rex_search(rid, msg)

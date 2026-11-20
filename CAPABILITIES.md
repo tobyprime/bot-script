@@ -17,11 +17,11 @@
 
 ### ③ 整理 bot
 - 步骤：定时触发 → 开输入箱 → 逐物品决策（不满盒缓存 → 开箱校验缓存 → 尽量放入；溢出 → 该物品库存箱；无缓存 → 告警/跳过）→ 回写缓存 → 关箱。
-- **逼出**：带 schema 的持久化表 + 查询助手（`find` 不满盒、按填充度排序）；**堆叠上限知识**（`item.stack` 读 ItemStack 组件的 `max_count`，不按 id 猜）才能算 `free_space` 和 `min(剩余, 空间)`；世界区域扫描 `world.scan`（发现库存区箱子，做缓存冷启动；不可用时降级为 params 手工播种）；**缓存开箱校验/闭箱回写**的一致性规则；params 外部增删不满盒列表；进度看门狗（连续无净进度即中止）。
+- **逼出**：实例状态键值（每箱一个键、按免费空间排序）；**堆叠上限知识**（`item.stack` 读 ItemStack 组件的 `max_count`，不按 id 猜）才能算 `free_space` 和 `min(剩余, 空间)`；世界区域扫描 `world.scan`（发现库存区箱子，做缓存冷启动；不可用时降级为 params 手工播种）；**缓存开箱校验/闭箱回写**的一致性规则；params 外部增删不满盒列表；进度看门狗（连续无净进度即中止）。
 
 ### ④ 银行 bot
 - 步骤：聊天正则匹配入账（区分真实玩家/系统消息）→ 去重 → 事务入账；取款命令 → 余额校验 → 发服务器命令 → 等回执（超时回滚）→ 回复。
-- **逼出**：引擎侧正则（命名分组、跨脚本语义一致）；`sender_kind` 防伪造；持久化去重助手（重启不丢）；事务 + 追加日志（意图/对账模式）；`await_chat`（等回执，超时返回）；命令白名单策略（只许 `/pay`）；命令发送者权限分级；聊天/命令限速；审计日志。
+- **逼出**：引擎侧正则（命名分组、跨脚本语义一致）；`sender_kind` 防伪造；去重助手 state.seen（重启不丢）；意图集合 + 外部事件流对账；`await_chat`（等回执，超时返回）；命令白名单策略（只许 `/pay`）；命令发送者权限分级；聊天/命令限速；审计日志。
 
 ---
 
@@ -36,7 +36,7 @@
 | `itemstack` | `{id, count, meta?}` | id 为规范名 `minecraft:x`，引擎按服务端版本做映射 | 全部 |
 | `window` | 会话对象（container.open 返回） | **互斥**：同时最多一个；异步打开（服务器确认）；失效抛 `container.closed` | ①③ |
 | `entity` | 活体句柄 `{id, type, name?, ...}` | **帧快照**：动态字段（pos/equipment/alive）在同一帧（一次宿主交互）内读本地快照（零跨桥），跨帧后至多重取一次；`e:refresh()` 强制最新；`e:snapshot()` 返回冻结副本。新鲜度上界 = 一次宿主交互，受 `world.staleness` 约束 | ② |
-| `chatmsg` | `{text, sender?, sender_kind: player\|system\|unknown, raw, ts}` | sender 尽力解析；结构化判断依赖 `sender_kind` 而非文本 | ④ |
+| `chatmsg` | `{text, sender?, sender_kind: player\|system, raw, ts}` | sender 只按协议事实解析（playerChat 的 sender UUID）；系统消息 sender_kind=system，不按文本猜；结构化判断依赖 `sender_kind` 而非文本 | ④ |
 | `task` | 句柄 `{id, name, status}` | 可 `cancel`；操作边界响应取消 | 全部 |
 
 物品过滤无专门类型：普通 table（按字段匹配，如 `{ id = "minecraft:x" }`）或谓词函数，与 entity.find 的谓词同构。
@@ -204,16 +204,16 @@ P1: attack/range/cooldown/look_at/use_block。
 ### 3.7 `chat` — 聊天与命令
 ```lua
 chat.say(text)                        -- 限速策略
-chat.reply(msg, text)                 -- 有 /msg 权限则私聊（msg_command 配置），否则公开（④）
-chat.msg(to, text)                    -- 定向私聊（P1）：余额等敏感回复走此通道
+chat.reply(text)                      -- 公开回复（与 say 等价）；双参私聊已移除
 chat.run_command(str)                 -- 命令白名单策略（④：仅 /pay，首词元精确匹配）
 chat.await_chat(pattern|pred, timeout) -> Result   -- value = 命名分组匹配表 | nil（④）
 -- 语义：一条消息可同时命中 on_chat 与多个 pending await_chat（独立广播，互不吞并）
+-- 私聊没有独立接口：原版只有公屏聊天，私聊是服务器命令，用 chat.run_command("/msg 玩家 文本")
 -- 事件：
 on_chat(rex"...", {source="player", from=名字?}, handler)  -- handler(m)：m.命名分组
--- 去重助手移至 persist.seen（§3.10）
+-- 去重助手：state.seen（§3.10）
 ```
-P0: say/reply/run_command/await_chat；P1: msg。
+P0: say/reply/run_command/await_chat。
 
 ### 3.8 `self`
 ```lua
@@ -234,28 +234,28 @@ log.info/warn/error(结构化字段)
 ```
 P0 全部。
 
-### 3.10 `persist` — 持久化（引擎 SQLite，后端零参与）```lua
-persist.table "Account" { player = "string:key", balance = "number" }
-persist.kv "cache"
-persist.log  "Intent"                 -- 追加日志（意图/对账，④）：L.append{...} -> id   L.find{...} -> [row]   L.mark(id, state)
-persist.seen(key, window) -> bool     -- 持久化去重窗（④ 防同文重发；内容寻址，可靠性上限见 examples/bank 注释）
-txn(function() ... end)               -- 事务块（④）；引擎侧全局串行；体内禁挂起点（违反 → persist.txn_yielded 回滚）
--- 表查询助手：T.find{player=x}  T.all()  T.upsert{...}  T.del(where)
-T.adjust(key, delta)                  -- 原子加减（无则建户）
-T.adjust_if(key, pred, delta) -> bool -- 条件原子加减：pred(行) 为真才生效——读-判-扣收进一个原语，并发双花不可能（④）
+### 3.10 `state` — 实例级小状态（localStorage 语义）```lua
+state.get(key, default?) -> value|nil
+state.all() -> { [key] = value }
+state.set(key, value) -> Result       -- 单值 ≤16KB、总量 ≤256KB；超限 code=state.quota
+state.delete(key) -> Result
+state.update(key, fn) -> Result       -- fn(旧值) 返回新值的原子读改写；fn 内禁止挂起（违反 state.update_yielded）
+state.seen(key, window_ms) -> bool    -- 去重窗（④ 防同文重发；内容寻址，可靠性上限见 examples/bank 注释）
 ```
+- 无 schema、无查询、无多键事务；复杂数据经 `events.emit` 交给外部系统。
+- 存储路径由宿主固定（Node `state/state.sqlite`、Fabric `state/state.json`），包无权指定。
 P0 全部。
 
 ### 3.11 `params` / `caps`（config 已并入 params，评审定稿）
+```yaml
+# bot.yaml —— 参数唯一声明源
+params:
+  input: { type: blockpos, required: true, visible: true }
+  tune:  { type: number, default: 5, visible: false }
+```
 ```lua
-params {
-  input = { type = "blockpos", required = true, visible = true, perm = "op" },
-          -- visible=true → 驱动人机界面（fabric GUI / mcc param 命令）可直接改
-  tune  = { type = "number", default = 5 },
-          -- visible=false → 仅引擎控制 API（CLI/HTTP）可改
-}
-params.x        -- 脚本每次读取取当前值（热生效）；bot.yaml 给初值，持久化值优先
--- 写入：所有渠道 → 同一控制总线（perm 鉴权 + schema 校验 + 持久化）
+params.x        -- 只读视图（脚本每次读取取当前值，热生效）
+-- 写入：控制总线（schema 校验 + 实例 params_json 持久化；脚本可挂 params_validator）
 caps.has("container.transfer_bulk")  caps.server_version()   -- 脚本可探测降级（②③）
 ```
 P0（caps P1）。
@@ -325,7 +325,7 @@ if not r.ok then log.warn("send failed: %s", r.error.code) end
 
 ### 生命周期钩子（不进总线）
 
-`on_start`（停机 = 进程退出，persist/意图日志保证一致性，无 on_stop）· `on_pause` / `on_resume`（内建 pause/围栏越界/budget 耗尽/断线自动暂停，冻结点语义 §6）· `on_cancel`（任务级清理钩）· `on_error`（`engine.error` 的钩子形式，未捕获错误兜底 → 告警）
+`on_start`（停机 = 进程退出，state/外部事件流保证一致性，无 on_stop）· `on_pause` / `on_resume`（内建 pause/围栏越界/budget 耗尽/断线自动暂停，冻结点语义 §6）· `on_cancel`（任务级清理钩）· `on_error`（`engine.error` 的钩子形式，未捕获错误兜底 → 告警）
 
 ### 总线目录
 
@@ -385,7 +385,7 @@ if not r.ok then log.warn("send failed: %s", r.error.code) end
 
 | 类别 | 归属 | 内容 | 场景例 |
 |---|---|---|---|
-| **params**（统一参数） | 脚本声明 schema（type/default/help/**visible**/**perm**）；初值两层：包默认 < 运行期持久化值（部署配置不携带业务参数）；控制总线热改（visible 定渠道、perm 定权限） | 坐标、过滤器、区域、不满盒列表、追杀半径、开关 | ①from/to ③input/partial_chests ②range |
+| **params**（统一参数） | `bot.yaml` 声明 schema（type/default/required/help/**visible**）；包默认 < 实例 params_json（平台唯一真源，部署时下发）；控制总线热改并回写 | 坐标、过滤器、区域、不满盒列表、追杀半径、开关 | ①from/to ③input/partial_chests ②range |
 | **policy**（策略/边界） | **实例部署配置所有**（每服务器/每世界一份，全部可选；缺省不限制），宿主强制，脚本不可绕过 | 见下 | — |
 | **runtime knobs** | 引擎调优 | dry_run、看门狗阈值、重试默认、日志级别 | — |
 | **driver flags** | 驱动协商上报 | feature flags + 降级矩阵 | 跨后端 |
@@ -394,7 +394,7 @@ if not r.ok then log.warn("send failed: %s", r.error.code) end
 - movement：活动围栏（越界 → 引擎自动 pause + 告警，可恢复）、`allow_move=false` 禁止移动 —— ①③
 - blocks：dig/place 门控（缺省允许；显式 false/deny 才禁） —— ①③
 - combat：配置 targets 后才做类型过滤；max_engage 可选 —— ②
-- chat：say 限速（缺省不限）、**命令白名单**（非空时按首词元精确匹配：`/pay` 不放行 `/payday`；命名空间别名如 `/minecraft:pay` 需显式列出）、msg_command 配置 —— ④
+- chat：say 限速（缺省不限）、**命令白名单**（非空时按首词元精确匹配：`/pay` 不放行 `/payday`；命名空间别名如 `/minecraft:pay` 需显式列出） —— ④
 - budget：每小时动作数、任务墙钟上限、world.scan 预算；耗尽 → 自动 pause + 告警 —— 全部
 - 操作员判定不在平台：聊天控制的权限模型由脚本自行实现（参数/KV/代码常量）
 
@@ -415,7 +415,7 @@ nav.unreachable | nav.timeout | nav.stuck
 container.missing | container.closed | container.full(由 moved<count 表达)
 entity.gone | entity.unknown_field
 permission.denied | policy.blocklist
-runtime.paused(暂停注入：任务冻结不销毁，resume 时于冻结点重抛) | persist.txn_yielded
+runtime.paused(暂停注入：任务冻结不销毁，resume 时于冻结点重抛) | state.quota | state.update_yielded
 timeout | budget.exceeded(→ 自动 pause)
 driver.disconnected(→ 自动 pause) | server.kicked(→ 自动 pause)
 ```
@@ -423,24 +423,24 @@ driver.disconnected(→ 自动 pause) | server.kicked(→ 自动 pause)
 
 ## 8. 生命周期（引擎启动序）
 
-params schema 校验（包默认合并持久化值）→ persist 打开/迁移 → 连接 + 能力协商 → 脚本静态检查（白名单/领域 lint/能力需求提取比对 driver flags）→ 注册声明 → `on_start`。
-运行中：掉线/被踢 → 自动 pause（`on_pause`：任务在挂起点冻结、停走、告警）→ 重连 → 自动 resume（`on_resume`；冻结点重抛 `runtime.paused` 走正常重试）；死亡 → 自动重生 → `on_respawned`（任务决定续跑或退出）。停机 = 进程退出（无 on_stop；持久化与意图日志保证一致性）。
+params schema 校验（YAML 契约 + 实例值）→ state 打开（固定路径）→ 连接 + 能力协商 → 脚本静态检查（白名单/领域 lint/能力需求提取比对 driver flags）→ 注册声明 → `on_start`。
+运行中：掉线/被踢 → 自动 pause（`on_pause`：任务在挂起点冻结、停走、告警）→ 重连 → 自动 resume（`on_resume`；冻结点重抛 `runtime.paused` 走正常重试）；死亡 → 自动重生 → `on_respawned`（任务决定续跑或退出）。停机 = 进程退出（无 on_stop；state 与外部事件流保证一致性）。
 
 ## 9. 场景 → 能力追溯矩阵
 
-| | nav | container | inv | entity | world | combat | chat | persist | 控制/策略 |
+| | nav | container | inv | entity | world | combat | chat | state | 控制/策略 |
 |---|---|---|---|---|---|---|---|---|---|
 | ①搬运 | goto_near | open/close/withdraw/deposit/move | count | — | block | — | log | — | 围栏、禁挖、abort |
 | ②追杀 | follow/goto | — | equip_best | nearest/alive/pos | — | attack/cooldown | reply | — | 命令鉴权、黑名单、内建 pause |
 | ③整理 | goto_near | free_space/deposit/count | — | — | scan/block | — | log | 表+校验回写 | params、看门狗 |
-| ④银行 | — | — | — | — | — | — | on_chat/await/run_command/seen | txn+意图日志 | 命令白名单、脚本自管 ops、限速 |
+| ④银行 | — | — | — | — | — | — | on_chat/await/run_command/seen | 键值账户 + 意图集合 | 命令白名单、脚本自管 ops、限速 |
 
 结论：四列并集无缺口；②③共同逼出的"ItemStack 组件读取"、①③共同逼出的"容器复合语义"、④独有的"事务+回执"均为公共能力，无场景需要目录之外的机制。
 （§13/§3.2 定稿后注：矩阵中的 withdraw/deposit/free_space/move/equip_best 由 bslib 提供，脚本层名称不变；HAL 对应面为点击协议全集。）
 
 ## 10. 优先级汇总
 
-- **P0（M1，mineflayer，验收=①④）**：nav 基础、container 全部、inv 基础、chat 全部、宿主控制（HTTP `/pause` `/resume`）、self 基础、time/task/log、persist 全部、params、策略（围栏/禁挖/命令白名单/容器门控；缺省不限制）、HTTP 控制通道（§17）、dry_run、动作日志。
+- **P0（M1，mineflayer，验收=①④）**：nav 基础、container 全部、inv 基础、chat 全部、宿主控制（HTTP `/pause` `/resume`）、self 基础、time/task/log、state 全部、params、策略（围栏/禁挖/命令白名单/容器门控；缺省不限制）、HTTP 控制通道（§17）、dry_run、动作日志。
 - **P1（M2，验收=②③）**：entity、follow、combat 四件套、equip_best（按 ItemStack 组件排序）、world.scan、caps、seen 之外的生命周期事件（death/suspend/resume）、看门狗、`item.stack` 组件全量。
 - **P2**：raycast、webhook 告警、metrics 导出。
 
@@ -506,7 +506,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 ## 12. 修订后的优先级结论
 
-- **P0 增补**：session 域；inv 槽位模型（含盔甲/副手）；self.gamemode（能力门控依据：spectator 不可攻击/开箱）；pause 语义全套（on_pause/on_resume + 内建 pause/resume/status + runtime.paused）；persist.adjust_if / L.mark(id) / persist.seen / on_event。
+- **P0 增补**：session 域；inv 槽位模型（含盔甲/副手）；self.gamemode（能力门控依据：spectator 不可攻击/开箱）；pause 语义全套（on_pause/on_resume + 内建 pause/resume/status + runtime.paused）；state.update / state.seen / on_event。
 - **P1 增补**：msg 域（bossbar/title/actionbar/tablist/teams）；entity.equipment；drops；use_item（eat_until_full 移入 bslib，见 §13）；world 环境只读。
 - **P2 增补**：scoreboard；sound/particle；interact_entity。
 - 一句话理由：四场景在真实服务器上分别依赖 teams（②安全）、进食（②续航）、server_brand（④解析模板）、断线恢复（全部长期运行）——不补这几项，M2 实机验收会失败，而非功能不全。
@@ -521,7 +521,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 | 层 | 实现者 | 内容 | 判据 |
 |---|---|---|---|
 | 宿主动作 [H] | 各栈原生桥（engine.js+abi.js · AbiDispatcher+McRuntime · mcc 桥） | look / input / dig / use_block / use_entity / swing / use_item / select_slot / drop / 窗口点击协议全集 / chat_send / path_to / 包流 | 一次网络往返或一次客户端动作 |
-| 引擎核心 | 引擎原生代码 | 调度、资源仲裁（移动权/**窗口互斥**）、窗口内容同步与失效语义、persist、params、引擎侧正则；**不做物品数据表**（属性读 ItemStack 组件） | 必须成立的跨后端不变量；需要引擎内部状态或事务保证 |
+| 引擎核心 | 引擎原生代码 | 调度、资源仲裁（移动权/**窗口互斥**）、窗口内容同步与失效语义、state、params、引擎侧正则；**不做物品数据表**（属性读 ItemStack 组件） | 必须成立的跨后端不变量；需要引擎内部状态或原子读改写 |
 | bslib 内置 Lua 库 | 引擎随附（Lua 源码，可读、可覆盖） | withdraw / deposit / transfer（moved<count 约定）/ container.move 多趟、eat_until_full、equip_best、ensure_holding、entity.pickup、is_combat_ready、find_ground / is_dangerous 等谓词 | **行为策略**——用户可能想调整的决策逻辑 |
 
 场景落点：②的"会吃饭、换最强武器"是 bslib 的职责（如 `bslib/combat.lua`），HAL 只保证 `combat.use_item`、`inv.equip`、`item.stack`（组件属性）这些底层件存在。
@@ -556,7 +556,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 | op | 覆盖的脚本层 API | 说明 |
 |---|---|---|
-| `act.chat_send(text, kind)` | chat.say / run_command / msg / reply | kind = chat / command / reply；command 层由核心补 `/`，宿主按 kind 走策略 |
+| `act.chat_send(text, kind)` | chat.say / run_command / reply | kind = chat / command；command 层由核心补 `/`，宿主按 kind 走策略 |
 | `act.window_open(target)` / `act.window_close()` | container.open/close | target: blockpos\|entity；同时至多一个窗口 |
 | `act.window_click(slot, button, mode, state_id?, n?)` | win.click / click_hotbar / drop_slot / drop_cursor / drag 全部 | mode = vanilla ClickType；**state_id 由客户端维护**并随包回传 |
 | `act.use_entity(target, kind, hand?)` | combat.attack、interact_entity | kind = attack / interact / interact_at |
@@ -742,19 +742,19 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 |---|---|---|
 | `/state` | GET | 快照：session、pos、health/food、当前任务列表与状态、窗口、caps；含断线重连可观测（reconnecting/attempts/next_retry_in，TOB-475）与 `credential_updated_at`（最近一次 POST /session 生效时刻，无则 null） |
 | `/session` | POST | **mineflayer 宿主**：会话凭据更新（TOB-489，MC 凭据轮换引擎侧）。`{"access_token":"<新 token>","username"?:"…","uuid"?:"…"}` → `200 {"applied":true,"effective":"next_connect"\|"next_reconnect"}`。写入 `connectCfg.account.accessToken`：在线连接零动作（MC 协议无会话中重认证，accessToken 仅 join 期消费）；断线/重连环路中下一次重连即用新 token（不重置退避、不打断在途计划）。可选拖带 username/uuid 对账，与当前 account 不匹配 409；账号非 `auth:'session'` 模式（offline/密码式）409；access_token 缺失/空 400；同值重复 POST 幂等 200。token 值不进任何日志或 /state。fabric mod 宿主不在托管链路、暂不实现 |
-| `/params` | GET / POST | 读 / 改 params（schema 校验 + 持久化，等价控制总线写） |
+| `/params` | GET / POST | 读 / 改 params（schema 校验；平台侧回写 params_json） |
 | `/pause` | POST | 暂停：`{"reason":"manual"}`（可选，默认 manual）；冻结任务、停走、取消寻路 |
 | `/resume` | POST | 恢复被 pause 冻结的任务（于冻结点重抛，走正常重试） |
 | `/eval` | POST | 一次性 Lua：`{"name":"relocate","code":"nav.walk{...}"}` 作为具名任务运行；编译错误 400，返回值/失败走 `/logs`，任务可在 `/tasks` 取消 |
 | `/tasks` | GET | 任务列表：id、name、status、运行时长、最近进度（`task.progress` 输入） |
 | `/tasks/cancel` | POST | `{"name":"organize"}` 协作式取消 |
 | `/logs?since=<ts>` | GET | 结构化动作/事件日志尾部（任务、动作、错误码），支持增量拉取 |
-| `/persist?table=Account` | GET | 只读查询持久化表（测试对账）；kv 同理 |
+| `/store` | GET / DELETE | 只读实例状态（键值 + 用量）/ 清空状态 |
 | `/caps` | GET | 宿主类型/版本、feature flags、脚本包清单 |
 | `/reload` | POST | 原地热重载脚本：Node 宿主重读实例 package 目录（`{"reason":"..."}`），Fabric 宿主可选 `{"package":"<名>"}` 切换并写回 config；新脚本编译失败时保持旧脚本运行，连接不断 |
 | `/packages` | GET | **fabric 宿主**：`{"current":"tour","packages":["hello","smoke2","tour"]}`（botscript/ 下可选包） |
 
 约定：全部 JSON；异步动作返回受理 id；三宿主的端点与载荷 schema 完全一致（MCP 工具不感知宿主差异）。
 
-**无头测试闭环**：`POST /params` 或 `POST /eval` 触发任务 → 轮询 `/tasks` 看完成 → `/logs` 核对动作序列 → `/persist` 对账断言。
+**无头测试闭环**：`POST /params` 或 `POST /eval` 触发任务 → 轮询 `/tasks` 看完成 → `/logs` 核对动作序列 → `/store` 对账断言。
 配合 RCON 注入服务器事件（tellraw 模拟系统消息等），验收全程无需真人客户端；computer-use 仅留给"必须真人操作"的场景。

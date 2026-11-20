@@ -165,7 +165,6 @@ class LuaRuntimeTest {
         LuaRuntime rt = makeRuntime(sink, clock, hostOut);
         TestHost host = hostOut[0];
         rt.exec("""
-                params { source = { type = "blockpos", required = true } }
                 on_start(function()
                   local p = params.source
                   log.info("src=%d %d %d", p.x, p.y, p.z)
@@ -174,8 +173,10 @@ class LuaRuntimeTest {
                 end)
                 """, "@q");
         JsonObject manifest = new JsonObject();
-        manifest.add("source", JsonParser.parseString("[119,151,-306]"));
-        rt.bindParams(manifest, new JsonObject());
+        manifest.add("source", JsonParser.parseString("{\"type\":\"blockpos\",\"required\":true}"));
+        JsonObject instance = new JsonObject();
+        instance.add("source", JsonParser.parseString("[119,151,-306]"));
+        rt.bindParams(manifest, instance);
         rt.start();
         assertTrue(host.infos().contains("src=119 151 -306"), String.valueOf(host.logs));
         assertTrue(host.infos().stream().anyMatch((x) -> x.startsWith("pos=0")), String.valueOf(host.logs));

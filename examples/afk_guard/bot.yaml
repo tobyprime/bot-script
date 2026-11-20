@@ -1,16 +1,16 @@
 name: afk_guard
 scripts: [afk.lua, relay.lua]
 params:
-  bot_name:         { type: string, default: '', desc: bot 进服玩家名（私聊括号格式接收者校验；空 = 自动锚定 bot 自身用户名） }
-  super_admin:      { type: string, default: '', desc: 超级管理员玩家名（唯一，可增删管理员） }
-  auto_accept_tpa:  { type: boolean, default: true, desc: 未锁定时自动接受 tpa/tpahere }
-  anti_afk:         { type: boolean, default: true, desc: 定期微调视角防挂机检测 }
-  whisper_marker:   { type: string, default: 'whispers to you:,whispers:', desc: 私聊识别标记（逗号分隔，命中后的文本为命令） }
-  tpa_to_keyword:   { type: string, default: '请求传送到你的位置', desc: tpa 请求关键词（对方传送到 bot） }
-  tpahere_keyword:  { type: string, default: '请求你传送', desc: tpahere 请求关键词（bot 被请求过去） }
-  tp_accept_cmd:    { type: string, default: '/tpaccept {player}', desc: 接受传送命令模板，player 为占位符 }
-  api_key:          { type: string, default: '', desc: 平台 API 密钥（bsk_…，事件上报/指令回执通道；空 = 桥禁用） }
-  api_base:         { type: string, default: 'http://127.0.0.1:18100', desc: 控制面地址 }
-  instance_id:      { type: string, default: '', desc: 实例 ID（平台部署时自动注入，无需手填） }
-  transfer_pattern: { type: string, default: '你收到了来自 (%S+) 的 ([%d%.]+) C', desc: 'TSLC 收款识别（Lua pattern，引擎侧判定；捕获 1=玩家名 2=金额；热更校验：长度≤256/合法 pattern/恰好 2 捕获；空 = 关闭收款判定）' }
-persist: ./data/afk.sqlite
+  bot_name:         { type: string, default: '', help: bot 进服玩家名（私聊括号格式接收者校验；空 = 自动锚定 bot 自身用户名） }
+  super_admin:      { type: string, default: '', help: 超级管理员玩家名（唯一，可增删管理员） }
+  auto_accept_tpa:  { type: boolean, default: true, help: 未锁定时自动接受 tpa/tpahere }
+  anti_afk:         { type: boolean, default: true, help: 定期微调视角防挂机检测 }
+  whisper_marker:   { type: string, default: 'whispers to you:,whispers:', help: 私聊识别标记（逗号分隔，命中后的文本为命令） }
+  tpa_to_keyword:   { type: string, default: '请求传送到你的位置', help: tpa 请求关键词（对方传送到 bot） }
+  tpahere_keyword:  { type: string, default: '请求你传送', help: tpahere 请求关键词（bot 被请求过去） }
+  tp_accept_cmd:    { type: string, default: '/tpaccept {player}', help: 接受传送命令模板，player 为占位符 }
+  debug_chat:       { type: boolean, default: true, help: '在日志输出每条收到的聊天（诊断用）' }
+  api_key:          { type: string, default: '', help: 平台 API 密钥（bsk_…，事件上报/指令回执通道；空 = 桥禁用） }
+  api_base:         { type: string, default: 'http://127.0.0.1:18100', help: 控制面地址 }
+  instance_id:      { type: string, default: '', help: 实例 ID（平台部署时自动注入，无需手填） }
+  transfer_pattern: { type: string, default: '你收到了来自 (%S+) 的 ([%d%.]+) C', help: 'TSLC 收款识别（Lua pattern，引擎侧判定；捕获 1=玩家名 2=金额；热更校验：长度≤256/合法 pattern/恰好 2 捕获；空 = 关闭收款判定）' }

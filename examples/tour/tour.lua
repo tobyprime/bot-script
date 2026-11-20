@@ -3,19 +3,12 @@
 -- 设计目标：每个 suite 对应一个能力领域，逐项输出 [PASS]/[FAIL]/[WARN]，
 -- 末尾一行 [tour] SUMMARY —— 验收只看日志（/logs），零视觉依赖。
 -- 覆盖：感知、实体、移动、方块+放置+策略负例、容器背包、并发任务、
---       定时、持久化（跨启动）、聊天+事件、错误处理、参数只读。
+--       定时、实例状态（跨启动）、聊天+事件、错误处理、参数只读。
 -- 环境假设：平坦平台 + 一只含材料的箱子（params.chest）；放置落点 pad
 --       下方一格必须是可右键的实心地面（combat.place 落在 pos.up()）。
 -- 已知宿主局限（fabric）：inv_drop 为 no-op（跳过丢物实体链）；
 --       world.scan 只扫描容器；无 chunk 流（world.block_changed 仅覆盖客户端可见变更）。
 -- ============================================================
-
-params {
-  chest    = { type = "blockpos", required = true, help = "容器测试箱（需含可回存材料）" },
-  pad      = { type = "blockpos", required = true, help = "放置测试落点（羊毛落在此格）" },
-  outside  = { type = "blockpos", required = true, help = "围栏外目标（应被策略拒绝）" },
-  material = { type = "string", default = "minecraft:pink_wool", visible = true, help = "放置材料" },
-}
 
 local function pos3(p)
   if type(p) == "table" and p.x then return { x = p.x, y = p.y, z = p.z } end
@@ -394,49 +387,46 @@ local function suite_time()
 end
 
 -- ============================================================
--- S8 持久化面：kv 跨启动计数 / table+adjust / log / seen / txn 原子性
+-- S8 状态面：state 跨启动计数 / update 原子读改写 / 集合遍历 / seen
 -- ============================================================
-persist.kv("tour_store")
-persist.table("tour_tab"){ id = ":key", n = "number?" }
-persist.log("tour_ops")
+local function suite_state()
+  SUITE = "state"
+  local boots = (state.get("tour:boots") or 0) + 1
+  state.set("tour:boots", boots)
+  log.info("[tour][info] state boots=%d（重启后应为上一次+1）", boots)
+  check("state 读写", state.get("tour:boots") == boots)
 
-local function suite_persist()
-  SUITE = "persist"
-  local boots = (tour_store.get("boots") or 0) + 1
-  tour_store.set("boots", boots)
-  log.info("[tour][info] persist.kv boots=%d（重启后应为上一次+1）", boots)
-  check("kv 读写", tour_store.get("boots") == boots)
-
-  tour_tab.upsert{ id = "probe", n = 1 }
-  tour_tab.adjust("probe", 5)
-  check("table upsert+adjust", (tour_tab.find{ id = "probe" } or {}).n == 6,
-    tostring((tour_tab.find{ id = "probe" } or {}).n))
-  check("adjust_if 满足条件", tour_tab.adjust_if("probe", function(r) return r.n < 10 end, 2) == true)
-  check("adjust_if 条件拒绝", tour_tab.adjust_if("probe", function(r) return r.n > 10 end, 2) == false)
-  check("adjust_if 后数值", (tour_tab.find{ id = "probe" } or {}).n == 8)
-  local cnt = 0
-  for _ in tour_tab.all() do cnt = cnt + 1 end
-  check("table.all 迭代", cnt >= 1, tostring(cnt))
-
-  tour_ops.append{ op = "suite", ts = time.now() }
-  check("persist.log 追加可查", #tour_ops.find{ op = "suite" } >= 1)
-
-  check("seen 首次=false", persist.seen("tour:probe", 4000) == false)
-  check("seen 窗口内=true", persist.seen("tour:probe", 4000) == true)
-
-  txn(function() tour_store.set("txn_ok", true) end)
-  check("txn 提交生效", tour_store.get("txn_ok") == true)
-
-  local okX, eX = try(function()
-    txn(function() tour_store.set("txn_probe", "bad"); time.sleep(30) end)
+  state.set("tour:counter", 1)
+  state.update("tour:counter", function(n) return (n or 0) + 5 end)
+  check("state.update 读改写", state.get("tour:counter") == 6, tostring(state.get("tour:counter")))
+  state.update("tour:counter", function(n)
+    if (n or 0) >= 10 then return n end
+    return n + 2
   end)
-  check("txn 体内挂起被拒", not okX and type(eX) == "table" and eX.kind == "persist.txn_yielded",
+  check("state.update 条件写入", state.get("tour:counter") == 8, tostring(state.get("tour:counter")))
+
+  state.set("tour:set", { a = 1, b = 2 })
+  local cnt = 0
+  for _ in pairs(state.all()) do cnt = cnt + 1 end
+  check("state.all 遍历", cnt >= 3 and state.get("tour:set").b == 2, tostring(cnt))
+
+  state.update("tour:ops", function(list)
+    list = list or {}
+    list[#list + 1] = { op = "suite", ts = time.now() }
+    return list
+  end)
+  check("state 追加集合可查", #(state.get("tour:ops") or {}) >= 1)
+
+  check("seen 首次=false", state.seen("tour:probe", 4000) == false)
+  check("seen 窗口内=true", state.seen("tour:probe", 4000) == true)
+
+  state.set("tour:yield_probe", "keep")
+  local okX, eX = try(function()
+    state.update("tour:yield_probe", function(v) time.sleep(30) return "bad" end)
+  end)
+  check("state.update 体内挂起被拒", not okX and type(eX) == "table" and eX.kind == "state.update_yielded",
     tostring(eX and eX.kind))
-  if tour_store.get("txn_probe") == "bad" then
-    warnskip("txn 回滚", "宿主 persist 为 JSON 即写盘，回滚是标记式（代码注释明示）；挂起拒绝已兜底")
-  else
-    check("txn 回滚生效", true)
-  end
+  check("state.update 挂起不写入", state.get("tour:yield_probe") == "keep")
 end
 
 -- ============================================================
@@ -476,7 +466,7 @@ end
 -- 主流程
 -- ============================================================
 local SUITES = { suite_sense, suite_entity, suite_nav, suite_block, suite_container,
-                 suite_task, suite_time, suite_persist, suite_chat, suite_params }
+                 suite_task, suite_time, suite_state, suite_chat, suite_params }
 
 local function run_all()
   for _, fn in ipairs(SUITES) do

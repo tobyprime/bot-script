@@ -100,17 +100,17 @@ async function main() {
   const PKG = (dir) => path.resolve('examples', dir);
   const cfgs = {
     bank: {
-      pkg: { name: 'bank-1', scripts: ['bank.lua'], persist: './data/bank-1.sqlite' },
+      pkg: { name: 'bank-1', scripts: ['bank.lua'] },
       pkgDir: PKG('bank'),
       deploy: {
         server: `${HOST}:${PORT}`,
         version: VERSION,
         account: { username: 'bank_bot' },
-        boundary: { chat: { say_rate: '10/min', commands: ['/pay'], msg_command: '/msg' } },
+        boundary: { chat: { say_rate: '10/min', commands: ['/pay', '/msg'] } },
       },
     },
     organizer: {
-      pkg: { name: 'organizer-1', scripts: ['organizer.lua'], persist: './data/organizer-1.sqlite' },
+      pkg: { name: 'organizer-1', scripts: ['organizer.lua'] },
       pkgDir: PKG('organizer'),
       deploy: {
         server: `${HOST}:${PORT}`,
@@ -126,7 +126,7 @@ async function main() {
       },
     },
     coal_guard: {
-      pkg: { name: 'coal-guard-1', scripts: ['coal_guard.lua'], persist: './data/coal-guard-1.sqlite' },
+      pkg: { name: 'coal-guard-1', scripts: ['coal_guard.lua'] },
       pkgDir: PKG('coal_guard'),
       deploy: {
         server: `${HOST}:${PORT}`,
@@ -165,16 +165,19 @@ async function main() {
   // ---------- 启动三个 bot ----------
   console.log('== [2] 启动 bank / organizer / coal_guard ==');
   const engines = {};
+  const acc = (name) => (engines.bank?.stateStore.get(`account:${name}`) ?? {}).balance ?? 0;
+  const pendingIntents = () => Object.entries(engines.bank?.stateStore.all() ?? {})
+    .filter(([k, v]) => k.startsWith("intent:") && v.state === "pending").length;
+  const chestNotes = () => Object.entries(engines.organizer?.stateStore.all() ?? {})
+    .filter(([k]) => k.startsWith("chest:")).map(([, v]) => v);
   const organizerRoundDone = () => (engines.organizer?._lines ?? []).filter((l) => l.includes('本轮整理完成')).length;
   for (const [k, cfg] of Object.entries(cfgs)) {
     const driver = new MineflayerDriver({ log: () => {} });
     // v2 契约：BotEngine(包清单, driver, { scriptDir=包目录, boundary, connect })
-    const manifest = {
-      ...cfg.pkg,
-      persist: path.resolve(RUN_DIR, cfg.pkg.persist),   // 实例数据根 = 部署文件目录（cli.js 同规则）
-    };
+    const manifest = { ...cfg.pkg };
     const engine = new BotEngine(manifest, driver, {
       scriptDir: cfg.pkgDir,
+      statePath: path.join(RUN_DIR, k, "state", "state.sqlite"),
       boundary: cfg.deploy.boundary,
       connect: {
         host: HOST, port: PORT, version: cfg.deploy.version,
@@ -211,33 +214,33 @@ async function main() {
   console.log('== [3] bank 场景（断言在汇总阶段执行） ==');
   check('bank: 系统消息入账', async () => {
     tester.cmd('tellraw @a {"text":"收到来自 Alice 10 c"}');
-    await waitFor(() => engines.bank.persist.find('Account', { player: 'Alice' })?.balance === 10, 10000, 300, 'Alice 入账');
+    await waitFor(() => acc('Alice') === 10, 10000, 300, 'Alice 入账');
   });
   check('bank: seen 同文去重', async () => {
     tester.cmd('tellraw @a {"text":"收到来自 Alice 10 c"}');
     await sleep(1800);
-    assert.strictEqual(engines.bank.persist.find('Account', { player: 'Alice' })?.balance, 10, '重复消息不得重复入账');
+    assert.strictEqual(acc('Alice'), 10, '重复消息不得重复入账');
   });
   check('bank: 转账（条件原子划转 + 回复）', async () => {
     tester.cmd('tellraw @a {"text":"收到来自 tester 8 c"}');
-    await waitFor(() => engines.bank.persist.find('Account', { player: 'tester' })?.balance === 8, 10000, 300, 'tester 入账');
+    await waitFor(() => acc('tester') === 8, 10000, 300, 'tester 入账');
     const mark = tester.mark();
     tester.chat('转账 Carol');
-    await waitFor(() => engines.bank.persist.find('Account', { player: 'Carol' })?.balance === 8, 10000, 300, 'Carol 收款');
-    assert.strictEqual(engines.bank.persist.find('Account', { player: 'tester' })?.balance, 0, 'tester 扣清');
+    await waitFor(() => acc('Carol') === 8, 10000, 300, 'Carol 收款');
+    assert.strictEqual(acc('tester'), 0, 'tester 扣清');
     assert.ok(tester.receivedSince(mark).some((t) => t.includes('转账成功')), '应回复转账成功');
   });
   check('bank: 取款 /pay + 超时挂账 + 回执核销', async () => {
     tester.cmd('tellraw @a {"text":"收到来自 tester 10 c"}');
-    await waitFor(() => engines.bank.persist.find('Account', { player: 'tester' })?.balance === 10, 10000, 300, 'tester 补足');
+    await waitFor(() => acc('tester') === 10, 10000, 300, 'tester 补足');
     const mark = tester.mark();
     tester.chat('取款 6');
     await waitFor(() => engines.bank.actionLog.some((a) => String(a.args).includes('/pay tester 6')), 10000, 300, '/pay tester 6 已发出');
-    await waitFor(() => engines.bank.persist.logFind('Intent', { state: 'pending' }).length === 1, 5000, 300, 'pending 意图');
+    await waitFor(() => pendingIntents() === 1, 5000, 300, 'pending 意图');
     await waitFor(() => tester.receivedSince(mark).some((t) => t.includes('支付确认超时')), 10000, 300, '5s 超时挂账提示');
-    assert.strictEqual(engines.bank.persist.find('Account', { player: 'tester' })?.balance, 4, '扣款已生效');
+    assert.strictEqual(acc('tester'), 4, '扣款已生效');
     tester.cmd('tellraw @a {"text":"已向 tester 6 c"}');
-    await waitFor(() => engines.bank.persist.logFind('Intent', { state: 'pending' }).length === 0, 8000, 300, '迟到回执核销挂账');
+    await waitFor(() => pendingIntents() === 0, 8000, 300, '迟到回执核销挂账');
   });
   check('bank: balance 走私聊回复', async () => {
     const mark = tester.mark();
@@ -248,7 +251,7 @@ async function main() {
   // ---------- organizer ----------
   console.log('== [4] organizer 场景 ==');
   check('organizer: 冷启动扫描登记容器', async () => {
-    await waitFor(() => engines.organizer.persist.all('ChestNote').length >= 2, 30000, 500, 'ChestNote >= 2');
+    await waitFor(() => chestNotes().length >= 2, 30000, 500, 'ChestNote >= 2');
   });
   check('organizer: organize once 清空输入箱并分流', async () => {
     // 停掉 30s 定时轮，避免与验收打开箱子竞争（params 控制总线热改）
@@ -261,7 +264,7 @@ async function main() {
     console.log('[diag] organizer _lines tail:', (engines.organizer._lines ?? []).slice(-8).join(' || '));
     const inputItems = chestItems(POS.input);
     assert.strictEqual(inputItems.length, 0, `输入箱应空，实际 ${JSON.stringify(inputItems)}`);
-    for (const row of engines.organizer.persist.all('ChestNote')) {
+    for (const row of chestNotes()) {
       if (row.item) assert.ok(row.free >= 0, `ChestNote ${JSON.stringify(row.pos)} free 应已实测回写`);
     }
     // 守恒不变量：羊毛 70 / 圆石 12 应在登记箱或 bot 背包中（不含世界损耗）
@@ -364,7 +367,7 @@ async function main() {
     assert.ok(g.schema.paused, 'schema 应含 paused');
     assert.strictEqual(typeof g.values.paused, 'boolean');
   });
-  check('http: /cmd 同总线 + /tasks + /tasks/cancel + /logs + /persist', async () => {
+  check('http: /tasks + /tasks/cancel + /logs + /store', async () => {
     const { port, token } = globalThis.__http;
     const base = `http://127.0.0.1:${port}`;
     const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
@@ -376,8 +379,8 @@ async function main() {
     assert.strictEqual(cancel.found, false, '未知名取消应报 found=false');
     const logs = await (await fetch(`${base}/logs?since=0`, { headers: auth })).json();
     assert.ok(logs.logs.length > 0, '日志环应有内容');
-    const persist = await (await fetch(`${base}/persist?table=ChestNote`, { headers: auth })).json();
-    assert.ok(Array.isArray(persist.rows), 'persist 表查询应返回行数组');
+    const store = await (await fetch(`${base}/store`, { headers: auth })).json();
+    assert.ok(store.values && typeof store.values === 'object', '/store 应返回状态键值');
   });
 
   check('内建 pause/resume（游戏内聊天命令）', async () => {

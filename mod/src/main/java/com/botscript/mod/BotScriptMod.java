@@ -4,7 +4,7 @@ import com.botscript.mod.gui.BotGuiScreen;
 import com.botscript.mod.runtime.AbiDispatcher;
 import com.botscript.mod.runtime.BotConfig;
 import com.botscript.mod.runtime.LuaRuntime;
-import com.botscript.mod.runtime.PersistStore;
+import com.botscript.mod.runtime.StateStore;
 import com.botscript.mod.runtime.Policy;
 import com.botscript.mod.runtime.ScriptPackageLoader;
 import com.google.gson.JsonArray;
@@ -19,7 +19,6 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,8 +26,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * bot-script 客户端 mod（v2 standalone）：内嵌 Lua 运行时直接执行
@@ -53,7 +50,7 @@ public class BotScriptMod implements ClientModInitializer {
     private AbiDispatcher dispatcher;
     private McState state;
     private McRuntime mcRuntime;
-    private PersistStore persist;
+    private StateStore stateStore;
     private HttpApi httpApi;
     private BotConfig cfg = new BotConfig();
     private net.minecraft.client.option.KeyBinding keyToggle;
@@ -64,7 +61,7 @@ public class BotScriptMod implements ClientModInitializer {
         loadConfig();
         ClientTickEvents.END_CLIENT_TICK.register(this::onTick);
         ClientReceiveMessageEvents.GAME.register(this::onGameMessage);
-        httpApi = new HttpApi(() -> runtime, () -> dispatcher, () -> state, () -> persist,
+        httpApi = new HttpApi(() -> runtime, () -> dispatcher, () -> state, () -> stateStore,
                 () -> cfg, () -> activePackage, () -> mcRuntime);
         httpApi.setRuntimeControl(this::reloadRuntime, this::packagesJson);
         try {
@@ -174,11 +171,11 @@ public class BotScriptMod implements ClientModInitializer {
                     },
                     () -> state.currentWindowId() != null);
 
-            persist = new PersistStore(FabricLoader.getInstance().getGameDir()
-                    .resolve("botscript").resolve("data").resolve(activePackage + ".json"));
-            runtime.attachPersist(persist);
+            stateStore = new StateStore(FabricLoader.getInstance().getGameDir()
+                    .resolve("botscript").resolve("state").resolve("state.json"));
+            runtime.attachState(stateStore);
 
-            dispatcher = new AbiDispatcher(runtime, state, mcRuntime, policy, cfg, persist,
+            dispatcher = new AbiDispatcher(runtime, state, mcRuntime, policy, cfg, stateStore,
                     (op, argsJson) -> httpApi.recordAction(op, argsJson),
                     (type, data) -> httpApi.recordEvent(type, data));
             runtime.setAbi(dispatcher);
@@ -344,23 +341,14 @@ public class BotScriptMod implements ClientModInitializer {
         if (runtime == null || dispatcher == null || Boolean.TRUE.equals(overlay)) return;
         String raw = message.getString();
         if (raw.isEmpty()) return;
-        ClientPlayerEntity p = mc.player;
-        if (p != null && raw.startsWith("<" + p.getGameProfile().getName() + ">")) return;
+        // Fabric 的 GAME 事件不提供发送者 UUID：不猜文本格式，统一按 system 传原样文本。
+        // 玩家聊天/system 的分类只依赖协议事实（Node 宿主能从 playerChat 的 sender UUID 判定）。
         JsonObject o = new JsonObject();
         String sender = null;
-        String text = raw;
-        Matcher m = Pattern.compile("^[<\\[]([^\\]>\\s]+)[>\\]]\\s*(.*)$", Pattern.DOTALL).matcher(raw);
-        if (m.matches()) {
-            sender = m.group(1);
-            text = m.group(2);
-        } else {
-            Matcher w = Pattern.compile("^(\\S+) (?:whispers to you:|whispers:)\\s*(.*)$", Pattern.DOTALL).matcher(raw);
-            if (w.matches()) { sender = w.group(1); text = w.group(2); }
-        }
-        o.addProperty("text", text);
+        o.addProperty("text", raw);
         o.addProperty("raw", raw);
         o.addProperty("sender", sender);
-        o.addProperty("sender_kind", sender != null ? "player" : "system");
+        o.addProperty("sender_kind", "system");
         o.addProperty("ts", System.currentTimeMillis());
 
         // ABI v2：没有命令体系；聊天只作为 chat 事件进入核心

@@ -8,4 +8,3 @@ params:
   pad:      { type: blockpos, default: [126,151,-294], visible: true, help: "放置测试落点（羊毛落在此格）" }
   outside:  { type: blockpos, default: [115,151,-287], visible: true, help: "围栏外目标（应被策略拒绝）" }
   material: { type: string, default: minecraft:pink_wool, visible: true, help: "放置材料" }
-persist: ./data/tour-1.sqlite

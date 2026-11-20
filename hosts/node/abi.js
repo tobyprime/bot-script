@@ -175,7 +175,7 @@ export class AbiDispatcher {
 
   _buildHandlers() {
     const s = this.s;
-    const { driver, data, policy, obs, persist, windows, selfState } = s;
+    const { driver, data, policy, obs, stateStore, windows, selfState } = s;
     const hub = s.hub;
 
     // 契约 Stack：完整组件/属性（窗口槽位与实体装备都按组件真值返回）
@@ -296,26 +296,15 @@ export class AbiDispatcher {
       // ---- 物品 ----
       'item.stack': ({ stack }) => data.stack(stack),
 
-      // ---- 聊天策略（只读） ----
-      'chat.config': () => policy.chatConfig(),
-
-      // ---- persist ----
-      'persist.table': ({ name, schema }) => { persist.declareTable(String(name), schema ?? {}); },
-      'persist.find': ({ name, where }) => persist.find(String(name), where ?? {}),
-      'persist.all': ({ name }) => persist.all(String(name)),
-      'persist.upsert': ({ name, row }) => { persist.upsert(String(name), row); },
-      'persist.del': ({ name, where }) => { persist.del(String(name), where ?? {}); },
-      'persist.adjust': ({ name, key, delta }) => persist.adjust(String(name), key, Number(delta)),
-      'persist.seen': ({ key, window_ms: win }) => persist.seen(String(key), Number(win)),
-      'kv.get': ({ name, key }) => persist.kvGet(String(name), String(key)),
-      'kv.set': ({ name, key, value }) => { persist.kvSet(String(name), String(key), String(value)); },
-      'persist.log_declare': ({ name }) => { persist.logDeclare(String(name)); },
-      'persist.log_append': ({ name, fields }) => persist.logAppend(String(name), fields ?? {}),
-      'persist.log_find': ({ name, where }) => persist.logFind(String(name), where ?? {}),
-      'persist.log_mark': ({ name, id, state }) => { persist.logMark(String(name), Number(id), String(state)); },
-      'txn.begin': () => { persist.txnBegin(); },
-      'txn.commit': () => { persist.txnCommit(); },
-      'txn.rollback': () => { persist.txnRollback(); },
+      // ---- state（实例级 localStorage；固定路径，包无权指定） ----
+      'state.get': ({ key }) => {
+        const v = stateStore.get(String(key));
+        return v === undefined ? null : v;
+      },
+      'state.all': () => stateStore.all(),
+      'state.set': ({ key, value }) => { stateStore.set(String(key), value); return {}; },
+      'state.delete': ({ key }) => { stateStore.delete(String(key)); return {}; },
+      'state.seen': ({ key, window_ms: win }) => stateStore.seen(String(key), Number(win ?? 5000)),
 
       // ---- 调度原语 ----
       'util.sleep': ({ ms }, token) => {

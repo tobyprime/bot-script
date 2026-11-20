@@ -45,7 +45,7 @@ async function makeBot(name) {
   fs.writeFileSync(path.join(dir, 'recon.lua'), LUA);
   const driver = new MineflayerDriver({ log: () => {} });
   const engine = new BotEngine(
-    { name, scripts: ['recon.lua'], persist: path.join(dir, `${name}.sqlite`) },
+    { name, scripts: ['recon.lua'] },
     driver,
     {
       scriptDir: dir,

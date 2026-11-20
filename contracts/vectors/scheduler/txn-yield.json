@@ -1,9 +1,0 @@
-{
-  "name": "事务体内挂起点：回滚 + 挂起点抛 persist.txn_yielded",
-  "script": "persist.table \"T\" { k = \"string:key\", v = \"number\" }\non_start(function()\n  task.spawn(function()\n    local ok, err = pcall(function()\n      txn(function() T.upsert{ k = \"x\", v = 1 } time.sleep(10) T.upsert{ k = \"y\", v = 2 } end)\n    end)\n    log.info(\"txn err=%s\", ok and \"none\" or err.kind)\n  end)\nend)",
-  "steps": [
-    { "event": ["lifecycle", { "kind": "on_start" }] },
-    { "advance": 10 }
-  ],
-  "expectLogs": ["info|txn err=persist.txn_yielded"]
-}

@@ -65,7 +65,7 @@ end
 local function apply(actions)
   for _, a in ipairs(actions or {}) do
     if a.type == 'msg' and a.to then
-      chat.msg(tostring(a.to), tostring(a.text or ''))
+      chat.run_command('/msg ' .. tostring(a.to) .. ' ' .. tostring(a.text or ''))
     elseif a.type == 'say' then
       chat.say(tostring(a.text or ''))
     elseif a.type == 'command' then

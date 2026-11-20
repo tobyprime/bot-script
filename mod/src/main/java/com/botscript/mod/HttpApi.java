@@ -4,7 +4,7 @@ import com.botscript.mod.runtime.AbiDispatcher;
 import com.botscript.mod.runtime.BotConfig;
 import com.botscript.mod.runtime.HttpRoutes;
 import com.botscript.mod.runtime.LuaRuntime;
-import com.botscript.mod.runtime.PersistStore;
+import com.botscript.mod.runtime.StateStore;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -42,7 +42,7 @@ public final class HttpApi {
     private final java.util.function.Supplier<LuaRuntime> rtRef;
     private final java.util.function.Supplier<AbiDispatcher> abiRef;
     private final java.util.function.Supplier<McState> stateRef;
-    private final java.util.function.Supplier<PersistStore> persistRef;
+    private final java.util.function.Supplier<StateStore> storeRef;
     private final java.util.function.Supplier<BotConfig> cfgRef;
     private final java.util.function.Supplier<String> pkgNameRef;
     private final java.util.function.Supplier<McRuntime> runtimeRef;
@@ -63,14 +63,14 @@ public final class HttpApi {
     public HttpApi(java.util.function.Supplier<LuaRuntime> rtRef,
                    java.util.function.Supplier<AbiDispatcher> abiRef,
                    java.util.function.Supplier<McState> stateRef,
-                   java.util.function.Supplier<PersistStore> persistRef,
+                   java.util.function.Supplier<StateStore> storeRef,
                    java.util.function.Supplier<BotConfig> cfgRef,
                    java.util.function.Supplier<String> pkgNameRef,
                    java.util.function.Supplier<McRuntime> runtimeRef) {
         this.rtRef = rtRef;
         this.abiRef = abiRef;
         this.stateRef = stateRef;
-        this.persistRef = persistRef;
+        this.storeRef = storeRef;
         this.cfgRef = cfgRef;
         this.pkgNameRef = pkgNameRef;
         this.runtimeRef = runtimeRef;
@@ -213,7 +213,7 @@ public final class HttpApi {
             case "/tasks/cancel" -> cancel(method, body);
             case "/logs" -> logs(Long.parseLong(query.getOrDefault("since", "0")));
             case "/chat" -> chat(method, body);
-            case "/persist" -> persist(query);
+            case "/store" -> store(method);
             case "/caps" -> caps();
             default -> status(404, obj("error", "not found"));
         };
@@ -509,30 +509,20 @@ public final class HttpApi {
         return l;
     }
 
-    private JsonObject persist(Map<String, String> query) {
-        PersistStore store = persistRef.get();
+    private JsonObject store(String method) {
+        StateStore store = storeRef.get();
         if (store == null) return status(400, obj("error", "not booted"));
-        String table = query.get("table");
-        String kv = query.get("kv");
-        if (table != null) {
-            try {
-                String rows = onClient(() -> store.all(table));
-                JsonObject o = obj("table", table);
-                o.add("rows", rows.isEmpty() ? new JsonArray() : JsonParser.parseString(rows).getAsJsonArray());
-                return o;
-            } catch (Exception e) {
-                JsonObject err = obj("error", "persist.query");
-                err.addProperty("detail", String.valueOf(e.getMessage()));
-                return status(400, err);
-            }
+        if ("DELETE".equals(method)) {
+            onClient(() -> { store.clear(); return null; });
+            return obj("ok", true);
         }
-        if (kv != null) {
-            String values = onClient(() -> store.kvAll(kv));
-            JsonObject o = obj("kv", kv);
-            o.add("values", values.isEmpty() ? new JsonObject() : JsonParser.parseString(values).getAsJsonObject());
+        return onClient(() -> {
+            JsonObject o = new JsonObject();
+            o.add("values", store.all());
+            JsonObject stats = store.stats();
+            for (var e : stats.entrySet()) o.add(e.getKey(), e.getValue());
             return o;
-        }
-        return onClient(store::listNames);
+        });
     }
 
     private JsonObject caps() {

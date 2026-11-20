@@ -4,4 +4,4 @@ scripts: [coal_guard.lua]
 params:
   range: { type: number, default: 24, visible: true, help: "警戒半径（格）" }
   spin:  { type: number, default: 120, visible: true, help: "旋转速度（度/秒）" }
-persist: ./data/coal-guard-1.sqlite
+  ops:   { type: string, default: "", visible: true, help: "可停止警戒的玩家名（逗号分隔；留空 = 不校验，示例用）" }

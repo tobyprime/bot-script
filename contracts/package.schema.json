@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://bot-script/contracts/package.schema.json",
-  "title": "bot.yaml（脚本包清单：能力自述，不含边界/凭据）",
+  "title": "bot.yaml（脚本包清单：参数契约自述；不含边界/凭据/存储路径）",
   "type": "object",
   "properties": {
     "name": { "type": "string", "minLength": 1, "description": "包名（缺省取目录名）" },
@@ -14,32 +14,26 @@
     "params": {
       "type": "object",
       "additionalProperties": { "$ref": "#/definitions/param" },
-      "description": "参数：schema 形态 {type,...} 或纯默认值字面量"
-    },
-    "persist": { "type": "string", "description": "持久化文件相对路径（缺省 :memory:）" }
+      "description": "参数契约：每项必须是 schema 对象（type 必填）；不再接受裸字面量"
+    }
   },
   "required": ["scripts"],
   "additionalProperties": false,
   "definitions": {
     "paramType": {
-      "enum": ["string", "number", "boolean", "blockpos", "region", "list<blockpos>"]
+      "enum": ["string", "number", "boolean", "blockpos", "region", "list<blockpos>", "json"]
     },
-    "paramSchema": {
+    "param": {
       "type": "object",
       "properties": {
         "type": { "$ref": "#/definitions/paramType" },
         "default": {},
         "required": { "type": "boolean" },
-        "help": { "type": "string" }
+        "help": { "type": "string" },
+        "visible": { "type": "boolean" }
       },
       "required": ["type"],
       "additionalProperties": false
-    },
-    "param": {
-      "oneOf": [
-        { "$ref": "#/definitions/paramSchema" },
-        { "type": ["string", "number", "boolean", "null", "array"] }
-      ]
     }
   }
 }

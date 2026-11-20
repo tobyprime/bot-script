@@ -1,7 +1,7 @@
-// hosts/node/engine.js — Node 宿主组装（vm + tokens + state + abi + obs + persist + driver）
+// hosts/node/engine.js — Node 宿主组装（vm + tokens + state + abi + obs + 实例状态 + driver）
 //
 // 这里只做接线与生命周期；语义在 runtime/lua（调度/命令/参数/bsl），原语在 abi.js，
-// 策略在 policy.js，持久化在 persist.js。组装层不讲业务。
+// 策略在 policy.js，实例级小状态在 stateStore.js。组装层不讲业务。
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
@@ -9,7 +9,7 @@ import { parse as parseYaml } from 'yaml';
 import { LuaVm } from './vm.js';
 import { TokenHub, TimerBank, TYPE_ERR } from './tokens.js';
 import { Observation } from './obs.js';
-import { Persist } from './persist.js';
+import { StateStore } from './stateStore.js';
 import { Policy } from './policy.js';
 import { DataRegistry } from './data.js';
 import { AbiDispatcher } from './abi.js';
@@ -22,9 +22,9 @@ const nowMs = () => Date.now();
 
 export class BotEngine {
   /**
-   * @param cfg  bot.yaml 解析结果（name/scripts/params/persist）
+   * @param cfg  bot.yaml 解析结果（name/scripts/params）
    * @param driver 驱动实例（in-process 或 WS）
-   * @param opts { scriptDir, log, dryRun, paramOverrides, boundary, runtime, connect, instanceParams }
+   * @param opts { scriptDir, statePath, log, dryRun, boundary, runtime, connect, instanceParams, onParamsChanged }
    */
   constructor(cfg, driver, opts = {}) {
     this.cfg = cfg;
@@ -43,7 +43,7 @@ export class BotEngine {
     });
     this.timers = new TimerBank();
     this.session = new SessionState();
-    this.persist = new Persist(this.cfg.persist || ':memory:');
+    this.stateStore = new StateStore(opts.statePath || ':memory:');
     this.policy = new Policy(this.boundary, {
       entityLookup: (id) => driver.query_entity?.(id) ?? null,
       selfPos: () => this.selfState?.pos() ?? null,
@@ -79,7 +79,7 @@ export class BotEngine {
       data: this.data,
       policy: this.policy,
       obs: this.obs,
-      persist: this.persist,
+      stateStore: this.stateStore,
       hub: this.hub,
       selfState: this.selfState,
       world: this.world,
@@ -115,7 +115,7 @@ export class BotEngine {
   // ================= 生命周期 =================
 
   async start() {
-    // 1) 参数持久化覆盖由核心在 params.bind 时读取（同一 kv 键）
+    // 1) 参数值由部署层经 instanceParams 传入；核心不落盘（真源在平台实例配置）
     // 2) 驱动事件接线
     const d = this.driver;
     d.on('session', (p) => this.onSession(p));
@@ -206,7 +206,7 @@ export class BotEngine {
     this.timers.clearAll();
     try { await this.driver.stop?.(); } catch { /* ignore */ }
     try { this.lua?.close(); } catch { /* ignore */ }
-    this.persist?.close();
+    this.stateStore?.close();
   }
 
   async createLua() {
@@ -251,8 +251,8 @@ export class BotEngine {
   //
   // 语义：重读 scriptDir/bot.yaml 与脚本文件，在**新 VM** 里完整跑一遍声明期；
   // 全部成功后才取消旧任务、换 VM（编译/声明失败则旧脚本继续跑，连接不断）。
-  // 保持：MC 会话、driver、persist、日志/聊天环、HTTP 控制通道、暂停状态、参数持久化值。
-  // 不保持：旧任务、旧脚本定时器、旧闭包状态（脚本需从 persist/KV 恢复自己的状态）。
+  // 保持：MC 会话、driver、state、日志/聊天环、HTTP 控制通道、暂停状态。
+  // 不保持：旧任务、旧脚本定时器、旧闭包状态（脚本需从 state 恢复自己的状态）。
   async reloadScripts({ reason = 'hot-reload' } = {}) {
     if (this.stopped || !this.started) throw TYPE_ERR('runtime.error', '引擎未启动，无法热重载');
     if (this._reloading) throw TYPE_ERR('runtime.busy', '已有热重载在进行中');
@@ -416,7 +416,7 @@ export class BotEngine {
       text: String(p.text ?? ''),
       raw: String(p.raw ?? ''),
       sender: p.sender ?? null,
-      sender_kind: p.sender_kind ?? 'unknown',
+      sender_kind: p.sender_kind === 'player' ? 'player' : 'system',
     });
   }
 
@@ -565,6 +565,11 @@ export class BotEngine {
   setParam(k, v) {
     const r = this.coreCall('params.set', { key: String(k), value: v });
     this.paramsSnapshot();   // 刷新缓存（/params 与 paramValues 观察面）
+    if (r?.ok !== false) {
+      const values = Object.fromEntries(this.paramValues);
+      this.opts.instanceParams = values;   // 热重载重新 bind 时沿用最新值（引擎不再落盘）
+      try { this.opts.onParamsChanged?.(values); } catch { /* 落盘由宿主负责，失败不影响热更 */ }
+    }
     return r;
   }
 
@@ -621,14 +626,14 @@ export class BotEngine {
   luaFn(name) { return this.lua.fn(name); }
 }
 
-/** 热重载：重读包清单；文件缺失/解析失败沿用启动时的清单。persist 始终沿用已打开的数据源。 */
+/** 热重载：重读包清单；文件缺失/解析失败沿用启动时的清单。state 数据源始终沿用已打开实例。 */
 function readManifest(dir, fallback) {
   const p = path.join(dir, 'bot.yaml');
   if (!existsSync(p)) return fallback;
   try {
     const m = parseYaml(readFileSync(p, 'utf8')) ?? {};
     if (!m || typeof m !== 'object' || Array.isArray(m)) return fallback;
-    return { ...m, persist: fallback.persist };
+    return m;
   } catch {
     return fallback;
   }

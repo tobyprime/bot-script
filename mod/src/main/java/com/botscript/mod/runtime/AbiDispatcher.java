@@ -32,7 +32,7 @@ public final class AbiDispatcher {
     private final McRuntime mc;
     private final Policy policy;
     private final BotConfig cfg;
-    private final PersistStore persist;
+    private final StateStore store;
     private final java.util.function.BiConsumer<String, String> audit;
     private final java.util.function.BiConsumer<String, JsonElement> emitEvent;
 
@@ -50,7 +50,7 @@ public final class AbiDispatcher {
     private final List<FrozenDeadline> frozenDeadlines = new ArrayList<>();
 
     public AbiDispatcher(LuaRuntime rt, McState state, McRuntime mc, Policy policy, BotConfig cfg,
-                         PersistStore persist,
+                         StateStore store,
                          java.util.function.BiConsumer<String, String> audit,
                          java.util.function.BiConsumer<String, JsonElement> emitEvent) {
         this.rt = rt;
@@ -58,7 +58,7 @@ public final class AbiDispatcher {
         this.mc = mc;
         this.policy = policy;
         this.cfg = cfg;
-        this.persist = persist;
+        this.store = store;
         this.audit = audit;
         this.emitEvent = emitEvent;
         buildHandlers();
@@ -311,30 +311,24 @@ public final class AbiDispatcher {
         sync.put("item.stack", (t, a) -> DataRegistry.stack(
                 a.has("stack") && a.get("stack").isJsonObject() ? a.getAsJsonObject("stack") : new JsonObject()).toString());
 
-        // ---- 聊天策略（只读） ----
-        sync.put("chat.config", (t, a) -> policy.chatConfig().toString());
-
-        // ---- persist ----
-        sync.put("persist.table", (t, a) -> { persist.declareTable(a.get("name").getAsString(), a.get("schema").toString()); return ""; });
-        sync.put("persist.find", (t, a) -> { String r = persist.find(a.get("name").getAsString(), whereOf(a)); return r == null ? "" : r; });
-        sync.put("persist.all", (t, a) -> persist.all(a.get("name").getAsString()));
-        sync.put("persist.upsert", (t, a) -> { persist.upsert(a.get("name").getAsString(), a.getAsJsonObject("row")); return ""; });
-        sync.put("persist.del", (t, a) -> { persist.del(a.get("name").getAsString(), whereOf(a)); return ""; });
-        sync.put("persist.adjust", (t, a) -> persist.adjust(
-                a.get("name").getAsString(), a.get("key").getAsString(), a.get("delta").getAsDouble()));
-        sync.put("persist.seen", (t, a) -> String.valueOf(persist.seen(
-                a.get("key").getAsString(), a.get("window_ms").getAsLong(), System.currentTimeMillis())));
-        sync.put("kv.get", (t, a) -> LuaRuntime.gson().toJson(persist.kvGet(a.get("name").getAsString(), a.get("key").getAsString())));
-        sync.put("kv.set", (t, a) -> { persist.kvSet(a.get("name").getAsString(), a.get("key").getAsString(), a.get("value").getAsString()); return ""; });
-        sync.put("persist.log_declare", (t, a) -> { persist.logDeclare(a.get("name").getAsString()); return ""; });
-        sync.put("persist.log_append", (t, a) -> String.valueOf(persist.logAppend(
-                a.get("name").getAsString(), a.has("fields") ? a.getAsJsonObject("fields") : new JsonObject(),
+        // ---- state（实例级 localStorage；固定路径，包无权指定） ----
+        sync.put("state.get", (t, a) -> {
+            JsonElement v = store.get(a.get("key").getAsString());
+            return v == null ? "" : v.toString();
+        });
+        sync.put("state.all", (t, a) -> store.all().toString());
+        sync.put("state.set", (t, a) -> {
+            store.set(a.get("key").getAsString(), a.get("value"));
+            return "";
+        });
+        sync.put("state.delete", (t, a) -> {
+            store.delete(a.get("key").getAsString());
+            return "";
+        });
+        sync.put("state.seen", (t, a) -> String.valueOf(store.seen(
+                a.get("key").getAsString(),
+                a.has("window_ms") ? a.get("window_ms").getAsLong() : 5000,
                 System.currentTimeMillis())));
-        sync.put("persist.log_find", (t, a) -> persist.logFind(a.get("name").getAsString(), whereOf(a)));
-        sync.put("persist.log_mark", (t, a) -> { persist.logMark(a.get("name").getAsString(), a.get("id").getAsDouble(), a.get("state").getAsString()); return ""; });
-        sync.put("txn.begin", (t, a) -> { persist.txnBegin(); return ""; });
-        sync.put("txn.commit", (t, a) -> { persist.txnCommit(); return ""; });
-        sync.put("txn.rollback", (t, a) -> { persist.txnRollback(); return ""; });
 
         // ---- 调度原语 ----
         async.put("util.sleep", (t, a) -> {

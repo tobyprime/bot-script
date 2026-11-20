@@ -101,7 +101,7 @@ public final class LuaRuntime {
     private final List<Tickable> machines = new ArrayList<>();
 
     private AbiDispatcher dispatcher;
-    private com.botscript.mod.runtime.PersistStore persistStore;
+    private com.botscript.mod.runtime.StateStore stateStore;
 
     public LuaRuntime(String name, LogSink log, LongSupplier clock) {
         this.name = name;
@@ -425,13 +425,12 @@ public final class LuaRuntime {
         }
     }
 
-    public void attachPersist(PersistStore store) {
-        // persist 由 AbiDispatcher 的 persist.* / kv.* / txn.* handler 直接调用；
-        // 这里只保留引用供 /persist 与测试观察。
-        this.persistStore = store;
+    public void attachState(StateStore store) {
+        // state 由 AbiDispatcher 的 state.* handler 直接调用；这里保留引用供 /store 与测试观察。
+        this.stateStore = store;
     }
 
-    public PersistStore persist() { return persistStore; }
+    public StateStore state() { return stateStore; }
 
     // ================= 小工具 =================
 

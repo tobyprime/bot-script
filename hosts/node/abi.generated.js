@@ -93,63 +93,21 @@ export const SYNC_OPS = {
   "item.stack": { args: {
     "stack": {"type":"object","required":true},
   }, result: "StackInfo" },
-  "chat.config": { args: {}, result: "object" },
-  "persist.table": { args: {
-    "name": {"type":"string","required":true},
-    "schema": {"type":"object","required":true},
-  }, result: "void" },
-  "persist.find": { args: {
-    "name": {"type":"string","required":true},
-    "where": {"type":"object","required":false},
-  }, result: "object|null" },
-  "persist.all": { args: {
-    "name": {"type":"string","required":true},
-  }, result: "object[]" },
-  "persist.upsert": { args: {
-    "name": {"type":"string","required":true},
-    "row": {"type":"object","required":true},
-  }, result: "void" },
-  "persist.del": { args: {
-    "name": {"type":"string","required":true},
-    "where": {"type":"object","required":false},
-  }, result: "void" },
-  "persist.adjust": { args: {
-    "name": {"type":"string","required":true},
-    "key": {"type":"any","required":true},
-    "delta": {"type":"number","required":true},
+  "state.get": { args: {
+    "key": {"type":"string","required":true},
+  }, result: "any" },
+  "state.all": { args: {}, result: "object" },
+  "state.set": { args: {
+    "key": {"type":"string","required":true},
+    "value": {"type":"any","required":false},
   }, result: "object" },
-  "persist.seen": { args: {
+  "state.delete": { args: {
     "key": {"type":"string","required":true},
-    "window_ms": {"type":"number","required":true},
-  }, result: "number" },
-  "kv.get": { args: {
-    "name": {"type":"string","required":true},
+  }, result: "object" },
+  "state.seen": { args: {
     "key": {"type":"string","required":true},
-  }, result: "string" },
-  "kv.set": { args: {
-    "name": {"type":"string","required":true},
-    "key": {"type":"string","required":true},
-    "value": {"type":"string","required":true},
-  }, result: "void" },
-  "persist.log_declare": { args: {
-    "name": {"type":"string","required":true},
-  }, result: "void" },
-  "persist.log_append": { args: {
-    "name": {"type":"string","required":true},
-    "fields": {"type":"object","required":false},
-  }, result: "number" },
-  "persist.log_find": { args: {
-    "name": {"type":"string","required":true},
-    "where": {"type":"object","required":false},
-  }, result: "object[]" },
-  "persist.log_mark": { args: {
-    "name": {"type":"string","required":true},
-    "id": {"type":"number","required":true},
-    "state": {"type":"string","required":true},
-  }, result: "void" },
-  "txn.begin": { args: {}, result: "void" },
-  "txn.commit": { args: {}, result: "void" },
-  "txn.rollback": { args: {}, result: "void" },
+    "window_ms": {"type":"number","required":false,"default":5000},
+  }, result: "boolean" },
 };
 
 export const ASYNC_OPS = {

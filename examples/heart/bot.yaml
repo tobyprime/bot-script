@@ -8,4 +8,3 @@ params:
   source:   { type: blockpos, required: true, help: "原材料箱" }
   target:   { type: blockpos, help: "目标双箱（无事件流宿主引导用）" }
   material: { type: string,   default: minecraft:pink_wool, help: "摆放材料" }
-persist: ./data/heart-1.sqlite

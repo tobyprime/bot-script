@@ -15,13 +15,13 @@ contracts/                 唯一真源（全部生成物由 tools/codegen.mjs �
   api-surface.yaml         脚本公开 API（api-lint 与编辑器补全的同一份清单）
   package/deploy/policy.schema.json · http17.openapi.yaml
   data/                    跨宿主共享数据（武器评分 / 容器方块表）
-  vectors/                 跨宿主 golden（scheduler / policy / windows / persist / data）
+  vectors/                 跨宿主 golden（scheduler / policy / windows / data）
 runtime/lua/
   core/{bootstrap,bslib,json}.lua   唯一语义实现（Node/Fabric 共用）
   core/bridge.generated.lua         生成物：bridge.self.get / bridge.act.* 等类型化存根
   compat/luaj.lua                   LuaJ 兼容补丁（仅 Fabric 加载）
 hosts/node/                Node 宿主（薄适配器）
-  vm.js tokens.js abi.js state/ policy.js persist.js obs.js data.js deploy.js
+  vm.js tokens.js abi.js state/ policy.js stateStore.js obs.js data.js deploy.js
   engine.js                        <300 行组装（vm + tokens + state + abi + obs + driver）
   http17.js                        §17 控制通道（路由表由 openapi 生成）
   runners/{cli,worker,cluster}.js  进程模型与退出分类
@@ -59,11 +59,11 @@ node engine/cli.js run/bank-demo.yaml
 #   stdin 只做宿主控制：pause / resume / status / quit（ABI v2 已移除命令体系）
 #   HTTP 控制通道自动开启（§17）：127.0.0.1 + token，启动日志打印；
 #     curl -H "Authorization: Bearer <token>" http://127.0.0.1:<port>/state
-#     （/params /pause /resume /eval /event /session /tasks /tasks/cancel /logs /stream /chat /persist /caps）
+#     （/params /pause /resume /eval /event /session /tasks /tasks/cancel /logs /stream /chat /store /caps）
 
 # 4) fabric 宿主（standalone，无需任何外部进程）
 cd mod && ./gradlew build
-#   产物：mod/build/libs/botscript-mod-0.3.0.jar -> 放入客户端实例 mods/ 目录
+#   产物：mod/build/libs/botscript-mod-0.4.0.jar -> 放入客户端实例 mods/ 目录
 #   构建期从 ../runtime/lua 与 ../contracts/data 拷入资源（仓内不保留第二份 Lua 拷贝）
 #   脚本包：<游戏目录>/botscript/<包名>/（整包复制，含 bot.yaml 清单）
 #   实例配置：<游戏目录>/config/botscript-mod.json:
@@ -85,7 +85,7 @@ node test/live.js     # 构建场景 + 启动 bank/organizer/coal_guard + 断言
 
 验收项：bank 入账/seen 去重/转账/取款挂账+回执核销/私聊余额（5 项）；
 organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追击+放下即停+guard stop（2 项）；
-内建 pause/resume（1 项）；HTTP 控制通道（§17）鉴权/state/params/pause/resume/tasks/cancel/logs/persist/caps（3 项）。
+内建 pause/resume（1 项）；HTTP 控制通道（§17）鉴权/state/params/pause/resume/tasks/cancel/logs/store/caps（3 项）。
 
 ## 收款 bot 部署与参数（TOB-522）
 
@@ -107,7 +107,7 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
 
 - **默认锚定自身**：`bot_name` 默认空，引擎从驱动快照取 bot 用户名（`self.username()`），
   收款判定与私聊接收门都无需再硬编码 `MixTobyInjSave`；显式设置仍优先生效（兼容存量实例）。
-- **热更**：运行期 `POST /params` 修改 `transfer_pattern` 即时生效、不断线、持久化重启保留。
+- **热更**：运行期 `POST /params` 修改 `transfer_pattern` 即时生效、不断线；平台侧回写 params_json，重启保留。
 - **热更校验**（非法即拒绝、回传可读错误、旧值继续生效）：`transfer_pattern` 长度 ≤256 字节、
   合法 Lua pattern、恰好 2 个捕获（1=玩家名 2=金额），空值 = 关闭收款判定。
 - **上报路径**：命中后经 `events.emit('pay', {payer, amount})` 上抛宿主；投递地址与凭据由宿主
@@ -127,13 +127,14 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
   （`__TASK_ERR` 旁路、`math.type`/`atan2`）。`lua-sync` 禁止仓内出现第二份拷贝。
 - **原语下沉、编排上移**：导航（含无寻路器时的直线退化）、开箱瞄准与重试、装备点击序列、
   战斗冷却都在 `runtime/lua/core/bslib.lua`；宿主只保留一次协议动作 + 确认。
-- 调度：Lua 协程 + 就绪队列；yield 协议 `<token>, <txnflag>`；事件处理器为脱离根；
+- 调度：Lua 协程 + 就绪队列；yield 协议 `<token>, 0`；事件处理器为脱离根；
   race/parallel 的 join 状态全在 Lua 侧。
 - 挂起点交付：`ej` 空串视同无错误；取消交付先跑 on_cancel 清理钩（fire 模式），再注入 `task.cancelled`。
 - 暂停：交付冻结于队列；进行中的动作 settle 为 `runtime.paused`；resume 冲刷队列于冻结点重抛；
   pause 同时停走 + 取消寻路 + 冻结脚本定时器。
-- persist：Node = node:sqlite（WAL，真事务）；Fabric = JSON 文件（事务用内存快照实现真实回滚）。
-  两宿主跑同一份 `contracts/vectors/persist`。
+- **state（实例级 localStorage）**：`state.get/set/all/delete/update/seen`；key→JSON，无 schema/查询/多键事务。
+  Node 内部用固定路径 `state/state.sqlite`（WAL + 100ms 合并 flush），Fabric 用固定 `botscript/state/state.json`。
+  配额：单值 16KB / 总量 256KB，超限 `state.quota`；包无权指定存储路径。
 - **ItemStack 组件真值**（ABI v2）：`item.stack` 直接读 stack 的 max_stack_size / max_damage /
   attribute_modifiers；Fabric 走客户端组件，Node 走 prismarine-item 网络组件。堆叠数**不再按 item id 猜**
   （旧前缀启发式 1.21.8 下 16.4% 判错，已删除；`contracts/vectors/data` 三版本全量护栏）。
@@ -155,7 +156,7 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
 - nav 超时单位 = 秒；walk 返回跨平台 Result（`{ok=true,value}` / `{ok=false,error={code,message}}`），
   失败不抛异常（循环重试语义），同时经 `events.emit('nav.failed')` 上抛观测面。
 - **Result 协议（ABI v2.1）**：所有可能失败的 ABI/动作返回 `{ok,value}` / `{ok=false,error={code,message}}`；
-  纯查询（self/world/entity/inv/persist）仍返回原值。取消是独立控制通道（展开任务 + `on_cancel`），
+  纯查询（self/world/entity/inv/state）仍返回原值。取消是独立控制通道（展开任务 + `on_cancel`），
   不进 Result、不进 `on_error`；Lua 原生 `error()` 仍按任务级失败处理；宿主意外异常只记日志，
   脚本最多看到稳定码 `internal`。
 - 任务取消全路径留痕：显式取消/父完成级联/race 败者/超时统一记一条

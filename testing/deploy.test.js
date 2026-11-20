@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import path from 'node:path';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { test } from './registry.js';
-import { parseServer, buildConnect, validateDeploy, loadInstance, buildPackage } from '../hosts/node/deploy.js';
+import { parseServer, buildConnect, validateDeploy, loadInstance } from '../hosts/node/deploy.js';
 
 test('deploy：version 必须是顶层键（server 对象里的 version 会被忽略）', () => {
   assert.deepStrictEqual(buildConnect({ server: { host: 'mc.example', port: 25565 }, version: '1.21.8' }),
@@ -47,15 +47,14 @@ test('deploy：validateDeploy 报告未知顶层键、非法 auth、非映射 bo
   assert.ok(msgs.includes('未知顶层字段 "unknown_key"'), msgs);
 });
 
-test('deploy：loadInstance 解析包目录、清单与 persist 绝对路径', () => {
+test('deploy：loadInstance 解析包目录、清单与固定 state 路径（包无权指定）', () => {
   const dir = path.resolve('testing/tmp/deploy-inst');
   mkdirSync(path.join(dir, 'pkg'), { recursive: true });
-  writeFileSync(path.join(dir, 'pkg', 'bot.yaml'), 'name: x\nscripts: [main.lua]\npersist: data.db\n');
+  writeFileSync(path.join(dir, 'pkg', 'bot.yaml'), 'name: x\nscripts: [main.lua]\n');
   writeFileSync(path.join(dir, 'pkg', 'main.lua'), '-- x\n');
   writeFileSync(path.join(dir, 'deploy.yaml'), `package: ./pkg\nserver: {host: h, port: 25565}\nversion: "1.21.8"\n`);
   const inst = loadInstance(path.join(dir, 'deploy.yaml'));
   assert.strictEqual(inst.pkg.name, 'x');
   assert.strictEqual(inst.connect.version, '1.21.8');
-  assert.strictEqual(inst.pkgAbs.persist, path.resolve(dir, 'data.db'), 'persist 相对实例根（deploy.yaml 所在目录）');
-  assert.deepStrictEqual(buildPackage({ persist: undefined }, dir).persist, ':memory:');
+  assert.strictEqual(inst.statePath, path.join(dir, 'state', 'state.sqlite'), '状态路径固定在实例目录');
 });

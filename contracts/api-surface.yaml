@@ -8,7 +8,7 @@
 #
 # Result 约定（ABI v2.1）：可能失败的 ABI/动作方法返回
 #   {ok=true, value=<结果>} | {ok=false, error={code=<稳定码>, message=<文案>}}
-# 纯查询（self.pos/world.block/entity.*/inv.*/persist.*…）仍返回原值。
+# 纯查询（self.pos/world.block/entity.*/inv.*/state.*…）仍返回原值。
 # 任务取消不是 Result 错误：取消会展开当前任务并运行 on_cancel，不会进入 on_error。
 abi: 2
 
@@ -47,24 +47,24 @@ globals:
     doc: 发言（策略由宿主 gate 执行）
     members:
       say: "chat.say(text)"
-      reply: "chat.reply(msg|to, text?) — 单参 = 公开回复；双参 = 私聊（拼 boundary.chat.msg_command）"
-      msg: "chat.msg(to, text)"
+      reply: "chat.reply(text) — 公开回复（与 chat.say 等价）；双参私聊已移除，返回 chat.private_reply_removed"
       run_command: "chat.run_command(text) — kind=command 包（受 boundary.chat 白名单约束）"
       await_chat: "同 await_chat"
   params:
     kind: namespace
-    doc: 参数（只读；控制总线修改）。params{schema} 声明；params.key 读取。
+    doc: 参数只读视图。schema 只在 bot.yaml 声明（脚本内不再有 params{...} 声明）；控制总线修改。
     members:
       validator: "params_validator(key, fn) — 热更校验钩：fn(value) → true | nil,msg"
-  persist:
+  state:
     kind: namespace
-    doc: 持久化
+    doc: 实例级小状态（localStorage 语义：key→JSON；无 schema/查询/多键事务；固定路径由宿主管理）
     members:
-      table: "persist.table \"Name\" { field = \"string:key\" | \"number\" ... } → 声明表（全局注入 Name）"
-      kv: "persist.kv \"Name\" → get(k)/set(k,v)"
-      log: "persist.log \"Name\" → append(fields)/find(where)/mark(id,state)"
-      seen: "persist.seen(key, window_ms) → true=重复"
-  txn: { kind: function, doc: "txn(fn) — 事务；体内挂起点 => 回滚 + persist.txn_yielded" }
+      get: "state.get(key, default?) → value|nil"
+      all: "state.all() → { key = value, ... }"
+      set: "state.set(key, value) → Result（单值 ≤16KB、总量 ≤256KB；超限 code=state.quota）"
+      delete: "state.delete(key) → Result"
+      update: "state.update(key, fn) → Result（fn(旧值) 返回新值的原子读改写；fn 内禁止挂起）"
+      seen: "state.seen(key, window_ms) → true=窗口内已见过（去重）"
   params_validator: { kind: function, doc: "params_validator(key, fn) — 参数热更校验钩" }
   rex: { kind: function, doc: "rex[[pattern]] → id（正则，命名分组 (?<name>...)）" }
   entity:

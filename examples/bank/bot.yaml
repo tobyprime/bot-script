@@ -1,6 +1,7 @@
 # 银行 bot —— 脚本包清单（能力自述：跨服务器通用；边界/连接在实例部署配置，DESIGN §6）
+# 实例边界需放行 "/pay"（取款）与 "/msg"（运维余额查询私聊）
 name: bank-1
 scripts: [bank.lua]
 params:
   min_pay: { type: number, default: 1, visible: true, help: "单笔取款下限" }
-persist: ./data/bank-1.sqlite
+  ops:     { type: string, default: "", visible: true, help: "运维玩家名（逗号分隔；留空 = 不校验，示例用）" }

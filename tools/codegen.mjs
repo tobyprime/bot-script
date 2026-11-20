@@ -106,7 +106,7 @@ bridge.q = q
 bridge.value = value
 bridge.a = a
 
--- 命名空间（bridge.self / bridge.act / bridge.persist …）
+-- 命名空间（bridge.self / bridge.act / bridge.state …）
 ${luaRoots.map((n) => `bridge${n.split('.').map((s) => `.${s}`).join('')} = {}`).join('\n')}
 
 -- 同步 op

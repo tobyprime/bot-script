@@ -183,16 +183,13 @@ export function startHttpApi(engine, { log = console.log, port, token: tokenArg 
         throw e;
       }
     },
-    getPersist: (req, res, u) => {
-      const table = u.searchParams.get('table');
-      const kv = u.searchParams.get('kv');
-      try {
-        if (table) return json(res, 200, { table, rows: engine.persist.all(table) });
-        if (kv) return json(res, 200, { kv, values: engine.persist.kvAll(kv) });
-        return json(res, 200, engine.persist.listTables());
-      } catch (e) {
-        return json(res, 400, { error: 'persist.query', detail: String(e?.message ?? e) });
-      }
+    getStore: (req, res) => {
+      const stats = engine.stateStore.stats;
+      return json(res, 200, { values: engine.stateStore.all(), ...stats });
+    },
+    deleteStore: (req, res) => {
+      engine.stateStore.clear();
+      return json(res, 200, { ok: true });
     },
     getCaps: (req, res) => json(res, 200, {
       host: 'node',
@@ -205,7 +202,7 @@ export function startHttpApi(engine, { log = console.log, port, token: tokenArg 
         name: engine.cfg.name ?? engine.name,
         scripts: engine.cfg.scripts ?? [],
         params: engine.cfg.params ?? {},
-        persist: engine.cfg.persist ?? null,
+        state: engine.stateStore.stats,
       },
     }),
   };

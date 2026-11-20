@@ -7,24 +7,11 @@
 --   /msg bot admin list            超管/管理员：列出管理员
 --   /msg bot lock | unlock         超管/管理员：锁定后 tpa/tpahere 不再自动接受
 -- tpa 自动接受：聊天（系统提示）命中关键词 → /tpaccept <玩家>，并 /msg 告知对方
--- 超管 = params.super_admin；管理员清单与锁定状态持久化（重启保留）
+-- 超管 = params.super_admin；管理员清单与锁定状态存实例 state（重启保留）
 -- 服务端私聊/传送提示格式各异：whisper_marker 与两个关键词均为 params，可在平台可视化编辑
 -- ============================================================
 
-params {
-  bot_name        = { type = 'string',  default = '',  visible = true, help = 'bot 进服玩家名（空 = 自动锚定 bot 自身用户名）' },
-  super_admin     = { type = 'string',  default = '',  visible = true, help = '超级管理员玩家名（唯一）' },
-  auto_accept_tpa = { type = 'boolean', default = true, visible = true, help = '未锁定时自动接受 tpa/tpahere' },
-  anti_afk        = { type = 'boolean', default = true, visible = true, help = '定期微调视角防挂机检测' },
-  whisper_marker  = { type = 'string',  default = 'whispers to you:,whispers:', visible = true, help = '私聊识别标记（逗号分隔）' },
-  tpa_to_keyword  = { type = 'string',  default = '请求传送到你的位置', visible = true, help = 'tpa 请求关键词' },
-  tpahere_keyword = { type = 'string',  default = '请求你传送', visible = true, help = 'tpahere 请求关键词' },
-  tp_accept_cmd   = { type = 'string',  default = '/tpaccept {player}', visible = true, help = '接受传送命令模板（{player} 占位）' },
-  debug_chat      = { type = 'boolean', default = true, visible = true, help = '在日志输出每条收到的聊天（诊断用）' },
-}
-
-persist.kv "State"                                        -- State.get/set（locked 等）
-persist.table "Admins" { player = 'string:key', added_by = 'string', at = 'number' }
+-- 管理员名单：state 前缀 admin:<name>；锁定状态：state["afk:locked"]。
 
 -- ---------- 工具 ----------
 
@@ -37,15 +24,28 @@ local function bot_name_or_self()
   return tostring(self.username() or '')
 end
 
+local ADMIN_PREFIX = 'admin:'
+local function admin_get(name) return state.get(ADMIN_PREFIX .. name) end
+local function admin_put(name, rec) state.set(ADMIN_PREFIX .. name, rec) end
+local function admin_del(name) state.delete(ADMIN_PREFIX .. name) end
+local function admins_all()
+  local out = {}
+  for k, v in pairs(state.all()) do
+    if k:sub(1, #ADMIN_PREFIX) == ADMIN_PREFIX then out[#out + 1] = v end
+  end
+  return out
+end
+
 local function is_admin(name)
   if name == '' then return false end
   if name == super() then return true end
-  return Admins.find{ player = name } ~= nil
+  return admin_get(name) ~= nil
 end
 
-local function locked() return State.get('locked') == true end
+local function locked() return state.get('afk:locked') == true end
 
-local function reply(to, text) chat.msg(to, text) end
+-- 私聊是服务器命令，不是聊天频道：统一 /msg
+local function reply(to, text) chat.run_command('/msg ' .. tostring(to) .. ' ' .. tostring(text)) end
 
 local function markers()
   local list = {}
@@ -96,31 +96,32 @@ local function handle_whisper(from, text)
 
   if cmd == 'status' then
     local n = 0
-    for _ in Admins.all() do n = n + 1 end
+    local n = 0
+    for _ in admins_all() do n = n + 1 end
     reply(from, string.format('afk bot[%s] | 管理员 %d 人 | tpa自动接受 %s',
       locked() and '已锁定' or '未锁定', n,
       (params.auto_accept_tpa ~= false) and '开' or '关'))
 
   elseif cmd == 'lock' or cmd == 'unlock' then
     if not is_admin(from) then reply(from, '需要管理员权限') return end
-    State.set('locked', cmd == 'lock')
+    state.set('afk:locked', cmd == 'lock')
     reply(from, cmd == 'lock' and '已锁定：tpa/tpahere 不再自动接受' or '已解锁：tpa/tpahere 自动接受')
 
   elseif cmd == 'admin' then
     if from ~= super() then reply(from, '仅超级管理员可管理管理员名单') return end
     local sub, name = words[2], words[3]
     if sub == 'add' and name then
-      if Admins.find{ player = name } then reply(from, name .. ' 已经是管理员') return end
-      Admins.upsert{ player = name, added_by = from, at = time.now() }
+      if admin_get(name) then reply(from, name .. ' 已经是管理员') return end
+      admin_put(name, { player = name, added_by = from, at = time.now() })
       reply(from, '已添加管理员: ' .. name)
       if name ~= from then reply(name, '你已被 ' .. from .. ' 设为 afk bot 管理员（/msg bot lock|unlock）') end
     elseif sub == 'del' and name then
-      if not Admins.find{ player = name } then reply(from, name .. ' 不是管理员') return end
-      Admins.del{ player = name }
+      if not admin_get(name) then reply(from, name .. ' 不是管理员') return end
+      admin_del(name)
       reply(from, '已删除管理员: ' .. name)
     elseif sub == 'list' then
       local names = {}
-      for row in Admins.all() do names[#names + 1] = row.player end
+      for _, row in ipairs(admins_all()) do names[#names + 1] = row.player end
       reply(from, '超管: ' .. (super() ~= '' and super() or '（未配置）')
         .. ' | 管理员: ' .. (#names > 0 and table.concat(names, ', ') or '无'))
     else
@@ -147,7 +148,7 @@ local function handle_tpa(msg)
   local pos = raw:find(kw, 1, true)
   local name = pos and raw:sub(1, pos - 1):match('(%S+)%s*$') or nil
   if not name or name == '' then return end
-  if persist.seen('tpa:' .. name .. ':' .. kind, 8000) then return end   -- 多行提示去重
+  if state.seen('tpa:' .. name .. ':' .. kind, 8000) then return end   -- 多行提示去重
   chat.run_command((tostring(params.tp_accept_cmd)):gsub('{player}', name))
   reply(name, '已自动接受你的 ' .. kind .. ' 请求')
 end

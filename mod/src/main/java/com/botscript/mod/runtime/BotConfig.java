@@ -15,7 +15,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public class BotConfig {
     public String name = "bot";
     public Map<String, JsonElement> params = new java.util.HashMap<>();
-    public String msgCommand = null;          // 私聊回复前缀（如 /msg）
     public boolean dryRun = false;
 
     // ---- policy ----
@@ -40,7 +39,6 @@ public class BotConfig {
     public static BotConfig fromJson(JsonObject o) {
         BotConfig c = new BotConfig();
         if (o.has("name")) c.name = o.get("name").getAsString();
-        if (o.has("msg_command")) c.msgCommand = o.get("msg_command").getAsString();
         if (o.has("runtime") && o.getAsJsonObject("runtime").has("dry_run")) {
             c.dryRun = o.getAsJsonObject("runtime").get("dry_run").getAsBoolean();
         }
@@ -94,7 +92,6 @@ public class BotConfig {
                 for (var e : ch.getAsJsonArray("commands_allow")) chatCommandsAllow.add(e.getAsString());
             }
             if (ch.has("say_rate")) chatSayRate = ch.get("say_rate").getAsString();
-            if (ch.has("msg_command")) msgCommand = ch.get("msg_command").getAsString();
         }
         if (p.has("blocks")) {
             JsonObject b = p.getAsJsonObject("blocks");

@@ -71,7 +71,7 @@ async function makeBot(name) {
     return origConnect(cfg);
   };
   const engine = new BotEngine(
-    { name, scripts: ['session.lua'], persist: path.join(dir, `${name}.sqlite`) },
+    { name, scripts: ['session.lua'] },
     driver,
     {
       scriptDir: dir,

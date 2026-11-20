@@ -1,7 +1,5 @@
 package com.botscript.mod.runtime;
 
-import com.google.gson.JsonElement;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
@@ -33,15 +31,7 @@ public final class Policy {
         this.containerOpen = containerOpen;
     }
 
-    // ---- 只读配置给脚本 ----
-    public JsonObject chatConfig() {
-        JsonObject o = new JsonObject();
-        if (cfg.msgCommand == null) o.add("msg_command", JsonNull.INSTANCE);
-        else o.addProperty("msg_command", cfg.msgCommand);
-        return o;
-    }
-
-    /** 自定义网络包权限位（boundary.packets）：缺省拒绝，显式 allow/true 才开放。 */
+    // ---- 自定义网络包权限位 ----
     public boolean packetsAllowed() {
         return "allow".equals(cfg.packets) || "true".equals(cfg.packets);
     }

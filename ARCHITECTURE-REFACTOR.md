@@ -1,5 +1,8 @@
 # bot-script 架构改造方案（草案 · 待审）
 
+> 当前实现已进一步简化：旧的 `persist.*`（表/日志/事务）已由 `state`（localStorage 语义 + 固定路径）取代，
+> 参数 schema 只在 `bot.yaml` 声明。本文中涉及 `persist` 的历史段落仅作改造过程记录，以 README / CAPABILITIES 为准。
+
 | 项 | 值 |
 |---|---|
 | 状态 | **草案，待评审；未改任何实现代码** |

@@ -11,7 +11,7 @@ public final class AbiOps {
 
     public static final Set<String> CAPABILITIES = Set.of("nav.pathfinder", "item.components", "world.block_entity", "net.custom_payload");
 
-    public static final Set<String> SYNC_OPS = Set.of("log", "util.now", "util.regex_new", "util.regex_match", "token.bind", "token.detach", "timer.after", "timer.interval", "events.emit", "waiter.resolve", "self.get", "session.get", "caps.get", "caps.list", "entities.list", "entities.get", "world.block", "world.block_entity", "world.scan", "world.env", "world.reach", "window.current", "window.get", "item.stack", "chat.config", "persist.table", "persist.find", "persist.all", "persist.upsert", "persist.del", "persist.adjust", "persist.seen", "kv.get", "kv.set", "persist.log_declare", "persist.log_append", "persist.log_find", "persist.log_mark", "txn.begin", "txn.commit", "txn.rollback");
+    public static final Set<String> SYNC_OPS = Set.of("log", "util.now", "util.regex_new", "util.regex_match", "token.bind", "token.detach", "timer.after", "timer.interval", "events.emit", "waiter.resolve", "self.get", "session.get", "caps.get", "caps.list", "entities.list", "entities.get", "world.block", "world.block_entity", "world.scan", "world.env", "world.reach", "window.current", "window.get", "item.stack", "state.get", "state.all", "state.set", "state.delete", "state.seen");
 
     public static final Set<String> ASYNC_OPS = Set.of("util.sleep", "events.next", "waiter.new", "act.custom_payload", "act.chat_send", "act.look", "act.input", "act.path_to", "act.path_cancel", "act.dig", "act.dig_stop", "act.use_block", "act.use_entity", "act.swing", "act.use_item", "act.select_slot", "act.drop", "act.window_open", "act.window_click", "act.window_close");
 
@@ -46,19 +46,10 @@ Map.ofEntries(            Map.entry("log", Set.of("level", "msg")),
             Map.entry("world.reach", Set.of("pos")),
             Map.entry("window.get", Set.of("window")),
             Map.entry("item.stack", Set.of("stack")),
-            Map.entry("persist.table", Set.of("name", "schema")),
-            Map.entry("persist.find", Set.of("name")),
-            Map.entry("persist.all", Set.of("name")),
-            Map.entry("persist.upsert", Set.of("name", "row")),
-            Map.entry("persist.del", Set.of("name")),
-            Map.entry("persist.adjust", Set.of("name", "key", "delta")),
-            Map.entry("persist.seen", Set.of("key", "window_ms")),
-            Map.entry("kv.get", Set.of("name", "key")),
-            Map.entry("kv.set", Set.of("name", "key", "value")),
-            Map.entry("persist.log_declare", Set.of("name")),
-            Map.entry("persist.log_append", Set.of("name")),
-            Map.entry("persist.log_find", Set.of("name")),
-            Map.entry("persist.log_mark", Set.of("name", "id", "state")),
+            Map.entry("state.get", Set.of("key")),
+            Map.entry("state.set", Set.of("key")),
+            Map.entry("state.delete", Set.of("key")),
+            Map.entry("state.seen", Set.of("key")),
             Map.entry("util.sleep", Set.of("ms")),
             Map.entry("act.custom_payload", Set.of("channel")),
             Map.entry("act.chat_send", Set.of("text")),

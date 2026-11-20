@@ -4,27 +4,6 @@
 -- 包结构：organizer.lua（声明层仅允许在此） + routing.lua（去向决策模块）
 -- ============================================================
 
-params {
-  input          = { type = "blockpos", required = true, visible = true,
-                     help = "待整理物品的输入箱" },
-  stock_zone     = { type = "region",   required = true,
-                     help = "库存/不满盒所在区域（冷启动扫描范围）" },
-  partial_chests = { type = "list<blockpos>", default = {}, visible = true,
-                     help = "手工登记的不满盒（控制通道可增删，持久化）" },
-  paused         = { type = "bool", default = false, visible = true, help = "暂停整理" },
-  ops            = { type = "string", default = "", visible = true,
-                     help = "控制命令运维名（逗号分隔；留空 = 不校验，示例用）" },
-}
-
-persist.table "ChestNote" {
-  pos  = "blockpos:key",   -- 主键：箱子位置
-  role = "string",         -- "partial" | "stock"
-  item = "string?",        -- 绑定物品 id（stock 必有；partial 首次转移后绑定）
-  free = "number?",        -- 剩余空间估算；负数 = 未验证
-}
-
-persist.kv "meta"
-
 local routing = require "routing"      -- 本包内模块（package.searchers 已限定实例目录）
 
 -- ---------- 生命周期 ----------
@@ -52,12 +31,12 @@ cold_start = function()
     after(sec(5), cold_start)
     return
   end
-  meta.set("cold_start_done", true)
+  state.set("cold_start_done", true)
   log.info("冷启动完成：登记 %d 个容器", n)
 end
 
 on_event("session.ready", function()
-  if meta.get("cold_start_done") then return end
+  if state.get("cold_start_done") then return end
   task.spawn(cold_start)
 end)
 

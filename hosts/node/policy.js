@@ -19,11 +19,6 @@ export class Policy {
     this.budgetCount = 0;
   }
 
-  /** 核心只读事实：私聊命令前缀 */
-  chatConfig() {
-    return { msg_command: this.boundary?.chat?.msg_command ?? null };
-  }
-
   /**
    * 自定义网络包权限位（boundary.packets）。
    * 与其他边界字段相反：缺省 = 拒绝，只有显式 true/"allow" 才开放。

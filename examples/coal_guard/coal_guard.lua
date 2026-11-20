@@ -9,13 +9,6 @@
 --           on_cancel 清理钩
 -- ============================================================
 
-params {
-  range = { type = "number", default = 24, visible = true, help = "警戒半径（格）" },
-  spin  = { type = "number", default = 120, visible = true, help = "旋转速度（度/秒）" },
-  ops   = { type = "string", default = "", visible = true,
-            help = "可停止警戒的玩家名（逗号分隔；留空 = 不校验，示例用）" },
-}
-
 -- 操作员校验属于脚本自己的业务规则（平台不提供 owner/op 名单）
 local function is_op(sender)
   local list = params.ops or ""

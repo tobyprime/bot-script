@@ -17,8 +17,8 @@ XXXXXXX
 
 | 文件 | 说明 |
 | --- | --- |
-| `heart.lua` | 核心脚本（双宿主通用；`params{}` 声明 range / source / target / material） |
-| `bot.yaml` | 脚本包清单（v2 能力自述：name/scripts/params schema/persist） |
+| `heart.lua` | 核心脚本（双宿主通用；参数 schema 在 bot.yaml） |
+| `bot.yaml` | 脚本包清单（v2 能力自述：name/scripts/params schema） |
 | `demo-mineflayer.yaml` | mineflayer 宿主实连演示（实例部署配置，触发式） |
 | `heart-boot.lua` | 无方块事件流宿主（fabric）的引导：on_start 读 params.target 触发 |
 | `reset-demo.sh` | RCON 重置演示环境（建原材料箱装羊毛 + 建目标双箱） |
@@ -33,7 +33,7 @@ bash examples/heart/reset-demo.sh
 
 # 2) mineflayer 宿主（触发式：范围内重新放置一个箱身补全双箱后自动开始）
 node engine/cli.js examples/heart/demo-mineflayer.yaml
-#   source 等实例坐标住持久化：运行期经控制渠道设置一次即可
+#   source 等实例坐标住实例参数：平台在启动前设置（启动时下发）
 #   curl -X POST -H "Authorization: Bearer <token>" -d '{"source":[119,151,-306]}' http://127.0.0.1:<port>/params
 ```
 

@@ -30,20 +30,17 @@ bridge.q = q
 bridge.value = value
 bridge.a = a
 
--- 命名空间（bridge.self / bridge.act / bridge.persist …）
+-- 命名空间（bridge.self / bridge.act / bridge.state …）
 bridge.act = {}
 bridge.caps = {}
-bridge.chat = {}
 bridge.entities = {}
 bridge.events = {}
 bridge.item = {}
-bridge.kv = {}
-bridge.persist = {}
 bridge.self = {}
 bridge.session = {}
+bridge.state = {}
 bridge.timer = {}
 bridge.token = {}
-bridge.txn = {}
 bridge.util = {}
 bridge.waiter = {}
 bridge.window = {}
@@ -204,117 +201,36 @@ bridge.item.stack = function(stack)
     stack = stack,
   })
 end
---- chat.config() → object
-bridge.chat.config = function()
-  return q("chat.config", {
+--- state.get(key) → any
+bridge.state.get = function(key)
+  return q("state.get", {
+    key = key,
+  })
+end
+--- state.all() → object
+bridge.state.all = function()
+  return q("state.all", {
 })
 end
---- persist.table(name, schema) → void
-bridge.persist.table = function(name, schema)
-  return q("persist.table", {
-    name = name,
-    schema = schema,
-  })
-end
---- persist.find(name, where) → object|null
-bridge.persist.find = function(name, where)
-  return q("persist.find", {
-    name = name,
-    where = where,
-  })
-end
---- persist.all(name) → object[]
-bridge.persist.all = function(name)
-  return q("persist.all", {
-    name = name,
-  })
-end
---- persist.upsert(name, row) → void
-bridge.persist.upsert = function(name, row)
-  return q("persist.upsert", {
-    name = name,
-    row = row,
-  })
-end
---- persist.del(name, where) → void
-bridge.persist.del = function(name, where)
-  return q("persist.del", {
-    name = name,
-    where = where,
-  })
-end
---- persist.adjust(name, key, delta) → object
-bridge.persist.adjust = function(name, key, delta)
-  return q("persist.adjust", {
-    name = name,
-    key = key,
-    delta = delta,
-  })
-end
---- persist.seen(key, window_ms) → number
-bridge.persist.seen = function(key, window_ms)
-  return q("persist.seen", {
-    key = key,
-    window_ms = window_ms,
-  })
-end
---- kv.get(name, key) → string
-bridge.kv.get = function(name, key)
-  return q("kv.get", {
-    name = name,
-    key = key,
-  })
-end
---- kv.set(name, key, value) → void
-bridge.kv.set = function(name, key, value)
-  return q("kv.set", {
-    name = name,
+--- state.set(key, value) → object
+bridge.state.set = function(key, value)
+  return q("state.set", {
     key = key,
     value = value,
   })
 end
---- persist.log_declare(name) → void
-bridge.persist.log_declare = function(name)
-  return q("persist.log_declare", {
-    name = name,
+--- state.delete(key) → object
+bridge.state.delete = function(key)
+  return q("state.delete", {
+    key = key,
   })
 end
---- persist.log_append(name, fields) → number
-bridge.persist.log_append = function(name, fields)
-  return q("persist.log_append", {
-    name = name,
-    fields = fields,
+--- state.seen(key, window_ms) → boolean
+bridge.state.seen = function(key, window_ms)
+  return q("state.seen", {
+    key = key,
+    window_ms = window_ms ~= nil and window_ms or 5000,
   })
-end
---- persist.log_find(name, where) → object[]
-bridge.persist.log_find = function(name, where)
-  return q("persist.log_find", {
-    name = name,
-    where = where,
-  })
-end
---- persist.log_mark(name, id, state) → void
-bridge.persist.log_mark = function(name, id, state)
-  return q("persist.log_mark", {
-    name = name,
-    id = id,
-    state = state,
-  })
-end
---- txn.begin() → void
-bridge.txn.begin = function()
-  return q("txn.begin", {
-})
-end
---- txn.commit() → void
-bridge.txn.commit = function()
-  return q("txn.commit", {
-})
-end
---- txn.rollback() → void
-bridge.txn.rollback = function()
-  return q("txn.rollback", {
-})
 end
 
 -- 异步 op（返回 token；结果经 __core_resume 交付）

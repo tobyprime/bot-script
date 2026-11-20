@@ -1,7 +1,7 @@
 // testing/vectors.test.js — 契约向量（跨宿主一致性的唯一机制）
 //
 // scheduler：Node（wasmoon）+ Java（Luaj）跑同一份 vector，日志序列必须一致。
-// policy/windows/persist：Node 实现与 Fabric 实现各跑同一份 vector，判定必须一致。
+// policy/windows：Node 实现与 Fabric 实现各跑同一份 vector，判定必须一致。
 // abi-conformance：清单里的每个 op 都至少能被 dispatch 一次（不得 abi.unknown_op）。
 import assert from 'node:assert';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -10,7 +10,6 @@ import { test } from './registry.js';
 import { runSchedulerVector } from './vector-host.mjs';
 import { Policy } from '../hosts/node/policy.js';
 import { WindowState } from '../hosts/node/state/windows.js';
-import { Persist } from '../hosts/node/persist.js';
 import { SYNC_OPS, ASYNC_OPS, REVERSE_OPS } from '../hosts/node/abi.generated.js';
 import { makeEngine, waitFor, g } from './harness.js';
 
@@ -20,7 +19,7 @@ const filesOf = (dir) => readdirSync(V(dir)).filter((f) => f.endsWith('.json')).
 
 // ---------------------------------------------------------------- scheduler
 
-test('scheduler-vectors：race/parallel/cancel/txn 在 wasmoon 上产出确定序列', async () => {
+test('scheduler-vectors：race/parallel/cancel 在 wasmoon 上产出确定序列', async () => {
   for (const u of filesOf('scheduler')) {
     const vec = readJson(u);
     const r = await runSchedulerVector(vec);
@@ -75,45 +74,6 @@ test('window-vectors：同一原始快照 => 归一化逐槽一致 + 点击映�
   }
 });
 
-// ---------------------------------------------------------------- persist
-
-test('persist-vectors：同一操作序列 => 相同表行 / seen / kv / 日志语义', () => {
-  for (const u of filesOf('persist')) {
-    const vec = readJson(u);
-    const p = new Persist(':memory:');
-    const seen = [];
-    const logIds = {};
-    for (const op of vec.ops) {
-      const [a1, a2, a3, a4, a5] = op.args;
-      switch (op.op) {
-        case 'declareTable': p.declareTable(a1, a2); break;
-        case 'upsert': p.upsert(a1, a2); break;
-        case 'del': p.del(a1, a2 ?? {}); break;
-        case 'adjust': p.adjust(a1, a2, a3); break;
-        case 'seen': seen.push(p.seen(a1, a2)); break;
-        case 'kvSet': p.kvSet(a1, a2, a3); break;
-        case 'logDeclare': p.logDeclare(a1); break;
-        case 'logAppend': logIds[a1] = (logIds[a1] ?? []).concat([(p.logAppend(a1, a2), a2.state ?? 'new')]); break;
-        default: throw new Error(`未实现向量 op ${op.op}`);
-      }
-    }
-    for (const [name, rows] of Object.entries(vec.expect.rows)) {
-      assert.deepStrictEqual(p.all(name), rows, `${vec.name}: 表 ${name}`);
-    }
-    for (const [k, v] of Object.entries(vec.expect.kv)) {
-      const [ns, key] = k.split('/');
-      assert.strictEqual(p.kvGet(ns, key), v, `${vec.name}: kv ${k}`);
-    }
-    if (vec.expect.seen) assert.deepStrictEqual(seen, vec.expect.seen, `${vec.name}: seen 判定`);
-    for (const [name, states] of Object.entries(vec.expect.logCounts ?? {})) {
-      for (const [state, n] of Object.entries(states)) {
-        assert.strictEqual(p.logFind(name, { state }).length, n, `${vec.name}: ${name}/${state} 行数`);
-      }
-    }
-    p.close();
-  }
-});
-
 // ---------------------------------------------------------------- abi conformance
 
 test('abi-conformance：清单里的每个 op 都有 dispatch 实现（不得 abi.unknown_op）', async () => {
@@ -146,23 +106,11 @@ test('abi-conformance：清单里的每个 op 都有 dispatch 实现（不得 ab
     'window.current': {},
     'window.get': { window: '0' },
     'item.stack': { stack: { id: 'minecraft:dirt' } },
-    'chat.config': {},
-    'persist.table': { name: 'VT', schema: { k: 'string:key', v: 'number' } },
-    'persist.find': { name: 'VT', where: {} },
-    'persist.all': { name: 'VT' },
-    'persist.upsert': { name: 'VT', row: { k: 'a', v: 1 } },
-    'persist.del': { name: 'VT', where: { k: 'a' } },
-    'persist.adjust': { name: 'VT', key: 'a', delta: 1 },
-    'persist.seen': { key: 'x', window_ms: 1000 },
-    'kv.get': { name: 'n', key: 'k' },
-    'kv.set': { name: 'n', key: 'k', value: 'v' },
-    'persist.log_declare': { name: 'L' },
-    'persist.log_append': { name: 'L', fields: {} },
-    'persist.log_find': { name: 'L', where: {} },
-    'persist.log_mark': { name: 'L', id: 1, state: 's' },
-    'txn.begin': {},
-    'txn.commit': {},
-    'txn.rollback': {},
+    'state.get': { key: 'k' },
+    'state.all': {},
+    'state.set': { key: 'k', value: { v: 1 } },
+    'state.delete': { key: 'k' },
+    'state.seen': { key: 'x', window_ms: 1000 },
     'util.sleep': { ms: 1 },
     'events.next': { timeout: 1 },
     'waiter.new': { timeout: 1 },

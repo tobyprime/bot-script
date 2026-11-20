@@ -3,10 +3,28 @@
 // 用法：node hosts/node/runners/cli.js <deploy.yaml> [--dry-run]
 // 控制台命令（console 权限）：pause / resume / status / quit —— 全部进核心命令总线。
 import path from 'node:path';
+import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadInstance, engineOptions, validateDeploy } from '../deploy.js';
 import { BotEngine } from '../engine.js';
 import { startHttpApi } from '../http17.js';
+
+// standalone 部署没有控制面：运行期 params 热更落侧车文件（平台部署由控制面写 instances.params_json）。
+const paramsFile = (dir) => path.join(dir, 'params.json');
+function readParamsSidecar(dir) {
+  const f = paramsFile(dir);
+  if (!existsSync(f)) return {};
+  try {
+    const v = JSON.parse(readFileSync(f, 'utf8'));
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch { return {}; }
+}
+function writeParamsSidecar(dir, values) {
+  const f = paramsFile(dir);
+  const tmp = `${f}.tmp`;
+  writeFileSync(tmp, JSON.stringify(values ?? {}, null, 2));
+  renameSync(tmp, f);
+}
 
 export async function runBot(yamlPath, { dryRun = false, log = console.log } = {}) {
   const inst = loadInstance(yamlPath);
@@ -22,7 +40,13 @@ export async function runBot(yamlPath, { dryRun = false, log = console.log } = {
   let engine = null;
   const driver = new MineflayerDriver({ log: (m, level) => (engine ? engine.obs.log(level ?? 'console', String(m)) : log(String(m))) });
 
-  engine = new BotEngine(inst.pkgAbs, driver, engineOptions(inst, { dryRun }));
+  const opts = engineOptions(inst, {
+    dryRun,
+    onParamsChanged: (values) => writeParamsSidecar(inst.dir, values),
+  });
+  const savedParams = readParamsSidecar(inst.dir);
+  if (Object.keys(savedParams).length) opts.instanceParams = { ...opts.instanceParams, ...savedParams };
+  engine = new BotEngine(inst.pkgAbs, driver, opts);
 
   const shutdown = async (exitCode = 0) => {
     log('\n[cli] 停机 = 进程退出（无 on_stop）');

@@ -194,19 +194,17 @@ paths:
       responses:
         "200": { description: OK }
         "400": { description: 内容不合法 }
-  /persist:
+  /store:
     get:
-      operationId: getPersist
-      parameters:
-        - in: query
-          name: table
-          schema: { type: string }
-        - in: query
-          name: kv
-          schema: { type: string }
+      operationId: getStore
+      summary: 只读实例状态（localStorage 语义；键值 + 用量）
       responses:
         "200": { description: OK }
-        "400": { description: 查询失败 }
+    delete:
+      operationId: deleteStore
+      summary: 清空实例状态（含去重窗口）
+      responses:
+        "200": { description: OK }
   /caps:
     get:
       operationId: getCaps

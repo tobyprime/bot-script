@@ -37,12 +37,9 @@ export function buildConnect(deploy) {
   };
 }
 
-/** 包清单 + persist 相对路径解析到实例数据根（= 部署文件所在目录，随实例隔离） */
-export function buildPackage(pkg, dir) {
-  return {
-    ...pkg,
-    persist: pkg.persist ? path.resolve(dir, pkg.persist) : ':memory:',
-  };
+/** 包清单（原文）+ 实例固定状态路径（state/state.sqlite；包无权指定存储位置） */
+export function buildPackage(pkg) {
+  return pkg ?? {};
 }
 
 export function loadInstance(absYaml) {
@@ -52,16 +49,23 @@ export function loadInstance(absYaml) {
   const pkgDir = path.resolve(dir, deploy.package ?? '.');
   const manifestPath = path.join(pkgDir, 'bot.yaml');
   const pkg = existsSync(manifestPath) ? (parse(readFileSync(manifestPath, 'utf8')) ?? {}) : {};
-  return { abs, dir, deploy, pkgDir, pkg, pkgAbs: buildPackage(pkg, dir), connect: buildConnect(deploy) };
+  return {
+    abs, dir, deploy, pkgDir, pkg,
+    pkgAbs: buildPackage(pkg),
+    statePath: path.join(dir, 'state', 'state.sqlite'),
+    connect: buildConnect(deploy),
+  };
 }
 
 /** 引擎构造参数（cli/worker 同源，避免逐字复制） */
-export function engineOptions(inst, { dryRun = false } = {}) {
+export function engineOptions(inst, { dryRun = false, onParamsChanged = null } = {}) {
   return {
     scriptDir: inst.pkgDir,
+    statePath: inst.statePath,
     boundary: inst.deploy.boundary ?? null,   // 无 boundary = 不限制（显式字段才收紧）
     runtime: inst.deploy.runtime ?? {},
     instanceParams: inst.deploy.params ?? {},
+    onParamsChanged,
     dryRun,
     connect: inst.connect,
   };

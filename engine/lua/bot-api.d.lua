@@ -40,10 +40,8 @@ function await_chat(...) end
 chat = {}
 --- chat.say(text)
 function chat.say(...) end
---- chat.reply(msg|to, text?) — 单参 = 公开回复；双参 = 私聊（拼 boundary.chat.msg_command）
+--- chat.reply(text) — 公开回复（与 chat.say 等价）；双参私聊已移除，返回 chat.private_reply_removed
 function chat.reply(...) end
---- chat.msg(to, text)
-function chat.msg(...) end
 --- chat.run_command(text) — kind=command 包（受 boundary.chat 白名单约束）
 function chat.run_command(...) end
 --- 同 await_chat
@@ -52,18 +50,20 @@ function chat.await_chat(...) end
 params = {}
 --- params_validator(key, fn) — 热更校验钩：fn(value) → true | nil,msg
 function params.validator(...) end
----@class persist
-persist = {}
---- persist.table "Name" { field = "string:key" | "number" ... } → 声明表（全局注入 Name）
-function persist.table(...) end
---- persist.kv "Name" → get(k)/set(k,v)
-function persist.kv(...) end
---- persist.log "Name" → append(fields)/find(where)/mark(id,state)
-function persist.log(...) end
---- persist.seen(key, window_ms) → true=重复
-function persist.seen(...) end
---- txn(fn) — 事务；体内挂起点 => 回滚 + persist.txn_yielded
-function txn(...) end
+---@class state
+state = {}
+--- state.get(key, default?) → value|nil
+function state.get(...) end
+--- state.all() → { key = value, ... }
+function state.all(...) end
+--- state.set(key, value) → Result（单值 ≤16KB、总量 ≤256KB；超限 code=state.quota）
+function state.set(...) end
+--- state.delete(key) → Result
+function state.delete(...) end
+--- state.update(key, fn) → Result（fn(旧值) 返回新值的原子读改写；fn 内禁止挂起）
+function state.update(...) end
+--- state.seen(key, window_ms) → true=窗口内已见过（去重）
+function state.seen(...) end
 --- params_validator(key, fn) — 参数热更校验钩
 function params_validator(...) end
 --- rex[[pattern]] → id（正则，命名分组 (?<name>...)）

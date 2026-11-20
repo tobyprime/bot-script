@@ -46,7 +46,7 @@
   mcc 宿主（规划）   C#：MoonSharp/NLua 桥 + 动作实现
 
 每宿主内置协议通用 HTTP API（常开、只绑 127.0.0.1、token 启动时生成并打印，规格见 CAPABILITIES.md §17）
-  /state /params /pause /resume /tasks /logs /persist /caps —— 测试、面板、MCP 同一入口
+  /state /params /pause /resume /tasks /logs /store /caps —— 测试、面板、MCP 同一入口
 ```
 
 ### 为什么放弃"单引擎 + 驱动协议"（v1 → v2 演进）
@@ -61,7 +61,7 @@
 |---|---|
 | 连接 | 登录 / keepalive / 重连 / 版本与能力（feature flags）上报 |
 | 数据面（入） | 包流 → 规范化事件 schema：世界更新、实体流、自身状态、窗口内容、聊天/HUD、kick/teleport（纯翻译，无逻辑） |
-| 动作面（出） | **按原版发包建模**：`act.look`（rotation）/ `act.input`（player_input 状态位）/ `act.dig`·`act.dig_stop`（player_action）/ `act.use_block`（interact + face/cursor/intent）/ `act.use_entity`（attack/interact/interact_at）/ `act.swing` / `act.use_item`（start·release）/ `act.select_slot` / `act.drop` / 窗口 click（state_id）/ `act.chat_send`（chat·command·reply）；策略门控与限速在宿主 dispatch 一处执行 |
+| 动作面（出） | **按原版发包建模**：`act.look`（rotation）/ `act.input`（player_input 状态位）/ `act.dig`·`act.dig_stop`（player_action）/ `act.use_block`（interact + face/cursor/intent）/ `act.use_entity`（attack/interact/interact_at）/ `act.swing` / `act.use_item`（start·release）/ `act.select_slot` / `act.drop` / 窗口 click（state_id）/ `act.chat_send`（chat·command）；策略门控与限速在宿主 dispatch 一处执行 |
 | 可选智能 | 寻路器（Baritone / mineflayer-pathfinder / mcc 内建）；缺失时核心做 `act.input` + `act.look` 直线退化（P2） |
 
 > 完整动词表与宿主实现量评估见 `CAPABILITIES.md` §14；HTTP 控制通道规格见 §17。
@@ -70,7 +70,7 @@
 
 ### 2.1 形态（定稿）：Lua 5.4 + 声明式注册层
 
-脚本语言采用标准 Lua 5.4（引擎经 wasmoon 嵌入），外加一层薄的声明式注册层（`params`/`persist`/`task`/`on_*`，以注册调用形式承载，加载期解析）。取舍结论：
+脚本语言采用标准 Lua 5.4（引擎经 wasmoon 嵌入），外加一层薄的声明式注册层（`params` 只读视图 / `state` 小状态 / `task` / `on_*`；参数 schema 只在 bot.yaml，加载期解析）。取舍结论：
 
 - 引擎只实现一次（Node）后，"三宿主可移植"由 Driver Protocol 承担，自研解释器失去主要理由；
 - Lua 协程恰好是"可取消协作任务"的正确原语（§2.2）；沙箱只暴露能力 API，剥离 `os/io/require/debug`，WASM 内存上限 + 指令预算兜底；
@@ -105,10 +105,10 @@
 ### 2.3 语法要点与能力面
 
 - **数据**：Lua 原生值 + 引擎记录类型（`vec3 / blockpos / region / duration / itemstack / window / entity / task`；活体句柄语义见 CAPABILITIES.md §2）。物品过滤就是普通 table 或谓词函数，无专门类型。
-- **声明式注册层**：`params{…}`（**统一参数**，元数据 `type/default/help/visible/perm`，无静态 config）、`persist.table/log/kv`、`task "名" function() … end`、`on_start / on_pause / on_resume / on_chat / on_timer / on_cancel`——加载期完成 schema 校验、权限标注、静态检查挂钩。**没有命令声明层**（无 `on_command` / 命令参数注入）。
-- **模块系统**：标准 `require`（模块 = 返回 table 的 Lua 文件，`package.loaded` 缓存），但 `package.searchers` 由引擎替换——仅允许 bslib（`package.preload` 预载）与本实例脚本目录，其余拒绝；每个脚本实例持有独立 `package.loaded`（脚本间状态隔离；热重载=引擎清缓存后重 require）。**文件一律 `.lua`**；"入口 vs 模块"按角色区分——入口 = `bot.yaml` `scripts:` 列出的文件，模块 = require 图可达的其余文件；声明层（params/persist/on_*）只允许出现在入口，静态检查按角色套规则，与扩展名无关。
+- **声明式注册层**：参数 schema 只在 `bot.yaml`（`type/default/required/help/visible`，脚本内不再有 `params{…}` 声明）；`state.get/set/all/delete/update/seen` 为实例级小状态；`task "名" function() … end`、`on_start / on_pause / on_resume / on_chat / on_timer / on_cancel`——加载期完成 schema 校验、静态检查挂钩。**没有命令声明层**（无 `on_command` / 命令参数注入）。
+- **模块系统**：标准 `require`（模块 = 返回 table 的 Lua 文件，`package.loaded` 缓存），但 `package.searchers` 由引擎替换——仅允许 bslib（`package.preload` 预载）与本实例脚本目录，其余拒绝；每个脚本实例持有独立 `package.loaded`（脚本间状态隔离；热重载=引擎清缓存后重 require）。**文件一律 `.lua`**；"入口 vs 模块"按角色区分——入口 = `bot.yaml` `scripts:` 列出的文件，模块 = require 图可达的其余文件；声明层（on_*/state 初始化）只允许出现在入口（参数 schema 在 bot.yaml），静态检查按角色套规则，与扩展名无关。
 - **错误模型**：动作/ABI 失败 = Result（`error.code` 稳定跨宿主：`nav.unreachable / container.missing / permission.denied / policy.blocklist / runtime.paused / internal …`）；Lua 原生 `error()` 与守卫 `guard(cond, fn)` 仍按任务级失败处理；`try{…}` 糖自动重抛取消。
-- **能力面**：`nav / world / entity / container / inv / combat / chat / self / session / msg / time / task / log / persist / params / caps` 命名空间注入环境；行为策略复合在引擎自带的 **bslib** 库（Lua 源码随引擎分发，可读可覆盖，见 CAPABILITIES.md §13）。**能力 API 权威版本见 `CAPABILITIES.md`。**
+- **能力面**：`nav / world / entity / container / inv / combat / chat / self / session / msg / time / task / log / state / params / caps` 命名空间注入环境；行为策略复合在引擎自带的 **bslib** 库（Lua 源码随引擎分发，可读可覆盖，见 CAPABILITIES.md §13）。**能力 API 权威版本见 `CAPABILITIES.md`。**
 - **物品知识来自 ItemStack 组件**：堆叠上限 `max_stack_size`、耐久 `max_damage/damage`、攻击属性
   `attribute_modifiers`（attack_damage/attack_speed）都从 `item.stack` 读，**不按 item id 查表、不做版本判断**；
   跨宿主只共享非物品数据（容器方块表）。
@@ -183,13 +183,8 @@ end)
 **③ 整理 bot** —— 验证：定时任务防重入、缓存校验、看门狗。
 
 ```lua
-params {
-  input          = { type = "blockpos", required = true, visible = true },  -- 待整理输入箱
-  stock_zone     = { type = "region",   required = true },                  -- 库存区（冷启动扫描）
-  partial_chests = { type = "list<blockpos>", default = {} },               -- 外部增删的不满盒
-}
-
-persist.table "ChestNote" { pos = "blockpos:key", role = "string", item = "string?" }
+-- 参数 schema 在 bot.yaml（input / stock_zone / partial_chests）；脚本只读 params.*
+-- 箱子缓存是实例级小状态：每箱一个键 chest:<x,y,z>，值 { role, item, free }
 
 on_timer(sec(30), function() task.spawn("organize") end)
 
@@ -208,31 +203,30 @@ end)
 -- 进度看门狗：task.progress 自报或默认信号，连续无净进度 → 取消任务 + 告警（防不满盒间无限倒腾）
 ```
 
-**④ 银行 bot** —— 验证：聊天解析、事务+意图日志、回执超时回滚、持久化去重。
+**④ 银行 bot** —— 验证：聊天解析、小状态原子读改写、回执超时挂账、去重。
 
 ```lua
-persist.table "Account" { player = "string:key", balance = "number" }
-persist.log  "Intent"
-
+-- 小状态：account:<name> 余额 / intent:<id> 意图；大账本由外部事件流/业务系统承担
 on_chat(rex"^(?<from>\w+) 存入了? ?(?<amount>\d+)$", { source = "system" }, function(m)
-  if persist.seen(m.raw, sec(5)) then return end       -- 内容寻址去重：防同文重发（可靠性上限见 examples/bank）
-  txn(function()
-    local id = Intent.append{ kind = "deposit", player = m.from, amount = tonumber(m.amount) }
-    Account.adjust(m.from, tonumber(m.amount))         -- credit-only 无条件；无则建户
-    Intent.mark(id, "done")
+  if state.seen(m.raw, sec(5)) then return end       -- 内容寻址去重：防同文重发（可靠性上限见 examples/bank）
+  state.update("account:" .. m.from, function(a)
+    a = a or { player = m.from, balance = 0 }
+    a.balance = (a.balance or 0) + tonumber(m.amount)
+    return a
   end)
 end)
 
 on_chat(rex"^pay (?<to>\w+) (?<amount>\d+)$", { source = "player" }, function(m)
   if not contains(params.bank_ops, m.sender) then chat.reply("权限不足") return end
-  local pay_id, to, amount = nil, m.to, tonumber(m.amount)
-  txn(function()                                       -- 条件原子扣减：并发请求不双花
-    if not Account.adjust_if(to, function(acc) return acc.balance >= amount end, -amount) then
-      chat.reply("余额不足") return
-    end
-    pay_id = Intent.append{ kind = "pay", player = to, amount = amount, state = "pending" }
+  local to, amount = m.to, tonumber(m.amount)
+  local ok = false
+  state.update("account:" .. to, function(acc)           -- 原子读改写：并发请求不双花
+    if not acc or acc.balance < amount then return acc end
+    acc.balance = acc.balance - amount
+    ok = true
+    return acc
   end)
-  if not pay_id then return end
+  if not ok then chat.reply("余额不足") return end
   chat.run_command("/pay " .. to .. " " .. amount)
   local rr = await_chat(rex("已向\\s+" .. to), sec(5))  -- Result；超时 value = nil
   local got = rr.ok and rr.value ~= nil
@@ -260,7 +254,7 @@ end)
 | 位置 | `vec3`（脚底中心，double）/ `blockpos`（整数） | 明确"脚底"约定，避免各后端 eye/feet 混用 |
 | 实体 | `{id, type, name?, uuid?, pos, look, health?, equipment?}` | 不可观测字段为 `unknown`（health 在协议端对玩家不可见等），HAL 提供降级策略 |
 | 容器 | 以 blockpos/entity 为身份；**同一时刻至多打开一个**（MC 语义） | open 是异步往返（服务器确认）；掉线/破坏自动失效并抛 `container.closed` |
-| 聊天消息 | `{text, sender?, sender_kind: player|system|unknown, raw}` | sender 解析尽力而为；结构化解析以规范化文本 + 正则为兜底，文档标注各版本差异 |
+| 聊天消息 | `{text, sender?, sender_kind: player|system, raw}` | sender 只按协议事实解析（playerChat 的 sender UUID）；system 消息不猜文本；raw 始终保留完整原文 |
 
 ### 3.2 能力域 API 与特性矩阵
 
@@ -303,7 +297,7 @@ end)
 movement:  region fence（活动围栏；越界 → 引擎自动 pause + 告警，可恢复）
 blocks:    dig/place 门控（缺省允许；显式 false/deny 才禁）
 combat:    配置 targets 后才限制攻击对象类型；max_engage 可选
-chat:      act.chat_send 按 kind 限速：chat/reply = say_rate（缺省不限）；command = 命令白名单（非空才限制）
+chat:      act.chat_send 按 kind 限速：chat = say_rate（缺省不限）；command = 命令白名单（非空才限制）
 container: 容器访问门控（缺省允许；显式 false/deny 才拒）
 packets:   自定义网络包（custom payload / 插件消息）权限位：缺省拒绝，显式 true/allow 才开放
 budget:    每任务/每小时动作次数与时长上限；耗尽 → 自动 pause + 告警
@@ -316,18 +310,19 @@ budget:    每任务/每小时动作次数与时长上限；耗尽 → 自动 pa
 （查询与 params 可用，一切动作被拒）。把边界从包里拿走不是把安全拿走，而是把授权责任交给部署者。
 策略违规对脚本表现为可捕获的 `permission.denied`（脚本可优雅处理）；越界/预算耗尽为引擎自动 pause（任务冻结不销毁，可恢复）。
 
-### 5.2 持久化
+### 5.2 实例状态（localStorage 语义）
 
-- 各宿主持有本实例的 **SQLite**（单文件、ACID：Node 宿主 engine.js、fabric 宿主 PersistStore——共享 schema 语义，驱动/平台零参与）。
-- 脚本视图：`persist table`（有 schema、可迁移：只加列）与 `persist kv`；`txn(function() … end)` 提供事务；`persist log` 提供追加日志用于意图/对账模式。
-- **并发与原子性**：txn 引擎侧全局串行；体内禁挂起点（违反 → `persist.txn_yielded` 并回滚）；条件扣减用 `T.adjust_if(key, pred, delta)`——读-判-扣收进一个原语，并发双花不可能；`persist.log` 按 `L.append -> id` + `L.mark(id, state)` 标记，不提供 mark_last（并发下标错记录）。
-- 数据库文件路径由**包清单**指定（`persist:` 相对路径），宿主解析到实例数据根，随实例隔离。
+- 脚本视图只有 `state.get / all / set / delete / update / seen`：key→JSON，无 schema、无查询、无多键事务。
+- **配额**：单值 ≤16KB、总量 ≤256KB；超限写入返回 `state.quota`，不静默淘汰。
+- **原子读改写**：`state.update(key, fn)` 在引擎单线程内串行执行；fn 内禁止挂起点（违反 → `state.update_yielded`，不写入）。
+- **存储位置由宿主固定**：Node 为实例目录 `state/state.sqlite`（WAL，100ms 合并 flush + 停机 flush），Fabric 为 `botscript/state/state.json`。**包无权指定路径**（旧 `bot.yaml persist:` 已删除）。
+- **复杂数据不留在实例里**：通过 `events.emit` 交给外部系统（外部负责持久化与回执）；平台只提供实时通道。
 
-### 5.3 参数（统一，评审定稿）
+### 5.3 参数（YAML 契约，评审定稿）
 
-- **无静态 config**：只有一套 `params`，全部可运行期修改；schema 由脚本声明（`type/default/help/visible/perm`）。
-- **初值与优先级**：包 schema 默认值 < 运行期持久化值（被显式设置过的值重启保留）。部署配置不携带业务参数——实例事实住持久化里，部署时经任意控制渠道设一次即可。
-- **修改渠道按 `visible` 划分**：`visible=true` → 驱动人机界面可直接改（fabric mod 的 GUI 设置页、mcc 的 `param get/set`）；`visible=false` → 仅引擎控制 API（CLI / HTTP `/params`）。所有渠道进入同一 `params.set` 管线：schema 校验 + 持久化（脚本侧可挂校验钩）。
+- **唯一声明源**：`bot.yaml params`（`type/default/required/help/visible`）；Lua 内不再有 `params{…}` 声明，`params` 只是只读视图。
+- **初值与优先级**：包 schema 默认值 < 实例参数值（平台 `instances.params_json` 是显式设置值的唯一真源）。部署配置不携带业务参数——由平台装配 deploy 时下发。
+- **修改渠道按 `visible` 划分**：`visible=true` → 驱动人机界面可直接改（fabric mod 的 GUI 设置页、mcc 的 `param get/set`）；`visible=false` → 仅引擎控制 API（CLI / HTTP `/params`）。所有渠道进入同一 `params.set` 管线：schema 校验 + 平台 params_json 回写（脚本侧可挂校验钩）。
 - fabric GUI 的写入以驱动通道的权限身份进入控制总线（默认 owner 级，可配置）。
 - **函数型参数**（过滤器谓词）无法经 yaml/CLI 表达，只能作为脚本内默认值；schema 校验对 table 型做结构校验。
 - **热生效契约**：脚本每次读取取当前值（`params.input`），不做快照；需要稳定的旧值时由脚本自行局部保存。
@@ -336,7 +331,7 @@ budget:    每任务/每小时动作次数与时长上限；耗尽 → 自动 pa
 
 控制面分两层，最终进入同一套 HTTP/控制通道、同一 Bearer token 鉴权：
 - **平台原生控制方案**（人的日常入口）：fabric/游戏内 = 游戏聊天通道 + Mod Menu 设置页；mineflayer = 宿主 CLI；mcc = 自身控制台。
-- **协议通用 HTTP API**（程序化入口，三宿主同 schema，规格见 CAPABILITIES.md §17）：MCP/agent/面板用它读状态、改 params、暂停/恢复、拉日志、查持久化表——验收全程无头。HTTP API 宿主**常开**（只绑 127.0.0.1），端口/token 自动管理，不在任何配置里声明。
+- **协议通用 HTTP API**（程序化入口，三宿主同 schema，规格见 CAPABILITIES.md §17）：MCP/agent/面板用它读状态、改 params、暂停/恢复、拉日志、查实例状态——验收全程无头。HTTP API 宿主**常开**（只绑 127.0.0.1），端口/token 自动管理，不在任何配置里声明。
 引擎内建控制：**pause / resume / status**（不经脚本，owner 级）——急停即 pause，无 panic 关键词。
 
 ---
@@ -347,7 +342,7 @@ budget:    每任务/每小时动作次数与时长上限；耗尽 → 自动 pa
 
 | 层 | 内容 | 分发 |
 |---|---|---|
-| **脚本包**（能力自述） | name、scripts、params schema（含默认值）、persist 声明 | 随包分发，跨服务器通用 |
+| **脚本包**（能力自述） | name、scripts、params schema（含默认值） | 随包分发，跨服务器通用 |
 | **实例边界**（限制） | fence、dig/place、combat 规则、chat 限速与命令白名单（全部可选；缺省不限制） | 每服务器/每世界一份 |
 | **连接**（宿主部署） | 服务器地址、账号凭据 | 宿主各平台原生形态 |
 
@@ -356,9 +351,8 @@ budget:    每任务/每小时动作次数与时长上限；耗尽 → 自动 pa
 name: hauler-1
 scripts: [haul.lua]
 params:
-  from: { type: blockpos, required: true }    # schema + 默认值；实例值运行期设置后持久化
+  from: { type: blockpos, required: true }    # schema + 默认值；实例值由平台管理
   to:   { type: blockpos, required: true }
-persist: ./data/hauler-1.sqlite
 ```
 
 ```yaml
@@ -385,12 +379,12 @@ boundary:                          # 限制边界：全部可选，缺省不限�
 配置写宽也无法绕过前一层。速率限制只丢弃当次动作（脚本收到 `permission.denied` 可退避），
 `budget.actions_per_hour` 则超额暂停整个实例。
 
-**不多配的**：业务参数不在部署配置里——包给默认，运行期经控制渠道设置后持久化，持久化值即实例事实；
+**不多配的**：业务参数不在部署配置里——包给默认，实例值由平台 params_json 管理并在部署时下发；
 HTTP API 是宿主常开能力（只绑 127.0.0.1、默认端口冲突自动顺延、token 启动时生成并打印到控制台/日志），
 绑定覆盖属宿主启动参数（env），不存在于任何通用配置。
 **默认开放**：包不含任何边界；未配置 boundary 的实例不限制动作，显式字段才收紧。宿主强制执行边界（脚本不可绕过，§5.1）。
 （实现现状（已落地）：mineflayer 宿主以**部署配置 yaml** 启动（`node engine/cli.js run/bank-demo.yaml`），
-包清单从 `package:` 目录加载；`persist:` 相对路径由宿主解析到**实例数据根**（部署文件所在目录）；
+包清单从 `package:` 目录加载；状态路径由宿主固定为实例目录下的 `state/`（包无权指定）；
 fabric 宿主实例配置 = `<游戏目录>/config/botscript-mod.json`（package + boundary）。）
 
 ---

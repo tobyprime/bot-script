@@ -87,12 +87,9 @@ export function stripCommentsAndStrings(src) {
   return out;
 }
 
-function collectLocals(code, raw = '') {
+function collectLocals(code) {
   const locals = new Set();
   const add = (names) => { for (const x of names) if (x) locals.add(x); };
-  // persist.table "Account" / persist.kv "meta" / persist.log "Intent" 会把同名表注入全局
-  // （必须从原始源码里找：strip 之后字符串已经变成空白）
-  for (const m of raw.matchAll(/\bpersist\.(?:table|kv|log)\s*[("\s]\s*["']([A-Za-z_][A-Za-z0-9_]*)["']/g)) add([m[1]]);
   for (const m of code.matchAll(/\blocal\s+([^=\n;]+)/g)) {
     for (const part of m[1].split(',')) {
       const nm = part.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)/);
@@ -118,7 +115,7 @@ function collectLocals(code, raw = '') {
  */
 export function lintSource(src, { file = '<script>', surface = loadSurface(), strict = false, extraGlobals = [] } = {}) {
   const code = stripCommentsAndStrings(src);
-  const locals = collectLocals(code, src);
+  const locals = collectLocals(code);
   for (const g of extraGlobals) locals.add(g);
   const problems = [];
   const lines = code.split('\n');
@@ -154,15 +151,6 @@ export function lintSource(src, { file = '<script>', surface = loadSurface(), st
   return problems;
 }
 
-/** 包级：把 persist.table/kv/log 注入的同名全局收成一组（跨文件可见，模块文件要用） */
-export function collectPersistGlobals(sources) {
-  const out = new Set();
-  for (const src of sources) {
-    for (const m of src.matchAll(/\bpersist\.(?:table|kv|log)\s*[("\s]\s*["']([A-Za-z_][A-Za-z0-9_]*)["']/g)) out.add(m[1]);
-  }
-  return [...out];
-}
-
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { statSync, readdirSync } = await import('node:fs');
   const files = [];
@@ -172,9 +160,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     } else files.push(t);
   }
   const surface2 = loadSurface();
-  const extra = collectPersistGlobals(files.map((f) => readFileSync(f, 'utf8')));
   for (const f of files) {
-    for (const p of lintSource(readFileSync(f, 'utf8'), { file: f, surface: surface2, extraGlobals: extra })) {
+    for (const p of lintSource(readFileSync(f, 'utf8'), { file: f, surface: surface2 })) {
       console.log(`${p.level.toUpperCase()} ${p.file}:${p.line} ${p.msg}`);
     }
   }

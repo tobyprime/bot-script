@@ -23,10 +23,8 @@ public final class TestHost implements LuaRuntime.HostBridge {
     private final LuaRuntime rt;
     private final long[] clockRef;
     private final Map<Integer, Long> sleepDeadlines = new HashMap<>();
-    private final Map<String, JsonObject> tables = new LinkedHashMap<>();
-    private final Map<String, JsonObject> kv = new LinkedHashMap<>();
+    private final Map<String, JsonElement> state = new LinkedHashMap<>();
     private final Map<String, Long> seen = new LinkedHashMap<>();
-    private PersistStore persist;
 
     public TestHost(LuaRuntime rt) {
         this(rt, new long[]{1000});
@@ -37,7 +35,6 @@ public final class TestHost implements LuaRuntime.HostBridge {
         this.clockRef = clockRef;
     }
 
-    public void usePersistStore(PersistStore store) { this.persist = store; }
     public long now() { return clockRef[0]; }
 
     /** info 级别日志（去掉 level 前缀），供断言直接比较 */
@@ -107,7 +104,6 @@ public final class TestHost implements LuaRuntime.HostBridge {
             case "events.emit": { logs.add("event|" + a.get("type").getAsString()); return "1"; }
             case "caps.get": return "false";
             case "item.stack": return "{\"id\":\"minecraft:dirt\",\"count\":1,\"max_count\":64,\"damage\":null,\"max_damage\":null}";
-            case "chat.config": return "{\"msg_command\":null}";
             case "self.get": return "{\"username\":\"VecBot\",\"pos\":{\"x\":0,\"y\":64,\"z\":0},\"yaw\":0,\"pitch\":0,\"held_slot\":0}";
             case "entities.list": return "[]";
             case "entities.get": return "";
@@ -118,69 +114,37 @@ public final class TestHost implements LuaRuntime.HostBridge {
             case "window.current": return "";
             case "window.get": return "";
             case "session.get": return "{\"state\":\"playing\",\"info\":{}}";
-            case "kv.get": {
-                String k = a.get("name").getAsString() + "/" + a.get("key").getAsString();
-                return kv.containsKey(k) ? LuaRuntime.gson().toJson(kv.get(k).get("v").getAsString()) : "";
+            case "state.get": {
+                String k = a.get("key").getAsString();
+                return state.containsKey(k) ? state.get(k).toString() : "";
             }
-            case "kv.set": {
-                String k = a.get("name").getAsString() + "/" + a.get("key").getAsString();
-                JsonObject v = new JsonObject();
-                v.addProperty("v", a.get("value").getAsString());
-                kv.put(k, v);
+            case "state.all": {
+                JsonObject o = new JsonObject();
+                for (var e : state.entrySet()) o.add(e.getKey(), e.getValue());
+                return o.toString();
+            }
+            case "state.set": {
+                JsonElement v = a.has("value") ? a.get("value") : JsonNull.INSTANCE;
+                state.put(a.get("key").getAsString(), v.deepCopy());
                 return "";
             }
-            case "persist.table": {
-                tables.put(a.get("name").getAsString(), a.get("schema").getAsJsonObject().deepCopy());
-                if (persist != null) persist.declareTable(a.get("name").getAsString(), a.get("schema").toString());
+            case "state.delete": {
+                state.remove(a.get("key").getAsString());
                 return "";
             }
-            case "persist.find": return persist != null
-                    ? nz(persist.find(a.get("name").getAsString(), where(a))) : memFind(a);
-            case "persist.all": return persist != null
-                    ? persist.all(a.get("name").getAsString()) : "[]";
-            case "persist.upsert": {
-                if (persist != null) persist.upsert(a.get("name").getAsString(), a.getAsJsonObject("row"));
-                return "";
-            }
-            case "persist.del": {
-                if (persist != null) persist.del(a.get("name").getAsString(), where(a));
-                return "";
-            }
-            case "persist.adjust": {
-                if (persist != null) return persist.adjust(a.get("name").getAsString(),
-                        a.get("key").getAsString(), a.get("delta").getAsDouble());
-                return "{}";
-            }
-            case "persist.seen": {
+            case "state.seen": {
                 String key = a.get("key").getAsString();
-                long win = a.get("window_ms").getAsLong();
+                long win = a.has("window_ms") ? a.get("window_ms").getAsLong() : 5000;
                 Long prev = seen.get(key);
-                if (prev != null && now() - prev <= win) return "1";
+                if (prev != null && now() - prev <= win) return "true";
                 seen.put(key, now());
-                return "0";
+                return "false";
             }
-            case "persist.log_declare": { if (persist != null) persist.logDeclare(a.get("name").getAsString()); return ""; }
-            case "persist.log_append": return String.valueOf(persist != null
-                    ? persist.logAppend(a.get("name").getAsString(), a.getAsJsonObject("fields"), now()) : 1);
-            case "persist.log_find": return persist != null ? persist.logFind(a.get("name").getAsString(), where(a)) : "[]";
-            case "persist.log_mark": { if (persist != null) persist.logMark(a.get("name").getAsString(), a.get("id").getAsDouble(), a.get("state").getAsString()); return ""; }
-            case "txn.begin": { if (persist != null) persist.txnBegin(); return ""; }
-            case "txn.commit": { if (persist != null) persist.txnCommit(); return ""; }
-            case "txn.rollback": { if (persist != null) persist.txnRollback(); return ""; }
             default: return "";
         }
     }
 
-    private static JsonObject where(JsonObject a) {
-        return a.has("where") && a.get("where").isJsonObject() ? a.getAsJsonObject("where") : new JsonObject();
-    }
-
     private static String nz(String s) { return s == null ? "" : s; }
-
-    private String memFind(JsonObject a) {
-        // 无真 store 时的最小内存语义（仅测试夹具使用）
-        return "";
-    }
 
     public static JsonObject json(String s) {
         return JsonParser.parseString(s).getAsJsonObject();

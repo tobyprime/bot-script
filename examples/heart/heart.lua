@@ -6,13 +6,6 @@
 -- 动作覆盖：move.path/rot + interact.block(开箱) + window.click —— v1 三类型
 -- ============================================================
 
-params {
-  range    = { type = "number", default = 32, visible = true, help = "侦测半径（格）" },
-  source   = { type = "blockpos", required = true, help = "原材料箱" },
-  target   = { type = "blockpos", help = "目标双箱（无方块事件流宿主的引导触发用）" },
-  material = { type = "string", default = "minecraft:pink_wool", help = "摆放材料" },
-}
-
 -- 心形图案：大箱 6 行 × 9 列，X = 放材料（27 槽）
 local PATTERN = {
   ".XX.XX.",
@@ -43,12 +36,12 @@ end
 
 -- 触发：L1 方块更新流。放第二个箱身补全双箱的那一刻满足条件；
 -- 单例任务保证忙碌时后来的箱子被忽略（排队策略可自行扩展）。
--- persist.seen 去重：Paper 会在容器交互后重发容器块更新（含内容变更），
+-- state.seen 去重：Paper 会在容器交互后重发容器块更新（含内容变更），
 -- 同一双箱 30s 内只认一次触发，防止摆放完成后被自身交互的回包再次拉起。
 on_event("world.block_changed", function(pos)
   if nav.distance_to(pos) > params.range then return end
   if not is_double_chest(pos) then return end
-  if persist.seen("heart:" .. pos.x .. ":" .. pos.y .. ":" .. pos.z, 30000) then return end
+  if state.seen("heart:" .. pos.x .. ":" .. pos.y .. ":" .. pos.z, 30000) then return end
   task.spawn("heart", pos)
 end)
 

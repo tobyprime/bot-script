@@ -32,57 +32,66 @@ class RuntimeContractTest {
         return p;
     }
 
-    // ---- 1) persist 桥（经 Lua 全链路 + 真 PersistStore） ----
+    // ---- 1) state 桥（经 Lua 全链路；localStorage 语义） ----
     @Test
-    void persistBridgeThroughLua() throws Exception {
-        Path file = Files.createTempFile("bspersist", ".json");
-        Files.deleteIfExists(file);
+    void stateBridgeThroughLua() throws Exception {
         long[] clock = {1000};
         CaptureLog sink = new CaptureLog();
         LuaRuntime rt = new LuaRuntime("test-bot", sink, () -> clock[0]);
         TestHost host = new TestHost(rt, clock);
-        PersistStore store = new PersistStore(file);
-        host.usePersistStore(store);
         rt.setHostBridge(host);
         rt.bootRuntimeLibs();
-        rt.loadScripts(List.of(new LuaRuntime.ScriptFile("persist.lua", """
+        rt.loadScripts(List.of(new LuaRuntime.ScriptFile("state.lua", """
                 on_start(function()
-                  persist.table "Account" { name = "string:key", balance = "number" }
-                  Account.upsert { name = "MixTobyInjTick", balance = 100 }
-                  Account.upsert { name = "Carol", balance = 4 }
-                  local a = Account.find { name = "MixTobyInjTick" }
-                  log.info("find=%s %s", a.name, tostring(a.balance))
-                  local na = Account.adjust("MixTobyInjTick", -30, "name", "balance")
-                  log.info("adjust=%s", tostring(na.balance))
-                  log.info("seen1=%s seen2=%s", persist.seen("tx:1", 5000) and "hit" or "new",
-                           persist.seen("tx:1", 5000) and "hit" or "new")
-                  persist.kv "meta"
-                  meta.set("opened", true)
-                  log.info("kv=%s", tostring(meta.get("opened")))
+                  state.set("acc", { name = "Mix", balance = 100 })
+                  local a = state.get("acc")
+                  log.info("get=%s %s", a.name, tostring(a.balance))
+                  state.update("acc", function(v) v.balance = v.balance - 30; return v end)
+                  log.info("update=%s", tostring(state.get("acc").balance))
+                  log.info("seen1=%s seen2=%s", state.seen("tx:1", 5000) and "hit" or "new",
+                           state.seen("tx:1", 5000) and "hit" or "new")
+                  state.delete("acc")
+                  log.info("after-delete=%s", tostring(state.get("acc")))
                 end)
                 """, true)));
         rt.bindParams(new JsonObject(), new JsonObject());
         rt.start();
-        assertTrue(host.infos().contains("find=MixTobyInjTick 100"), String.valueOf(host.logs));
-        assertTrue(host.infos().contains("adjust=70"), String.valueOf(host.logs));
+        assertTrue(host.infos().contains("get=Mix 100"), String.valueOf(host.logs));
+        assertTrue(host.infos().contains("update=70"), String.valueOf(host.logs));
         assertTrue(host.infos().contains("seen1=new seen2=hit"), String.valueOf(host.logs));
-        assertTrue(host.infos().contains("kv=true"), String.valueOf(host.logs));
+        assertTrue(host.infos().contains("after-delete=nil"), String.valueOf(host.logs));
     }
 
-    // ---- 2) 事务回滚（JSON 存储必须真的撤销；Node 是 SQLite ROLLBACK） ----
     @Test
-    void txnRollbackRestoresState() throws Exception {
-        Path file = Files.createTempFile("bstxn", ".json");
+    void stateStoreQuotaAndPersistence() throws Exception {
+        Path file = Files.createTempFile("bsstate", ".json");
         Files.deleteIfExists(file);
-        PersistStore store = new PersistStore(file);
-        store.declareTable("T", "{\"k\":\"string:key\",\"v\":\"number\"}");
-        JsonObject row = new JsonObject();
-        row.addProperty("k", "x");
-        row.addProperty("v", 1);
-        store.txnBegin();
-        store.upsert("T", row);
-        store.txnRollback();
-        assertEquals("[]", store.all("T"), "回滚后不得留痕");
+        StateStore store = new StateStore(file);
+        store.set("k", JsonParser.parseString("{\"v\":1}"));
+        assertEquals(1, store.get("k").getAsJsonObject().get("v").getAsInt());
+        store.close();
+
+        StateStore reopened = new StateStore(file);
+        assertEquals(1, reopened.get("k").getAsJsonObject().get("v").getAsInt(), "值应跨重启保留");
+        reopened.delete("k");
+        assertNull(reopened.get("k"));
+
+        String big = "x".repeat(StateStore.VALUE_MAX + 1);
+        assertThrows(LuaRuntime.AbiError.class,
+                () -> reopened.set("big", new com.google.gson.JsonPrimitive(big)), "单值超限应拒绝");
+        String chunk = "y".repeat(StateStore.VALUE_MAX - 8);
+        int i = 0;
+        try {
+            for (; i < 40; i++) reopened.set("k" + i, new com.google.gson.JsonPrimitive(chunk));
+            fail("总量超限应拒绝写入");
+        } catch (LuaRuntime.AbiError e) {
+            assertEquals("state.quota", e.kind);
+        }
+        assertTrue(i > 0 && i < 40);
+        assertTrue(reopened.stats().get("bytes").getAsInt() <= StateStore.QUOTA);
+        reopened.clear();
+        assertEquals(0, reopened.stats().get("entries").getAsInt(), "clear 应清空全部键");
+        reopened.close();
     }
 
     // ---- 4) 策略向量（Node 与 Fabric 同判） ----
@@ -168,61 +177,5 @@ class RuntimeContractTest {
             }
         }
         return out;
-    }
-
-    // ---- 6) persist 向量（同一操作序列 => 相同表行/seen/kv/日志语义） ----
-    @Test
-    void persistVectors() throws Exception {
-        for (Path file : Files.list(vectorDir("persist")).filter((f) -> f.toString().endsWith(".json")).sorted().toList()) {
-            JsonObject vec = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
-            String name = vec.get("name").getAsString();
-            Path tmp = Files.createTempFile("bsvec", ".json");
-            Files.deleteIfExists(tmp);
-            PersistStore store = new PersistStore(tmp);
-            List<Integer> seen = new ArrayList<>();
-            for (JsonElement opEl : vec.getAsJsonArray("ops")) {
-                JsonObject op = opEl.getAsJsonObject();
-                JsonArray a = op.getAsJsonArray("args");
-                switch (op.get("op").getAsString()) {
-                    case "declareTable" -> store.declareTable(a.get(0).getAsString(), a.get(1).toString());
-                    case "upsert" -> store.upsert(a.get(0).getAsString(), a.get(1).getAsJsonObject());
-                    case "del" -> store.del(a.get(0).getAsString(), a.size() > 1 ? a.get(1).getAsJsonObject() : new JsonObject());
-                    case "adjust" -> store.adjust(a.get(0).getAsString(),
-                            a.get(1).getAsString(), a.get(2).getAsDouble());
-                    case "seen" -> seen.add(store.seen(a.get(0).getAsString(), a.get(1).getAsLong(), 5_000_000L));
-                    case "kvSet" -> store.kvSet(a.get(0).getAsString(), a.get(1).getAsString(), a.get(2).getAsString());
-                    case "logDeclare" -> store.logDeclare(a.get(0).getAsString());
-                    case "logAppend" -> store.logAppend(a.get(0).getAsString(), a.get(1).getAsJsonObject(), 5_000_000L);
-                    default -> fail("未实现向量 op " + op.get("op").getAsString());
-                }
-            }
-            JsonObject expect = vec.getAsJsonObject("expect");
-            for (var e : expect.getAsJsonObject("rows").entrySet()) {
-                JsonArray got = JsonParser.parseString(store.all(e.getKey())).getAsJsonArray();
-                assertEquals(e.getValue().getAsJsonArray().size(), got.size(), name + ": 行数");
-                for (int i = 0; i < got.size(); i++) {
-                    assertEquals(e.getValue().getAsJsonArray().get(i), got.get(i), name + ": 行 " + i);
-                }
-            }
-            for (var e : expect.getAsJsonObject("kv").entrySet()) {
-                String[] ns = e.getKey().split("/");
-                assertEquals(e.getValue().getAsString(), store.kvGet(ns[0], ns[1]), name + ": kv");
-            }
-            if (expect.has("seen")) {
-                List<Integer> exp = expect.getAsJsonArray("seen").asList().stream()
-                        .map(JsonElement::getAsInt).toList();
-                assertEquals(exp, seen, name + ": seen 判定");
-            }
-            if (expect.has("logCounts")) {
-                for (var e : expect.getAsJsonObject("logCounts").entrySet()) {
-                    for (var st : e.getValue().getAsJsonObject().entrySet()) {
-                        JsonObject where = new JsonObject();
-                        where.addProperty("state", st.getKey());
-                        JsonArray got = JsonParser.parseString(store.logFind(e.getKey(), where)).getAsJsonArray();
-                        assertEquals(st.getValue().getAsInt(), got.size(), name + ": " + e.getKey() + "/" + st.getKey());
-                    }
-                }
-            }
-        }
     }
 }

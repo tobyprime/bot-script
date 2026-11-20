@@ -1,4 +1,4 @@
-// testing/http.test.js — §17 控制通道（鉴权/状态/params/pause/resume/tasks/logs/persist/caps/eval/SSE/chat/session）
+// testing/http.test.js — §17 控制通道（鉴权/状态/params/pause/resume/tasks/logs/store/caps/eval/SSE/chat/session）
 import assert from 'node:assert';
 import { test } from './registry.js';
 import { makeEngine, script, waitFor } from './harness.js';
@@ -10,7 +10,7 @@ async function startApi(engine) {
   return startHttpApi(engine, { log: () => {} });
 }
 
-test('http17：鉴权/状态/params/pause/resume/tasks/logs/persist/caps/eval 全链', async () => {
+test('http17：鉴权/状态/params/pause/resume/tasks/logs/store/caps/eval 全链', async () => {
   const driver = new MockDriver();
   const { engine } = await makeEngine({
     scripts: [],
@@ -50,11 +50,13 @@ test('http17：鉴权/状态/params/pause/resume/tasks/logs/persist/caps/eval �
   const l2 = (await (await fetch(base + `/logs?since=${Date.now() + 1000}`, { headers: hdr })).json());
   assert.strictEqual(l2.logs.length, 0, 'since 未来时刻应无增量');
 
-  engine.persist.declareTable('T', { k: 'string:key', v: 'number' });
-  engine.persist.upsert('T', { k: 'a', v: 1 });
-  const rows = (await (await fetch(base + '/persist?table=T', { headers: hdr })).json()).rows;
-  assert.strictEqual(rows.length, 1);
-  assert.strictEqual((await fetch(base + '/persist?table=Nope', { headers: hdr })).status, 400);
+  engine.stateStore.set('k', { v: 1 });
+  const storeBody = await (await fetch(base + '/store', { headers: hdr })).json();
+  assert.deepStrictEqual(storeBody.values, { k: { v: 1 } });
+  assert.strictEqual(storeBody.quota, engine.stateStore.stats.quota);
+  assert.strictEqual((await fetch(base + '/store', { method: 'DELETE', headers: hdr })).status, 200);
+  const cleared = await (await fetch(base + '/store', { headers: hdr })).json();
+  assert.deepStrictEqual(cleared.values, {}, 'DELETE /store 应清空状态');
 
   const capsBody = (await (await fetch(base + '/caps', { headers: hdr })).json());
   assert.strictEqual(capsBody.host, 'node');

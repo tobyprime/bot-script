@@ -53,7 +53,7 @@ main().catch((e) => {
   // 启动失败要区分「用户的包/配置问题」与「我们自己的问题」：
   // 前者给可执行提示（用户能自己改），后者只留追踪 ID、细节进日志。
   const message = String(e?.message ?? e);
-  const kind = e?.kind;   // 引擎抛出的类型化错误（lua.compile / persist.* / param.* 等）
+  const kind = e?.kind;   // 引擎抛出的类型化错误（lua.compile / state.* / param.* 等）
   const full = `${message}${e?.stack ? `\n${String(e.stack).split('\n').slice(0, 6).join('\n')}` : ''}`;
   console.error(`[worker:${instanceId}] 启动失败 kind=${kind ?? ''}:`, full);
   if (kind === 'lua.compile') {

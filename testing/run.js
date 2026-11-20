@@ -5,11 +5,12 @@
 import { runAll } from './registry.js';
 
 await import('./scheduler.test.js');
-await import('./persist.test.js');
+await import('./state.test.js');
 await import('./policy.test.js');
 await import('./result.test.js');
 await import('./containers.test.js');
 await import('./queries.test.js');
+await import('./chat.test.js');
 await import('./events.test.js');
 await import('./packets.test.js');
 await import('./logs.test.js');

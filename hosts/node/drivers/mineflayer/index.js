@@ -3,6 +3,7 @@
 import { createRequire } from 'node:module';
 import { Vec3 } from 'vec3';
 import { serviceDegToBotYaw, shortestYaw } from './units.js';
+import { classifyChat } from './chat-classify.js';
 import { reasonText } from './reason.js';
 import { installProtocolTrace } from './protocolTrace.js';
 import { installPatches } from './patches/index.js';
@@ -450,24 +451,15 @@ export class MineflayerDriver {
     bot.on('message', (jsonMsg, position, sender) => {
       const raw = jsonMsg.toString();
       if (!raw) return;
-      let senderName = null;
-      let kind = 'system';
-      let text = raw;
-      if (sender && bot.players[sender]?.username) {
-        senderName = bot.players[sender].username;
-        kind = 'player';
-        text = raw.replace(/^<[^>]+>\s*/, '');
-      } else {
-        const m = raw.match(/^[<\[]([^\]>\s]+)[>\]]\s*(.*)$/s);
-        if (m) { senderName = m[1]; kind = 'player'; text = m[2]; }
-        else {
-          const w = raw.match(/^(\S+) (?:whispers to you:|whispers:)\s*(.*)$/s)
-                 ?? raw.match(/^你悄悄对 (\S+) 说: (.*)$/s);
-          if (w) { senderName = w[1]; kind = 'player'; text = w[2]; }
-        }
-      }
-      if (senderName === bot.username) return;
-      this.emit('chat', { text, raw, sender: senderName, sender_kind: kind, ts: Date.now() });
+      // 只按协议事实分类：playerChat 包带 sender UUID（解析为在线玩家名），
+      // systemChat 包 sender 为 null。不从 raw 文本猜发送者/频道；
+      // 不过滤自己的发言——是否是自己、是不是命令，交给脚本与服务器判断。
+      const senderName = sender
+        ? (bot._playerFromUUID?.(sender)?.username
+          ?? Object.values(bot.players ?? {}).find((p) => p.uuid === sender)?.username
+          ?? null)
+        : null;
+      this.emit('chat', { ...classifyChat(raw, senderName), ts: Date.now() });
     });
   }
 
@@ -566,7 +558,8 @@ export class MineflayerDriver {
 
   async chat_send(text, kind = 'chat') {
     if (!this.connected) return;
-    const isCommand = kind === 'command' || text.startsWith('/');   // reply 有 msg_command 时自带前导 /
+    // kind=command 或文本自带 /：按命令发送；其余原样发送
+    const isCommand = kind === 'command' || text.startsWith('/');
     this.bot.chat(isCommand && !text.startsWith('/') ? `/${text}` : text);
   }
 

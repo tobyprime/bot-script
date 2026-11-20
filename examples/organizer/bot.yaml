@@ -6,5 +6,5 @@ params:
   input:          { type: blockpos, required: true, visible: true, help: "待整理物品的输入箱" }
   stock_zone:     { type: region,   required: true, help: "库存/不满盒扫描区域" }
   partial_chests: { type: "list<blockpos>", default: [], visible: true, help: "手工登记的不满盒" }
-  paused:         { type: bool, default: false, visible: true, help: "暂停整理" }
-persist: ./data/organizer-1.sqlite
+  paused:         { type: boolean, default: false, visible: true, help: "暂停整理" }
+  ops:            { type: string, default: "", visible: true, help: "控制命令运维名（逗号分隔；留空 = 不校验，示例用）" }
