@@ -20,6 +20,10 @@ const itemOf = (it) => (it ? {
 
 const require = createRequire(import.meta.url);
 
+// 自定义网络包（custom payload / 插件消息）单包上限：与服务端自定义载荷上限对齐。
+// 入站超限直接丢弃（不把异常大包塞进事件 JSON/Lua 堆），出站由 ABI 层先拒。
+const CUSTOM_PAYLOAD_MAX = 1 << 20;
+
 const DIRS = [new Vec3(0, -1, 0), new Vec3(0, 1, 0), new Vec3(0, 0, -1), new Vec3(0, 0, 1), new Vec3(-1, 0, 0), new Vec3(1, 0, 0)];
 
 // 宿主侧谓词：直接在实体对象上判定，避免为每条候选构造完整快照（PERF-REFACTOR §3.3）
@@ -100,6 +104,7 @@ export class MineflayerDriver {
       'nav.pathfinder': true,
       'item.components': true,     // prismarine-item 保留网络组件
       'world.block_entity': true,  // block.entity（方块 NBT）
+      'net.custom_payload': true,  // custom_payload 双向（插件消息）
     };
   }
 
@@ -155,6 +160,7 @@ export class MineflayerDriver {
 
     this.trace = installProtocolTrace(bot, (line, level) => this.log(line, level ?? 'debug'));
     this._patchRuntime = installPatches(bot, { version: cfg.version, log: (line) => this.log(line, 'info') });
+    this.bindCustomPayload(bot);
 
     // 配置阶段资源包：必须用字符串 uuid 应答 ACCEPTED+LOADED。mineflayer 内置插件传
     // uuid-1345 对象，服务器（如 Velocity 群组服）无法匹配其推送，形同未确认。
@@ -465,6 +471,21 @@ export class MineflayerDriver {
     });
   }
 
+  // 自定义网络包入站：binary 经 base64 走事件 JSON（Lua 核心再解成原始字节串）。
+  // 门控在引擎层（boundary.packets）；驱动只负责翻译，不决定脚本可见性。
+  bindCustomPayload(bot) {
+    bot._client.on('custom_payload', (p) => {
+      const channel = p?.channel;
+      if (typeof channel !== 'string' || !channel) return;
+      const raw = Buffer.isBuffer(p.data) ? p.data : Buffer.from(p.data ?? []);
+      if (raw.length > CUSTOM_PAYLOAD_MAX) {
+        this.log(`[custom_payload] ${channel} 载荷过大（${raw.length} 字节），已丢弃`, 'warn');
+        return;
+      }
+      this.emit('custom_payload', { channel, data_b64: raw.toString('base64'), ts: Date.now() });
+    });
+  }
+
   bindWorld() {
     const bot = this.bot;
     bot.on('windowOpen', (win) => this.pushWindow(win));
@@ -534,6 +555,13 @@ export class MineflayerDriver {
 
   get connected() {
     return this.alive && !!this.bot?.entity && !this.bot?._client?.socket?.destroyed;
+  }
+
+  // 原版 serverbound custom_payload（插件消息）。data 已是 Buffer（ABI 层解码 base64）。
+  async custom_payload(channel, data) {
+    if (!this.connected) return;
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data ?? []);
+    this.bot._client.write('custom_payload', { channel: String(channel), data: buf });
   }
 
   async chat_send(text, kind = 'chat') {

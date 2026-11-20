@@ -66,6 +66,7 @@ export class MockDriver {
     this.windowSeq = 10;
     this.outgoingChat = [];
     this.outgoingCommands = [];
+    this.outgoingPayloads = [];   // {channel, data:Buffer}
     this.gotoDelay = 0;
     this.lastInput = { forward: 0, right: 0, up: 0, sprint: false, sneak: false };
     this.usedItems = [];
@@ -75,7 +76,7 @@ export class MockDriver {
   emit(evt, p) { this.emitter.emit(evt, p); }
 
   caps() {
-    return { 'nav.pathfinder': true, 'item.components': true, 'world.block_entity': true };
+    return { 'nav.pathfinder': true, 'item.components': true, 'world.block_entity': true, 'net.custom_payload': true };
   }
   patches() { return []; }
 
@@ -155,6 +156,11 @@ export class MockDriver {
   serverSay(text) {
     this.emit('chat', { text, raw: text, sender: null, sender_kind: 'system', ts: Date.now() });
   }
+  /** 模拟服务端下发自定义网络包（driver 会 base64 后交给引擎） */
+  serverPayload(channel, data) {
+    const raw = Buffer.isBuffer(data) ? data : Buffer.from(data ?? []);
+    this.emit('custom_payload', { channel: String(channel), data_b64: raw.toString('base64'), ts: Date.now() });
+  }
   give(slot, id, count) { this.inv[slot] = { id, count, damage: null, max_damage: null, components: null }; this.pushInventory(); }
   invCount(id) { return this.inv.reduce((n, s) => n + (s && s.id === id ? s.count : 0), 0); }
 
@@ -177,6 +183,13 @@ export class MockDriver {
   pushWindow() { if (this.currentWindow) this.emit('window', this.winSnapshot()); }
 
   // ================= L2 协议原语 =================
+  async custom_payload(channel, data) {
+    this.outgoingPayloads.push({
+      channel: String(channel),
+      data: Buffer.isBuffer(data) ? Buffer.from(data) : Buffer.from(data ?? []),
+    });
+  }
+
   async chat_send(text, kind = 'chat') {
     const out = (kind === 'command' || text.startsWith('/'))
       ? (text.startsWith('/') ? text : `/${text}`)

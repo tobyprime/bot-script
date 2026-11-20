@@ -24,6 +24,16 @@ export class Policy {
     return { msg_command: this.boundary?.chat?.msg_command ?? null };
   }
 
+  /**
+   * 自定义网络包权限位（boundary.packets）。
+   * 与其他边界字段相反：缺省 = 拒绝，只有显式 true/"allow" 才开放。
+   * 入站事件与出站 act.custom_payload 共用此判定（engine.js / abi.js）。
+   */
+  packetsAllowed() {
+    const v = this.boundary?.packets;
+    return v === true || v === 'true' || v === 'allow';
+  }
+
   inFence(pos) {
     const fence = this.boundary?.fence;
     if (!fence || !pos) return true;
@@ -35,6 +45,13 @@ export class Policy {
   /** 动作门控：允许返回 null；拒绝返回类型化错误。缺省（boundary 或字段未配置）= 允许。 */
   check(op, args = {}) {
     const b = this.boundary ?? {};
+
+    // 权限位：唯一「缺省拒绝」的边界字段（显式授予才开放，见 packetsAllowed）
+    if (op === 'act.custom_payload') {
+      return this.packetsAllowed()
+        ? null
+        : TYPE_ERR('policy.blocklist', '自定义网络包未授权（boundary.packets=true 才开放）');
+    }
 
     if (op === 'act.chat_send') return this.checkChat(String(args.kind ?? 'chat'), String(args.text ?? ''));
 

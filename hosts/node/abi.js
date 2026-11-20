@@ -22,6 +22,23 @@ function withTimeout(p, ms, err) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 自定义网络包（custom payload）：通道 = 资源位置；载荷经 base64 过 JSON，宿主解码后限额。
+const CUSTOM_PAYLOAD_CHANNEL = /^[a-z0-9_.-]{1,64}:[a-z0-9_./-]{1,128}$/;
+const CUSTOM_PAYLOAD_MAX = 1 << 20;   // 1 MiB（与服务端自定义载荷上限对齐）
+
+function decodeCustomPayload(b64) {
+  const s = String(b64 ?? '');
+  if (!s) return Buffer.alloc(0);
+  if (s.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(s)) {
+    throw withKind(new Error('自定义网络包载荷不是合法 base64'), 'net.bad_payload');
+  }
+  const buf = Buffer.from(s, 'base64');
+  if (buf.length > CUSTOM_PAYLOAD_MAX) {
+    throw withKind(new Error(`载荷过大（${buf.length} > ${CUSTOM_PAYLOAD_MAX} 字节）`), 'net.bad_payload');
+  }
+  return buf;
+}
+
 export class AbiDispatcher {
   constructor(services) {
     this.s = services;
@@ -320,6 +337,17 @@ export class AbiDispatcher {
       },
 
       // ---- 协议动作原语 ----
+      'act.custom_payload': async ({ channel, data }) => {
+        const ch = String(channel ?? '');
+        if (!CUSTOM_PAYLOAD_CHANNEL.test(ch)) {
+          throw withKind(new Error(`非法 channel：${ch}（应为 namespace:path）`), 'net.bad_request');
+        }
+        if (typeof driver.custom_payload !== 'function') {
+          throw withKind(new Error('宿主未实现自定义网络包收发'), 'net.unsupported');
+        }
+        await driver.custom_payload(ch, decodeCustomPayload(data));
+        return {};
+      },
       'act.chat_send': async ({ text, kind }) => {
         await driver.chat_send(String(text ?? ''), String(kind ?? 'chat'));
         return {};

@@ -63,7 +63,7 @@ node engine/cli.js run/bank-demo.yaml
 
 # 4) fabric 宿主（standalone，无需任何外部进程）
 cd mod && ./gradlew build
-#   产物：mod/build/libs/botscript-mod-0.2.1.jar -> 放入客户端实例 mods/ 目录
+#   产物：mod/build/libs/botscript-mod-0.3.0.jar -> 放入客户端实例 mods/ 目录
 #   构建期从 ../runtime/lua 与 ../contracts/data 拷入资源（仓内不保留第二份 Lua 拷贝）
 #   脚本包：<游戏目录>/botscript/<包名>/（整包复制，含 bot.yaml 清单）
 #   实例配置：<游戏目录>/config/botscript-mod.json:
@@ -160,10 +160,15 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
   脚本最多看到稳定码 `internal`。
 - 任务取消全路径留痕：显式取消/父完成级联/race 败者/超时统一记一条
   `任务 [名] 取消（来源）` 日志。
+- **自定义网络包（`net`，servux 等插件协议）**：`net.on(channel, fn)` 订阅、`net.send(channel, data)` 发送，
+  对应原版 `custom_payload`（插件消息）。载荷在 Lua 边界自动 base64，脚本只看到原始字节串/字节数组；
+  受实例边界 `boundary.packets` **权限位**门控——缺省拒绝，显式 `true`/`allow` 才开放（发送与监听同时生效）。
+  发送计入 `rate`/`budget` 与动作审计；单包上限 1 MiB。Node（mineflayer）已实现；Fabric 宿主暂只登记能力位为 false。
 
 ## 已知限制
 
 - fabric 驱动无寻路器：`nav.walk` 走核心直线退化（`act.input` + `act.look`）；复杂地形显式失败。
+- Fabric 宿主暂未实现自定义网络包：`caps.has("net.custom_payload")=false`，`net.send` 返回 `net.unsupported`。
 - 挖掘由宿主状态机驱动 `player_action`（START + 进度 + STOP），完成以方块变空为准。
 - Node 侧 ItemStack 组件来自网络组件（prismarine-item）；`attribute_modifiers` 只做通用属性提取，
   缺失时 `data.stack.attributes` 为 null（不造假）；Fabric 侧读客户端组件，字段更完整。
@@ -171,5 +176,6 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
 - 命令体系已移除：没有 `on_command`、没有命令参数注入、没有 `/cmd`；控制逻辑写在 `on_chat` 里，
   操作员名单由脚本自己维护（例如参数 `ops` 或 KV），平台/引擎不提供 owner/op 判定。
 - **边界默认开放**：所有权限/限速/白名单未配置即不限制；只有显式写入的字段才收紧动作。
+  **唯一例外 = `boundary.packets`**（自定义网络包权限位，缺省拒绝、显式授予才开放）。
 - **运行时 `_ENV` 限制未默认开启**：包闸门用静态 API lint 判死（`__*` 内部桥、io/os/debug/load 等
   一律拒绝入库）；运行期脚本仍以全局环境执行，存量包兼容后再切受限环境。

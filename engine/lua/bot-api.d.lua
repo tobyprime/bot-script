@@ -206,6 +206,12 @@ caps = {}
 function caps.has(...) end
 --- caps.server_version()
 function caps.server_version(...) end
+---@class net
+net = {}
+--- net.on(channel, fn) — fn({channel,data,ts})；channel='*' 匹配全部；data 为原始字节串
+function net.on(...) end
+--- net.send(channel, data) → Result（data = 原始字节串或 0..255 字节数组；进门控/速率/预算）
+function net.send(...) end
 ---@class data
 data = {}
 --- data.stack(item|{id}) → {id,count,max_count,damage,max_damage,components,attributes,enchantments,custom_name}

@@ -1,0 +1,7 @@
+{
+  "name": "boundary.packets=\"true\"（字符串写法）同样授予权限",
+  "boundary": { "packets": "true" },
+  "op": "act.custom_payload",
+  "args": { "channel": "servux:metadata", "data": "" },
+  "expect": { "allow": true, "error": null }
+}

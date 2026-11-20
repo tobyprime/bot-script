@@ -41,6 +41,11 @@ public final class Policy {
         return o;
     }
 
+    /** 自定义网络包权限位（boundary.packets）：缺省拒绝，显式 allow/true 才开放。 */
+    public boolean packetsAllowed() {
+        return "allow".equals(cfg.packets) || "true".equals(cfg.packets);
+    }
+
     // ---- 预算 / 速率 ----
     public boolean countAction() {
         budgetCount++;
@@ -60,6 +65,11 @@ public final class Policy {
 
     // ---- 动作门控（缺省 = 允许） ----
     public String check(String op, JsonObject args) {
+        // 权限位：唯一「缺省拒绝」的边界字段（boundary.packets=true/allow 才开放）
+        if ("act.custom_payload".equals(op)) {
+            return packetsAllowed() ? null
+                    : LuaRuntime.errJson("policy.blocklist", "自定义网络包未授权（boundary.packets=true 才开放）");
+        }
         if ("act.chat_send".equals(op)) {
             String kind = args.has("kind") && !args.get("kind").isJsonNull() ? args.get("kind").getAsString() : "chat";
             return checkChat(kind, args.has("text") ? args.get("text").getAsString() : "");

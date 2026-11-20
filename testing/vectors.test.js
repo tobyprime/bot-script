@@ -119,7 +119,7 @@ test('persist-vectors：同一操作序列 => 相同表行 / seen / kv / 日志�
 test('abi-conformance：清单里的每个 op 都有 dispatch 实现（不得 abi.unknown_op）', async () => {
   const { engine } = await makeEngine({
     scripts: [],
-    boundary: { chat: { commands: ['/say'] }, blocks: { dig: 'allow', place: 'allow' }, combat: { targets: 'player', max_engage: 10 }, rate: {} },
+    boundary: { chat: { commands: ['/say'] }, blocks: { dig: 'allow', place: 'allow' }, combat: { targets: 'player', max_engage: 10 }, rate: {}, packets: true },
   });
   const bad = [];
   const minimal = {
@@ -167,6 +167,7 @@ test('abi-conformance：清单里的每个 op 都有 dispatch 实现（不得 ab
     'events.next': { timeout: 1 },
     'waiter.new': { timeout: 1 },
     'act.chat_send': { text: 'hi', kind: 'chat' },
+    'act.custom_payload': { channel: 'minecraft:brand', data: '' },
     'act.look': { yaw: 0, pitch: 0 },
     'act.input': { forward: 0, right: 0, up: 0, sprint: false, sneak: false },
     'act.path_to': { target: { x: 1, y: 64, z: 1 }, arrive: 1, timeout_ms: 1000 },

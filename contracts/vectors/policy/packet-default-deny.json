@@ -1,0 +1,7 @@
+{
+  "name": "boundary.packets 缺省 = 拒绝（权限位必须显式授予）",
+  "boundary": {},
+  "op": "act.custom_payload",
+  "args": { "channel": "servux:metadata", "data": "" },
+  "expect": { "allow": false, "error": "policy.blocklist" }
+}

@@ -114,6 +114,13 @@
         "string"
       ],
       "description": "容器访问门控（window_open/click/close）；缺省=允许，显式 false/deny 才拒"
+    },
+    "packets": {
+      "type": [
+        "boolean",
+        "string"
+      ],
+      "description": "自定义网络包（custom payload / 插件消息）收发权限位：显式 true/allow 才开放，缺省拒绝。这是边界里唯一的显式授予位（其余字段缺省开放），供 servux 等服务器扩展插件通道使用"
     }
   },
   "additionalProperties": false

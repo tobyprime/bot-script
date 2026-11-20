@@ -305,10 +305,13 @@ blocks:    dig/place 门控（缺省允许；显式 false/deny 才禁）
 combat:    配置 targets 后才限制攻击对象类型；max_engage 可选
 chat:      act.chat_send 按 kind 限速：chat/reply = say_rate（缺省不限）；command = 命令白名单（非空才限制）
 container: 容器访问门控（缺省允许；显式 false/deny 才拒）
+packets:   自定义网络包（custom payload / 插件消息）权限位：缺省拒绝，显式 true/allow 才开放
 budget:    每任务/每小时动作次数与时长上限；耗尽 → 自动 pause + 告警
 ```
 
 **默认开放**：boundary 或字段未配置 = 不限制；只有显式写入的字段才收紧动作。
+**唯一例外 = `packets`**：第三方插件通道（servux 等）不在常规动作语义内，按权限位显式授予；
+未授予时出站 `net.send` 返回 `policy.blocklist`，入站 `net.payload` 事件不下发。
 平台不内置 owner/op/白名单判定——聊天控制的权限模型由脚本自己实现（参数、KV 或代码常量）。
 （查询与 params 可用，一切动作被拒）。把边界从包里拿走不是把安全拿走，而是把授权责任交给部署者。
 策略违规对脚本表现为可捕获的 `permission.denied`（脚本可优雅处理）；越界/预算耗尽为引擎自动 pause（任务冻结不销毁，可恢复）。
@@ -368,6 +371,7 @@ boundary:                          # 限制边界：全部可选，缺省不限�
   fence: [[80,-30],[140,20]]
   allow_move: true                 # 移动总开关：false 同时禁用 nav.walk/nav.follow/nav.hop
   blocks: { dig: deny, place: deny }
+  packets: true                    # 权限位：允许自定义网络包收发（缺省拒绝；servux 等插件通道）
   rate: { actions_per_sec: 20 }    # 每秒发包上限；省略 = 不限（与 budget.actions_per_hour 分工不同）
   chat:
     say_rate: "6/min"

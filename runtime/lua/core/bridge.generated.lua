@@ -336,6 +336,13 @@ bridge.waiter.new = function(timeout)
     timeout = timeout ~= nil and timeout or 5000,
   })
 end
+--- act.custom_payload(channel, data) → object  [gate: packet]  [async: token]
+bridge.act.custom_payload = function(channel, data)
+  return a("act.custom_payload", {
+    channel = channel,
+    data = data ~= nil and data or "",
+  })
+end
 --- act.chat_send(text, kind) → object  [gate: chat]  [async: token]
 bridge.act.chat_send = function(text, kind)
   return a("act.chat_send", {
@@ -454,6 +461,6 @@ bridge.act.window_close = function(window)
 end
 
 -- 能力与补丁（/caps 与启动日志共用）
-bridge.capabilities = { "nav.pathfinder", "item.components", "world.block_entity" }
+bridge.capabilities = { "nav.pathfinder", "item.components", "world.block_entity", "net.custom_payload" }
 
 return bridge

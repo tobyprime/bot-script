@@ -290,6 +290,31 @@ events.emit("pay", { payer = "Steve", amount = 12.5 })   -- 上抛一条事件�
   独立部署可经 `GET /stream` 消费，或由宿主自行决定去向。
 - `events.emit` 的 `data` 必须是 table；`type` 截断到 64 字符。
 
+### 3.14 `net` — 自定义网络包（custom payload / 插件消息）
+
+> 定位：给服务器扩展插件（servux 等）用自定义载荷通道。脚本只处理原始字节，
+> 载荷在 Lua 边界自动 base64（脚本 API 不暴露 base64），**受实例边界 `boundary.packets` 权限位门控**。
+
+```lua
+-- 订阅：channel 精确匹配；"*" 匹配全部（精确处理器先运行）
+net.on("servux:metadata", function(p)
+  -- p = { channel = "servux:metadata", data = <原始字节串>, ts = <ms> }
+  for i = 1, #p.data do ... end
+end)
+net.on("*", function(p) log.info("payload %s (%d bytes)", p.channel, #p.data) end)
+on_event("net.payload", function(p) ... end)   -- 等价通用订阅（payload 同上）
+
+-- 发送：Result；data = 原始字节串或 0..255 字节数组
+local r = net.send("servux:metadata", string.char(0x01, 0x00) .. nbt_bytes)
+if not r.ok then log.warn("send failed: %s", r.error.code) end
+```
+
+- **权限位（唯一缺省拒绝的边界字段）**：`boundary.packets = true`（或 `"allow"`）才开放；
+  未授予时出站返回 `policy.blocklist`，入站事件根本不会进入脚本（连监听也不可见）。
+- 通道名须为小写资源位置（`namespace:path`），单包载荷上限 1 MiB；发送计入 `rate` / `budget` 与动作审计。
+- Native host：Node（mineflayer）全量支持（`capability net.custom_payload=true`）；
+  Fabric 宿主暂未实现动态通道收发（`caps.has("net.custom_payload")=false`，`net.send` 返回 `net.unsupported`）。
+
 ---
 
 ## 4. 事件目录（统一 `域.事件` 点分命名）

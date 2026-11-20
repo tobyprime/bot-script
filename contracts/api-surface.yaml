@@ -156,6 +156,12 @@ globals:
     members:
       has: "caps.has(flag)"
       server_version: "caps.server_version()"
+  net:
+    kind: namespace
+    doc: 自定义网络包（custom payload / 插件消息；实例边界 boundary.packets=true 才开放）
+    members:
+      on: "net.on(channel, fn) — fn({channel,data,ts})；channel='*' 匹配全部；data 为原始字节串"
+      send: "net.send(channel, data) → Result（data = 原始字节串或 0..255 字节数组；进门控/速率/预算）"
   data:
     kind: namespace
     doc: ItemStack 数据（组件真值）

@@ -21,3 +21,4 @@ events:
   self.died:           { payload: "{}", target: "on_event('self.died')；宿主负责自动重生" }
   self.respawned:      { payload: "{}", target: "on_event('self.respawned')" }
   self.damaged:        { payload: "{amount, health}", target: "on_event('self.damaged')" }
+  net.payload:         { payload: "{channel, data_b64, ts}", target: "net.on(channel, fn) / on_event('net.payload')；核心把 data_b64 解码为原始字节串 data（需 boundary.packets=true）" }

@@ -1,0 +1,7 @@
+{
+  "name": "boundary.packets=true 显式授予 => 自定义网络包允许",
+  "boundary": { "packets": true },
+  "op": "act.custom_payload",
+  "args": { "channel": "servux:metadata", "data": "" },
+  "expect": { "allow": true, "error": null }
+}

@@ -29,9 +29,12 @@ capabilities:
   nav.pathfinder:      { description: 真实寻路器可用；缺失时核心用 act.input + act.look 直线退化 }
   item.components:     { description: 宿主能读出 ItemStack components（Fabric 注册表 / Node 网络组件） }
   world.block_entity:  { description: 宿主能读出方块实体（方块 NBT/数据） }
+  net.custom_payload:  { description: 宿主支持自定义网络包（custom payload / 插件消息）双向收发 }
 
 # gate 类别 → 策略字段（policy.schema.json 以此为准）
 # 策略默认开放：没有配置 = 不限制。只有显式写入的 boundary 字段才会收紧对应动作。
+# 例外：packet 是显式授予位（boundary.packets=true/allow 才开放；缺省拒绝），
+# 因为第三方插件通道属于扩展协议，不在常规动作门控的语义面内。
 gates:
   chat:      { description: 发言（boundary.chat：say 限速/命令白名单/正则黑白名单；缺省不限） }
   move:      { description: 移动（boundary.allow_move=false 才禁止；fence 对移动目标生效） }
@@ -39,6 +42,7 @@ gates:
   dig:       { description: 开始挖掘（boundary.blocks.dig 显式拒绝才禁止）；停止挖掘不受门控 }
   place:     { description: 放置（boundary.blocks.place 显式拒绝才禁止），由 act.use_block.intent=place 触发 }
   container: { description: 容器访问（boundary.containers=false 才拒绝），作用于 window_open/click/close }
+  packet:    { description: 自定义网络包（boundary.packets=true/allow 显式授予才开放；缺省拒绝），作用于 act.custom_payload 与 net.payload 事件 }
 
 sync_ops:
   # ---------------- 基础设施 ----------------
@@ -222,6 +226,14 @@ async_ops:
     result: object|null
 
   # ---------------- 协议动作原语（按「发什么包」建模） ----------------
+  - name: act.custom_payload
+    gate: packet
+    # 自定义网络包（原版 custom_payload / 插件消息，serverbound）
+    # data 是 base64：Lua 侧 net.send 负责原始字节 ⇄ base64，避免二进制直接过 JSON。
+    args:
+      channel: { type: string, required: true }   # 资源位置，如 servux:metadata
+      data: { type: string, default: "" }         # base64（空串 = 无载荷）
+    result: object
   - name: act.chat_send
     gate: chat
     args:

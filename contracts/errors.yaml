@@ -28,6 +28,9 @@ errors:
   session.identity_mismatch: { category: user,      http: 409, description: 凭据身份与实例账号不匹配 }
   chat.offline:            { category: foreseeable, description: 会话不在 playing，无法发言 }
   chat.bad_request:        { category: user,        description: 发言内容不合法 }
+  net.bad_request:         { category: user,        description: net.send/net.on 参数不合法（channel/fn） }
+  net.bad_payload:         { category: user,        description: 自定义网络包载荷不合法（非 0..255 字节数组 / base64 损坏） }
+  net.unsupported:         { category: foreseeable, description: 宿主未实现自定义网络包（capability net.custom_payload=false） }
 
   # ---- 世界 / 实体 / 容器 ----
   entity.gone:             { category: foreseeable, description: 目标实体已消失 }

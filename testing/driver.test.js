@@ -94,6 +94,35 @@ test('断线：连接关闭后动作动词不再写包（防 EPIPE 刷屏）', a
   assert.deepEqual(r, { ok: false, reason: 'disconnected' }, '寻路应直接失败而不是挂起');
 });
 
+test('mineflayer 驱动：custom payload 走 custom_payload 包，入站二进制经 base64 过事件', async () => {
+  const { MineflayerDriver } = await import('../hosts/node/drivers/mineflayer/index.js');
+  const writes = [];
+  let inbound = null;
+  const client = {
+    socket: { destroyed: false },
+    write(name, params) { writes.push({ name, params }); },
+    on(evt, fn) { if (evt === 'custom_payload') inbound = fn; },
+  };
+  const d = new MineflayerDriver({ log: () => {} });
+  d.alive = true;
+  d.bot = { entity: {}, _client: client };
+  const events = [];
+  d.on('custom_payload', (p) => events.push(p));
+
+  await d.custom_payload('servux:metadata', Buffer.from([0x00, 0xff, 0x10]));
+  assert.equal(writes.length, 1, '应写一个包');
+  assert.equal(writes[0].name, 'custom_payload');
+  assert.equal(writes[0].params.channel, 'servux:metadata');
+  assert.deepEqual([...writes[0].params.data], [0x00, 0xff, 0x10], '发送字节保真');
+
+  d.bindCustomPayload(d.bot);
+  inbound({ channel: 'servux:metadata', data: Buffer.from([0xde, 0xad]) });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].channel, 'servux:metadata');
+  assert.ok(events[0].data_b64, '入站载荷应以 base64 进事件（JSON 安全）');
+  assert.strictEqual(Buffer.from(events[0].data_b64, 'base64').toString('hex'), 'dead', '入站字节保真');
+});
+
 test('bslib.look.at 单轮只发一个视角包（避免 invalid_player_movement 踢人）', async () => {
   script('aim_rate.lua', `
     on_start(function()

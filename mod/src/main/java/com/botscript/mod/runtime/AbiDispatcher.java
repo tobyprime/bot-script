@@ -357,6 +357,9 @@ public final class AbiDispatcher {
         });
 
         // ---- 协议动作 ----
+        async.put("act.custom_payload", (t, a) -> {
+            throw new LuaRuntime.AbiError("net.unsupported", "Fabric 宿主暂未实现自定义网络包收发");
+        });
         async.put("act.chat_send", (t, a) -> {
             mc.chatSendRaw(a.get("text").getAsString(),
                     a.has("kind") ? a.get("kind").getAsString() : "chat");

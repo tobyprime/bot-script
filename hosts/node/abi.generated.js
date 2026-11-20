@@ -3,7 +3,8 @@ export const ABI_VERSION = 2;
 export const CAPABILITIES = [
   "nav.pathfinder",
   "item.components",
-  "world.block_entity"
+  "world.block_entity",
+  "net.custom_payload"
 ];
 export const GATES = {
   "chat": "发言（boundary.chat：say 限速/命令白名单/正则黑白名单；缺省不限）",
@@ -11,7 +12,8 @@ export const GATES = {
   "combat": "攻击实体（boundary.combat.targets 设置后才限制目标 / max_engage）",
   "dig": "开始挖掘（boundary.blocks.dig 显式拒绝才禁止）；停止挖掘不受门控",
   "place": "放置（boundary.blocks.place 显式拒绝才禁止），由 act.use_block.intent=place 触发",
-  "container": "容器访问（boundary.containers=false 才拒绝），作用于 window_open/click/close"
+  "container": "容器访问（boundary.containers=false 才拒绝），作用于 window_open/click/close",
+  "packet": "自定义网络包（boundary.packets=true/allow 显式授予才开放；缺省拒绝），作用于 act.custom_payload 与 net.payload 事件"
 };
 
 export const SYNC_OPS = {
@@ -160,6 +162,10 @@ export const ASYNC_OPS = {
   "waiter.new": { args: {
     "timeout": {"type":"number","required":false,"default":5000},
   }, result: "object|null" },
+  "act.custom_payload": { gate: "packet", args: {
+    "channel": {"type":"string","required":true},
+    "data": {"type":"string","required":false,"default":""},
+  }, result: "object" },
   "act.chat_send": { gate: "chat", args: {
     "text": {"type":"string","required":true},
     "kind": {"type":"string","required":false,"default":"chat"},

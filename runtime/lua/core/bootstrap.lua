@@ -28,6 +28,7 @@ __READY = {}          -- 调度队列 {id, okj, ej, drop}
 __TASK_ERR = {}       -- LuaJ 兼容：任务体未捕获错误经此旁路带出（见 new_task）
 __CHAT_HANDLERS = {}
 __EVENT_HANDLERS = {}
+__NET_HANDLERS = {}   -- channel -> handlers（net.on；"*" = 全部通道）
 __AWAITERS = {}       -- await_chat {rexid, token}
 __DECL = { tasks = {}, timers = {}, afters = {} }
 __LIFE = {}
@@ -68,6 +69,59 @@ function contains(list, v)
 end
 
 function sec(n) return math.floor(n * 1000) end
+
+-- ---------- base64（二进制载荷跨 JSON 边界；Node/Fabric 共用） ----------
+-- JSON 只安全携带文本；custom payload 是原始字节。Lua 侧统一在边界处转 base64，
+-- 脚本看到的仍是原始字节串（net.send 入参 / net.payload 事件载荷）。
+local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local B64_DIGITS = {}
+for _i = 1, #B64_ALPHABET do B64_DIGITS[B64_ALPHABET:sub(_i, _i)] = _i - 1 end
+
+local function b64_encode(s)
+  local out = {}
+  local n = #s
+  local i = 1
+  while i <= n do
+    local a = s:byte(i)
+    local b = (i + 1 <= n) and s:byte(i + 1) or nil
+    local c = (i + 2 <= n) and s:byte(i + 2) or nil
+    local v = a * 65536 + (b or 0) * 256 + (c or 0)
+    local c1 = math.floor(v / 262144) % 64
+    local c2 = math.floor(v / 4096) % 64
+    local c3 = math.floor(v / 64) % 64
+    local c4 = v % 64
+    out[#out + 1] = B64_ALPHABET:sub(c1 + 1, c1 + 1) .. B64_ALPHABET:sub(c2 + 1, c2 + 1)
+    out[#out + 1] = b and B64_ALPHABET:sub(c3 + 1, c3 + 1) or "="
+    out[#out + 1] = c and B64_ALPHABET:sub(c4 + 1, c4 + 1) or "="
+    i = i + 3
+  end
+  return table.concat(out)
+end
+
+local function b64_decode(s)
+  if type(s) ~= "string" then return "" end
+  s = s:gsub("[%s=]", "")
+  local n = #s
+  if n == 0 then return "" end
+  if n % 4 == 1 then error({ kind = "net.bad_payload", detail = "非法 base64（长度 " .. n .. "）" }, 0) end
+  local out = {}
+  local i = 1
+  while i <= n do
+    local d1 = B64_DIGITS[s:sub(i, i)]
+    local d2 = B64_DIGITS[s:sub(i + 1, i + 1)]
+    local d3 = B64_DIGITS[s:sub(i + 2, i + 2)]
+    local d4 = B64_DIGITS[s:sub(i + 3, i + 3)]
+    if d1 == nil or d2 == nil then
+      error({ kind = "net.bad_payload", detail = "非法 base64（偏移 " .. i .. "）" }, 0)
+    end
+    local v = d1 * 262144 + d2 * 4096 + (d3 or 0) * 64 + (d4 or 0)
+    out[#out + 1] = string.char(math.floor(v / 65536) % 256)
+    if d3 ~= nil then out[#out + 1] = string.char(math.floor(v / 256) % 256) end
+    if d4 ~= nil then out[#out + 1] = string.char(v % 256) end
+    i = i + 4
+  end
+  return table.concat(out)
+end
 
 -- ---------- await / 动作调用 ----------
 
@@ -447,6 +501,25 @@ function __core_event(kind, j)
   if not ok then bridge.log("error", "event panic (" .. raw_tostring(kind) .. "): " .. errstr(err)) end
 end
 
+-- 自定义网络包入站：data_b64 -> 原始字节串，再分发给 net.on(channel) 与 on_event("net.payload")
+local function __net_payload(p)
+  if type(p) ~= "table" then return end
+  local raw = ""
+  if type(p.data_b64) == "string" and #p.data_b64 > 0 then
+    raw = b64_decode(p.data_b64)
+  end
+  local payload = { channel = p.channel, data = raw, ts = p.ts }
+  for _, h in ipairs(__NET_HANDLERS[p.channel] or {}) do
+    task.spawn_detached(h.fn, payload)
+  end
+  for _, h in ipairs(__NET_HANDLERS["*"] or {}) do
+    task.spawn_detached(h.fn, payload)
+  end
+  for _, h in ipairs(__EVENT_HANDLERS["net.payload"] or {}) do
+    task.spawn_detached(h.fn, payload)
+  end
+end
+
 function __core_event_inner(kind, j)
   __EPOCH = __EPOCH + 1   -- 事件到达 = 新的一帧
   local p = (j ~= nil and j ~= "") and decode(j) or nil
@@ -465,6 +538,8 @@ function __core_event_inner(kind, j)
     for _, fn in ipairs(__LIFE[p.kind] or {}) do
       task.spawn_detached(fn, p.payload)
     end
+  elseif kind == "net.payload" then
+    __net_payload(p)
   else
     for _, h in ipairs(__EVENT_HANDLERS[kind] or {}) do
       task.spawn_detached(h.fn, p)
@@ -937,6 +1012,49 @@ end
 function events.emit(type, data)
   if type == nil then error({ kind = "event.bad_request", detail = "type 必填" }, 0) end
   return rv(bridge.events.emit(tostring(type), data or {}), nil)
+end
+
+-- ---------- net（自定义网络包 / custom payload / 插件消息） ----------
+-- 门控 = 实例边界 boundary.packets（权限位；缺省拒绝）。宿主同时用该位拦入站事件，
+-- 因此未授权的实例既发不出去、也收不到 net.payload。
+net = {}
+
+--- 注册通道处理器：fn({ channel, data, ts })，data 为原始字节串。
+--- channel = "*" 匹配所有通道（精确匹配的处理器先运行）。
+function net.on(channel, fn)
+  if type(fn) ~= "function" then
+    error({ kind = "net.bad_request", detail = "net.on 的第二个参数必须是函数" }, 0)
+  end
+  local c = tostring(channel or "")
+  __NET_HANDLERS[c] = __NET_HANDLERS[c] or {}
+  table.insert(__NET_HANDLERS[c], { fn = fn })
+end
+
+--- 发送自定义网络包。data 可传原始字节串，或 0..255 的字节数组。
+--- 返回 Result（{ok=true,value} | {ok=false,error={code,message}}）。
+function net.send(channel, data)
+  local ch = tostring(channel or "")
+  if ch == "" then
+    error({ kind = "net.bad_request", detail = "channel 必填（如 servux:metadata）" }, 0)
+  end
+  local raw
+  if data == nil then
+    raw = ""
+  elseif type(data) == "string" then
+    raw = data
+  elseif type(data) == "table" then
+    local buf = {}
+    for i, b in ipairs(data) do
+      if type(b) ~= "number" or b < 0 or b > 255 or b ~= math.floor(b) then
+        error({ kind = "net.bad_payload", detail = "字节数组第 " .. i .. " 项不是 0..255 整数" }, 0)
+      end
+      buf[i] = string.char(b)
+    end
+    raw = table.concat(buf)
+  else
+    error({ kind = "net.bad_payload", detail = "data 必须是字节串或 0..255 字节数组" }, 0)
+  end
+  return await(bridge.act.custom_payload(ch, b64_encode(raw)))
 end
 
 -- ---------- 实体句柄（帧快照：同帧内零跨桥，跨帧至多重取一次） ----------

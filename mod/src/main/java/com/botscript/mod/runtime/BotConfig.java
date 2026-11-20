@@ -31,6 +31,7 @@ public class BotConfig {
     public String blocksPlace = null;                          // null = 允许；"deny" 才禁止
     public String containers = null;                          // null = 允许；"deny" 才拒绝
     public boolean containersConfigured = false;
+    public String packets = null;                             // 权限位：null = 拒绝；"allow" 才开放
     public String combatTargets = null;                       // 子串匹配实体 type；null = 不限制目标
     public Double combatMaxEngage = null;
     /** 实例是否配置了 boundary（只用于诊断展示；缺省 = 不限制） */
@@ -77,6 +78,9 @@ public class BotConfig {
         if (p.has("containers") && !p.get("containers").isJsonNull()) {
             containersConfigured = true;
             containers = asAuth(p.get("containers"));
+        }
+        if (p.has("packets") && !p.get("packets").isJsonNull()) {
+            packets = asAuth(p.get("packets"));
         }
         if (p.has("chat")) {
             JsonObject ch = p.getAsJsonObject("chat");

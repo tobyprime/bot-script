@@ -9,15 +9,16 @@ public final class AbiOps {
 
     public static final int ABI_VERSION = 2;
 
-    public static final Set<String> CAPABILITIES = Set.of("nav.pathfinder", "item.components", "world.block_entity");
+    public static final Set<String> CAPABILITIES = Set.of("nav.pathfinder", "item.components", "world.block_entity", "net.custom_payload");
 
     public static final Set<String> SYNC_OPS = Set.of("log", "util.now", "util.regex_new", "util.regex_match", "token.bind", "token.detach", "timer.after", "timer.interval", "events.emit", "waiter.resolve", "self.get", "session.get", "caps.get", "caps.list", "entities.list", "entities.get", "world.block", "world.block_entity", "world.scan", "world.env", "world.reach", "window.current", "window.get", "item.stack", "chat.config", "persist.table", "persist.find", "persist.all", "persist.upsert", "persist.del", "persist.adjust", "persist.seen", "kv.get", "kv.set", "persist.log_declare", "persist.log_append", "persist.log_find", "persist.log_mark", "txn.begin", "txn.commit", "txn.rollback");
 
-    public static final Set<String> ASYNC_OPS = Set.of("util.sleep", "events.next", "waiter.new", "act.chat_send", "act.look", "act.input", "act.path_to", "act.path_cancel", "act.dig", "act.dig_stop", "act.use_block", "act.use_entity", "act.swing", "act.use_item", "act.select_slot", "act.drop", "act.window_open", "act.window_click", "act.window_close");
+    public static final Set<String> ASYNC_OPS = Set.of("util.sleep", "events.next", "waiter.new", "act.custom_payload", "act.chat_send", "act.look", "act.input", "act.path_to", "act.path_cancel", "act.dig", "act.dig_stop", "act.use_block", "act.use_entity", "act.swing", "act.use_item", "act.select_slot", "act.drop", "act.window_open", "act.window_click", "act.window_close");
 
     public static final Set<String> REVERSE_OPS = Set.of("params.bind", "params.get", "params.set", "tasks.list", "tasks.cancel", "eval.once");
 
-    public static final Map<String, String> GATE = Map.ofEntries(            Map.entry("act.chat_send", "chat"),
+    public static final Map<String, String> GATE = Map.ofEntries(            Map.entry("act.custom_payload", "packet"),
+            Map.entry("act.chat_send", "chat"),
             Map.entry("act.input", "move"),
             Map.entry("act.path_to", "move"),
             Map.entry("act.dig", "dig"),
@@ -59,6 +60,7 @@ Map.ofEntries(            Map.entry("log", Set.of("level", "msg")),
             Map.entry("persist.log_find", Set.of("name")),
             Map.entry("persist.log_mark", Set.of("name", "id", "state")),
             Map.entry("util.sleep", Set.of("ms")),
+            Map.entry("act.custom_payload", Set.of("channel")),
             Map.entry("act.chat_send", Set.of("text")),
             Map.entry("act.path_to", Set.of("target")),
             Map.entry("act.dig", Set.of("pos")),

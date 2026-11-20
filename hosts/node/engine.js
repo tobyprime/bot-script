@@ -136,6 +136,10 @@ export class BotEngine {
     });
     d.on('respawn', () => this.event('self.respawned', {}));
     d.on('damaged', (p) => this.event('self.damaged', p));
+    // 自定义网络包入站：与出站共用 boundary.packets 权限位（未授权时连监听都不可见）
+    d.on('custom_payload', (p) => {
+      if (this.policy.packetsAllowed()) this.event('net.payload', p);
+    });
 
     // 2.5) 连接。dry-run 跳过实连（对齐「不实连服务器」语义）
     if (this.runtimeCfg.dry_run) {

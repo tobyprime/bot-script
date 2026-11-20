@@ -80,6 +80,7 @@ public final class McRuntime implements LuaRuntime.Tickable {
         o.addProperty("nav.pathfinder", false);      // 无寻路器：核心走直线退化
         o.addProperty("item.components", true);      // 客户端注册表 ItemStack 组件
         o.addProperty("world.block_entity", true);   // 客户端方块实体
+        o.addProperty("net.custom_payload", false);  // 动态通道的收发/注册尚未实现（见 AbiDispatcher）
         return o;
     }
 
