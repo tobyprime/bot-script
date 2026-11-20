@@ -97,9 +97,15 @@ sync_ops:
     args:
       type: { type: string }       # 精确匹配 Entity.type（player / minecraft:zombie）
       within: { type: number }     # 与自身的 3D 距离上限（减少高频脚本的序列化量）
-    result: Entity[]
+      pred: { type: object }       # 声明式谓词：name/uuid/alive/region/holding/equipment（宿主可下推）
+      projection: { type: string, default: "full" }  # core = id/type/name/uuid/pos/alive + 装备 {id,count}
+      order: { type: string }      # "distance" = 按与自身距离排序（配合 limit 做 top-K）
+      limit: { type: number }      # 只返回前 limit 条（在宿主侧截断，不再全量过桥）
+    result: Entity[]               # 注意：core 投影不展开装备组件（需要属性时用 item.stack 再读）
   - name: entities.get
-    args: { id: { type: string, required: true } }
+    args:
+      id: { type: string, required: true }
+      projection: { type: string, default: "full" }  # core | full
     result: Entity|null
 
   # ---------------- 世界 / 方块 ----------------

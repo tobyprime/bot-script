@@ -58,9 +58,14 @@ export const SYNC_OPS = {
   "entities.list": { args: {
     "type": {"type":"string","required":false},
     "within": {"type":"number","required":false},
+    "pred": {"type":"object","required":false},
+    "projection": {"type":"string","required":false,"default":"full"},
+    "order": {"type":"string","required":false},
+    "limit": {"type":"number","required":false},
   }, result: "Entity[]" },
   "entities.get": { args: {
     "id": {"type":"string","required":true},
+    "projection": {"type":"string","required":false,"default":"full"},
   }, result: "Entity|null" },
   "world.block": { args: {
     "pos": {"type":"blockpos","required":true},

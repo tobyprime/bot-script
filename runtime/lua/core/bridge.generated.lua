@@ -136,17 +136,22 @@ bridge.caps.list = function()
   return q("caps.list", {
 })
 end
---- entities.list(type, within) → Entity[]
-bridge.entities.list = function(type, within)
+--- entities.list(type, within, pred, projection, order, limit) → Entity[]
+bridge.entities.list = function(type, within, pred, projection, order, limit)
   return q("entities.list", {
     type = type,
     within = within,
+    pred = pred,
+    projection = projection ~= nil and projection or "full",
+    order = order,
+    limit = limit,
   })
 end
---- entities.get(id) → Entity|null
-bridge.entities.get = function(id)
+--- entities.get(id, projection) → Entity|null
+bridge.entities.get = function(id, projection)
   return q("entities.get", {
     id = id,
+    projection = projection ~= nil and projection or "full",
   })
 end
 --- world.block(pos) → Block|null

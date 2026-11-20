@@ -155,16 +155,20 @@ inv.click(slot, opts) inv.cursor()  -- 背包窗口点击 / 光标查询：背�
 ```
 P0: count/has/held/slots；P1: equip/equip_best/drop/find/click/cursor。
 
-### 3.4 `entity` — 实体查询（实时读驱动，无缓存层）
+### 3.4 `entity` — 实体查询（声明式谓词宿主侧下推 + 帧快照句柄）
 ```lua
-entity.find(pred) -> [entity]     -- pred {type=, name=, uuid=, alive=, within=, region=, holding=item_id,
-                                  --       equipment={helmet/chestplate/leggings/boots/offhand/hand = item_id|false}}
-                                  --   holding：主手物品 id（= equipment.hand）
-                                  --   equipment：按部件名匹配；写 false = 该部件必须为空
-entity.nearest(pred) -> entity?   -- ②
+entity.find(pred, opts) -> [entity]  -- pred {type=, name=, uuid=, alive=, within=, region=, holding=item_id,
+                                     --       equipment={helmet/chestplate/leggings/boots/offhand/hand = item_id|false}}
+                                     --   holding：主手物品 id（= equipment.hand）
+                                     --   equipment：按部件名匹配；写 false = 该部件必须为空
+                                     --   pred 含 Lua 函数/未知键时自动回退全量投影，在 Lua 侧判定
+                                     -- opts {full = true}：强制返回完整 StackInfo 装备（默认 core：装备只含 id/count）
+entity.nearest(pred, opts) -> entity? -- ②；宿主按距离排序并只返回最近一条（Fabric 未下推时 Lua 本地兜底）
 e.pos e.health e.alive            -- 帧快照活读：同帧复用，跨帧自动刷新（上界 1 次宿主交互）
 e:refresh()                      -- 强制重取最新快照（需要逐字段实时值时用）
 e.equipment.hand/.offhand/.boots/.leggings/.chestplate/.helmet   -- 每件 item 或 nil（槽位索引不外露）
+                                  -- 默认 core 投影只含 {id,count}；需要 max_count/attributes 时用
+                                  -- entity.find(pred, {full=true})，或对背包物品调用 data.stack
 e:snapshot() e:id() e:exists()
 -- 事件（可选订阅）：entity.appeared / entity.gone
 

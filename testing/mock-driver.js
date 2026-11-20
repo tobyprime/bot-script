@@ -7,6 +7,47 @@ const key = (p) => `${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}`;
 const CANON = (n) => (n && !n.includes(':') ? `minecraft:${n}` : n);
 const STACK_MAX = (id) => (id === 'minecraft:iron_sword' || id === 'minecraft:diamond_sword' ? 1 : 64);
 
+const d2Of = (a, b) => { const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z; return dx * dx + dy * dy + dz * dz; };
+const equipIdOf = (e, slot) => {
+  const it = e.equipment?.[slot];
+  return it ? it.id : null;
+};
+
+/** 宿主侧声明式谓词（与 mineflayer 驱动同一口径） */
+function mockPredMatch(e, pred, selfPos) {
+  if (pred.type != null && String(e.type) !== String(pred.type)) return false;
+  if (pred.name != null && (e.name ?? null) !== pred.name) return false;
+  if (pred.uuid != null && (e.uuid ?? null) !== pred.uuid) return false;
+  if (pred.alive != null && (!!e.alive) !== !!pred.alive) return false;
+  if (pred.region) {
+    const [r1, r2] = pred.region;
+    if (!e.pos || !r1 || !r2) return false;
+    const x1 = Math.min(r1.x, r2.x), x2 = Math.max(r1.x, r2.x);
+    const y1 = Math.min(r1.y, r2.y), y2 = Math.max(r1.y, r2.y);
+    const z1 = Math.min(r1.z, r2.z), z2 = Math.max(r1.z, r2.z);
+    if (e.pos.x < x1 || e.pos.x > x2 || e.pos.y < y1 || e.pos.y > y2 || e.pos.z < z1 || e.pos.z > z2) return false;
+  }
+  if (pred.within != null && (!e.pos || d2Of(selfPos, e.pos) > Number(pred.within) ** 2)) return false;
+  if (pred.holding != null && equipIdOf(e, 'hand') !== pred.holding) return false;
+  if (pred.equipment) {
+    for (const [slot, want] of Object.entries(pred.equipment)) {
+      const got = equipIdOf(e, slot);
+      if (want === false) { if (got) return false; }
+      else if (typeof want === 'string' && got !== want) return false;
+    }
+  }
+  return true;
+}
+
+/** core 投影：装备只留 {id,count} */
+function mockCore(e) {
+  const equipment = {};
+  for (const [k, it] of Object.entries(e.equipment ?? {})) {
+    equipment[k] = it ? { id: it.id, count: it.count } : null;
+  }
+  return { ...e, equipment };
+}
+
 export class MockDriver {
   constructor({ start = { x: 0, y: 64, z: 0 }, username = 'TestBot', log = () => {} } = {}) {
     this.emitter = new EventEmitter();
@@ -86,18 +127,28 @@ export class MockDriver {
     }
   }
   query_entities(filter = {}) {
-    const wantType = filter.type == null ? null : String(filter.type);
-    const within = filter.within == null ? null : Number(filter.within);
-    return [...this.entities.values()].filter((e) => {
-      if (wantType != null && String(e.type) !== wantType) return false;
-      if (within != null && Number.isFinite(within) && e.pos) {
-        const dx = e.pos.x - this.botPos.x, dy = e.pos.y - this.botPos.y, dz = e.pos.z - this.botPos.z;
-        if (Math.sqrt(dx * dx + dy * dy + dz * dz) > within) return false;
-      }
-      return true;
-    });
+    const pred = filter.pred ?? null;
+    const wantType = filter.type != null ? String(filter.type) : (pred?.type != null ? String(pred.type) : null);
+    const within = filter.within != null ? Number(filter.within) : (pred?.within != null ? Number(pred.within) : null);
+    const projection = String(filter.projection ?? 'full') === 'core' ? 'core' : 'full';
+    const matched = [];
+    for (const e of this.entities.values()) {
+      if (wantType != null && String(e.type) !== wantType) continue;
+      const d2 = e.pos ? d2Of(this.botPos, e.pos) : null;
+      if (within != null && Number.isFinite(within) && d2 != null && d2 > within * within) continue;
+      if (pred && !mockPredMatch(e, pred, this.botPos)) continue;
+      matched.push({ e, d2 });
+    }
+    if (String(filter.order ?? '') === 'distance') matched.sort((a, b) => (a.d2 ?? Infinity) - (b.d2 ?? Infinity));
+    const limit = filter.limit == null ? null : Math.max(0, Number(filter.limit) || 0);
+    const picked = limit == null ? matched : matched.slice(0, limit);
+    return picked.map(({ e }) => (projection === 'core' ? mockCore(e) : { ...e }));
   }
-  query_entity(id) { return this.entities.get(String(id)) ?? null; }
+  query_entity(id, projection = 'full') {
+    const e = this.entities.get(String(id)) ?? null;
+    if (!e) return null;
+    return String(projection) === 'core' ? mockCore(e) : { ...e };
+  }
   playerSay(name, text) {
     this.emit('chat', { text, raw: `<${name}> ${text}`, sender: name, sender_kind: 'player', ts: Date.now() });
   }

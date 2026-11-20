@@ -22,6 +22,55 @@ const require = createRequire(import.meta.url);
 
 const DIRS = [new Vec3(0, -1, 0), new Vec3(0, 1, 0), new Vec3(0, 0, -1), new Vec3(0, 0, 1), new Vec3(-1, 0, 0), new Vec3(1, 0, 0)];
 
+// 宿主侧谓词：直接在实体对象上判定，避免为每条候选构造完整快照（PERF-REFACTOR §3.3）
+const SLOT_INDEX = { hand: 0, offhand: 1, boots: 2, leggings: 3, chestplate: 4, helmet: 5 };
+const entityTypeOf = (e) => {
+  const raw = String(e.type ?? '');
+  return raw === 'player' ? 'player' : (raw.includes(':') ? raw : `minecraft:${e.name ?? raw}`);
+};
+const entityNameOf = (e) => (e.type === 'player' ? (e.username ?? null) : (e.name ?? null));
+const equipOf = (e, slot) => {
+  const i = SLOT_INDEX[slot];
+  return i === 0 ? (e.equipment?.[0] ?? e.heldItem ?? null) : (e.equipment?.[i] ?? null);
+};
+const dist2 = (a, b) => {
+  const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+  return dx * dx + dy * dy + dz * dz;
+};
+
+function rawPredMatch(e, pred, selfPos) {
+  if (pred.type != null && entityTypeOf(e) !== String(pred.type)) return false;
+  if (pred.name != null && entityNameOf(e) !== pred.name) return false;
+  if (pred.uuid != null && (e.uuid ?? null) !== pred.uuid) return false;
+  if (pred.alive != null && (e.isValid !== false) !== !!pred.alive) return false;
+  if (pred.region) {
+    const p = e.position, [r1, r2] = pred.region;
+    if (!p || !r1 || !r2) return false;
+    const x1 = Math.min(r1.x, r2.x), x2 = Math.max(r1.x, r2.x);
+    const y1 = Math.min(r1.y, r2.y), y2 = Math.max(r1.y, r2.y);
+    const z1 = Math.min(r1.z, r2.z), z2 = Math.max(r1.z, r2.z);
+    if (p.x < x1 || p.x > x2 || p.y < y1 || p.y > y2 || p.z < z1 || p.z > z2) return false;
+  }
+  if (pred.within != null) {
+    if (!selfPos || !e.position || dist2(selfPos, e.position) > Number(pred.within) ** 2) return false;
+  }
+  if (pred.holding != null) {
+    const it = equipOf(e, 'hand');
+    if (!(it && CANON(it.name) === pred.holding)) return false;
+  }
+  if (pred.equipment) {
+    for (const [slot, want] of Object.entries(pred.equipment)) {
+      const got = equipOf(e, slot);
+      if (want === false) {
+        if (got) return false;
+      } else if (typeof want === 'string') {
+        if (!(got && CANON(got.name) === want)) return false;
+      }
+    }
+  }
+  return true;
+}
+
 export class MineflayerDriver {
   constructor({ log = console.log } = {}) {
     this.log = log;
@@ -295,9 +344,9 @@ export class MineflayerDriver {
     this.emit('self', { ...s, inv: this.invSnapshot });
   }
 
-  snapshotOf(e) {
+  /** 公共字段（core/full 投影共享；装备由调用方按投影补齐） */
+  commonOf(e) {
     const isPlayer = e.type === 'player';
-    const eq = e.equipment ?? [];
     return {
       id: e.id,
       uuid: e.uuid ?? null,
@@ -312,14 +361,6 @@ export class MineflayerDriver {
       effects: Object.values(e.effects ?? {}).map((x) => ({
         id: x.id ?? x.effectId ?? null, amplifier: x.amplifier ?? 0, duration: x.duration ?? 0,
       })),
-      equipment: {
-        hand: itemOf(eq[0] ?? e.heldItem),
-        offhand: itemOf(eq[1]),
-        boots: itemOf(eq[2]),
-        leggings: itemOf(eq[3]),
-        chestplate: itemOf(eq[4]),
-        helmet: itemOf(eq[5]),
-      },
       pose: e.pose ?? null,
       flags: {
         on_fire: e.onFire ?? null,
@@ -332,34 +373,70 @@ export class MineflayerDriver {
     };
   }
 
+  fullEquipmentOf(e) {
+    const eq = e.equipment ?? [];
+    return {
+      hand: itemOf(eq[0] ?? e.heldItem),
+      offhand: itemOf(eq[1]),
+      boots: itemOf(eq[2]),
+      leggings: itemOf(eq[3]),
+      chestplate: itemOf(eq[4]),
+      helmet: itemOf(eq[5]),
+    };
+  }
+
+  /** core 投影：装备只留 {id,count}（组件展开由脚本按需 item.stack，见 PERF-REFACTOR P1） */
+  coreEquipmentOf(e) {
+    const eq = e.equipment ?? [];
+    const slim = (it) => (it ? { id: CANON(it.name), count: it.count } : null);
+    return {
+      hand: slim(eq[0] ?? e.heldItem),
+      offhand: slim(eq[1]),
+      boots: slim(eq[2]),
+      leggings: slim(eq[3]),
+      chestplate: slim(eq[4]),
+      helmet: slim(eq[5]),
+    };
+  }
+
+  snapshotOf(e) {
+    return { ...this.commonOf(e), equipment: this.fullEquipmentOf(e) };
+  }
+
+  coreSnapshotOf(e) {
+    return { ...this.commonOf(e), equipment: this.coreEquipmentOf(e) };
+  }
+
   query_entities(filter = {}) {
     const bot = this.bot;
     if (!bot?.entities) return [];
-    const wantType = filter.type == null ? null : String(filter.type);
-    const within = filter.within == null ? null : Number(filter.within);
+    const pred = filter.pred ?? null;
+    const wantType = filter.type != null ? String(filter.type) : (pred?.type != null ? String(pred.type) : null);
+    const within = filter.within != null ? Number(filter.within) : (pred?.within != null ? Number(pred.within) : null);
+    const projection = String(filter.projection ?? 'full') === 'core' ? 'core' : 'full';
     const selfPos = bot.entity?.position;
-    const out = [];
+    const matched = [];
     for (const e of Object.values(bot.entities)) {
       if (e === bot.entity || !e.position) continue;
-      // 与服务端同一口径的 Entity.type；高频 entity.nearest 脚本只取 players 时
-      // 不必把 187 个实体全量序列化过 WASM（这是脚本运行时 CPU 的主因）
-      const rawType = String(e.type ?? '');
-      const snapType = rawType === 'player' ? 'player'
-        : (rawType.includes(':') ? rawType : `minecraft:${e.name ?? rawType}`);
-      if (wantType != null && snapType !== wantType) continue;
-      if (within != null && selfPos && Number.isFinite(within)) {
-        const dx = e.position.x - selfPos.x, dy = e.position.y - selfPos.y, dz = e.position.z - selfPos.z;
-        if (Math.sqrt(dx * dx + dy * dy + dz * dz) > within) continue;
-      }
-      out.push(this.snapshotOf(e));
+      if (wantType != null && entityTypeOf(e) !== wantType) continue;
+      const d2 = selfPos ? dist2(selfPos, e.position) : null;
+      if (within != null && Number.isFinite(within) && d2 != null && d2 > within * within) continue;
+      if (pred && !rawPredMatch(e, pred, selfPos)) continue;
+      matched.push({ e, d2 });
     }
-    return out;
+    if (String(filter.order ?? '') === 'distance') {
+      matched.sort((a, b) => (a.d2 ?? Infinity) - (b.d2 ?? Infinity));
+    }
+    const limit = filter.limit == null ? null : Math.max(0, Number(filter.limit) || 0);
+    const picked = limit == null ? matched : matched.slice(0, limit);
+    const core = projection === 'core';
+    return picked.map(({ e }) => (core ? this.coreSnapshotOf(e) : this.snapshotOf(e)));
   }
 
-  query_entity(id) {
+  query_entity(id, projection = 'full') {
     const e = this.bot?.entities?.[id];
     if (!e || e === this.bot.entity || !e.position) return null;
-    return this.snapshotOf(e);
+    return String(projection) === 'core' ? this.coreSnapshotOf(e) : this.snapshotOf(e);
   }
 
   bindChat() {
