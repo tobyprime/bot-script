@@ -21,16 +21,19 @@ public class BotConfig {
     // ---- policy ----
     public double[] fenceMin = null, fenceMax = null;         // [x,z] 围栏
     public Integer budgetActionsPerHour = null;
+    public Double rateActionsPerSec = null;                   // boundary.rate.actions_per_sec
+    public Boolean allowMove = null;                          // boundary.allow_move
     public List<String> chatCommandsWhitelist = new ArrayList<>();
-    public String chatSayRate = "10/min";                     // "N/min" | "N/s"
-    public List<String> authorityOwner = new ArrayList<>();
-    public List<String> authorityOp = new ArrayList<>();
-    public List<String> authorityWhitelist = new ArrayList<>();
-    public String blocksDig = null;                           // null/未授权 = 禁止；"allow" = 授权
-    public String blocksPlace = null;
-    public String combatTargets = null;                       // 子串匹配实体 type；null = combat 未授权
+    public List<String> chatCommandsDeny = new ArrayList<>();
+    public List<String> chatCommandsAllow = new ArrayList<>();
+    public String chatSayRate = null;                         // "N/min" | "N/s"；null = 不限
+    public String blocksDig = null;                           // null = 允许；"deny" 才禁止
+    public String blocksPlace = null;                          // null = 允许；"deny" 才禁止
+    public String containers = null;                          // null = 允许；"deny" 才拒绝
+    public boolean containersConfigured = false;
+    public String combatTargets = null;                       // 子串匹配实体 type；null = 不限制目标
     public Double combatMaxEngage = null;
-    /** 实例是否配置了 boundary（DESIGN §5.1：false = 观察模式，动作默认全拒） */
+    /** 实例是否配置了 boundary（只用于诊断展示；缺省 = 不限制） */
     public boolean boundaryConfigured = false;
 
     public static BotConfig fromJson(JsonObject o) {
@@ -48,8 +51,8 @@ public class BotConfig {
     }
 
     /**
-     * 实例边界（boundary，DESIGN §5.1/§6）：来自实例部署配置（fabric = 游戏目录 config），
-     * 不来自脚本包清单。调用即视为"已配置 boundary"（否则观察模式：动作全拒）。
+     * 实例边界（boundary）：来自实例部署配置（fabric = 游戏目录 config），
+     * 不来自脚本包清单。缺省 = 不限制；显式字段才收紧动作。
      */
     public void applyBoundary(JsonObject p) {
         boundaryConfigured = true;
@@ -65,30 +68,34 @@ public class BotConfig {
         if (p.has("budget") && p.getAsJsonObject("budget").has("actions_per_hour")) {
             budgetActionsPerHour = p.getAsJsonObject("budget").get("actions_per_hour").getAsInt();
         }
+        if (p.has("rate") && p.getAsJsonObject("rate").has("actions_per_sec")) {
+            rateActionsPerSec = p.getAsJsonObject("rate").get("actions_per_sec").getAsDouble();
+        }
+        if (p.has("allow_move") && !p.get("allow_move").isJsonNull()) {
+            allowMove = p.get("allow_move").getAsBoolean();
+        }
+        if (p.has("containers") && !p.get("containers").isJsonNull()) {
+            containersConfigured = true;
+            containers = asAuth(p.get("containers"));
+        }
         if (p.has("chat")) {
             JsonObject ch = p.getAsJsonObject("chat");
             if (ch.has("commands")) {
                 for (var e : ch.getAsJsonArray("commands")) chatCommandsWhitelist.add(e.getAsString());
             }
+            if (ch.has("commands_deny")) {
+                for (var e : ch.getAsJsonArray("commands_deny")) chatCommandsDeny.add(e.getAsString());
+            }
+            if (ch.has("commands_allow")) {
+                for (var e : ch.getAsJsonArray("commands_allow")) chatCommandsAllow.add(e.getAsString());
+            }
             if (ch.has("say_rate")) chatSayRate = ch.get("say_rate").getAsString();
             if (ch.has("msg_command")) msgCommand = ch.get("msg_command").getAsString();
         }
-        if (p.has("authority")) {
-            JsonObject a = p.getAsJsonObject("authority");
-            for (var e : a.entrySet()) {
-                for (var v : e.getValue().getAsJsonArray()) {
-                    switch (e.getKey()) {
-                        case "owner" -> authorityOwner.add(v.getAsString());
-                        case "op" -> authorityOp.add(v.getAsString());
-                        case "whitelist" -> authorityWhitelist.add(v.getAsString());
-                    }
-                }
-            }
-        }
         if (p.has("blocks")) {
             JsonObject b = p.getAsJsonObject("blocks");
-            if (b.has("dig")) blocksDig = b.get("dig").getAsString();
-            if (b.has("place")) blocksPlace = b.get("place").getAsString();
+            if (b.has("dig") && !b.get("dig").isJsonNull()) blocksDig = asAuth(b.get("dig"));
+            if (b.has("place") && !b.get("place").isJsonNull()) blocksPlace = asAuth(b.get("place"));
         }
         if (p.has("combat")) {
             JsonObject cb = p.getAsJsonObject("combat");
@@ -100,5 +107,12 @@ public class BotConfig {
     public boolean inFence(double x, double z) {
         if (fenceMin == null) return true;
         return x >= fenceMin[0] && x <= fenceMax[0] && z >= fenceMin[1] && z <= fenceMax[1];
+    }
+
+    /** 授权字段：true / "allow" / 任意非 deny 值都写成一个字符串，Policy 统一解释 */
+    private static String asAuth(com.google.gson.JsonElement e) {
+        return e.isJsonPrimitive() && e.getAsJsonPrimitive().isBoolean()
+                ? (e.getAsBoolean() ? "allow" : "deny")
+                : e.getAsString();
     }
 }

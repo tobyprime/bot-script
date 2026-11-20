@@ -20,7 +20,7 @@ public final class ScriptPackageLoader {
     /** 加载结果：配置 + 入口/模块 lua 文件 */
     public static final class Loaded {
         public BotConfig config = new BotConfig();
-        public List<LuaHost.ScriptFile> scripts = new ArrayList<>();
+        public List<LuaRuntime.ScriptFile> scripts = new ArrayList<>();
         public String entryName;
     }
 
@@ -33,7 +33,7 @@ public final class ScriptPackageLoader {
             try (var stream = Files.list(packageDir)) {
                 List<Path> lua = stream.filter(p -> p.toString().endsWith(".lua")).sorted().toList();
                 for (int i = 0; i < lua.size(); i++) {
-                    out.scripts.add(new LuaHost.ScriptFile(
+                    out.scripts.add(new LuaRuntime.ScriptFile(
                             packageDir.relativize(lua.get(i)).toString(), Files.readString(lua.get(i)), i == 0));
                 }
             }
@@ -50,7 +50,7 @@ public final class ScriptPackageLoader {
         if (yaml.get("params") instanceof Map<?, ?> pm) {
             for (var e : pm.entrySet()) {
                 cfg.params.put(String.valueOf(e.getKey()),
-                        com.google.gson.JsonParser.parseString(LuaHost.toJson(e.getValue() == null ? null : e.getValue())));
+                        com.google.gson.JsonParser.parseString(LuaRuntime.toJson(e.getValue() == null ? null : e.getValue())));
             }
         }
 
@@ -66,7 +66,7 @@ public final class ScriptPackageLoader {
         for (String s0 : scripts) {
             Path f = packageDir.resolve(s0).normalize();
             if (!Files.exists(f)) throw new IllegalArgumentException("脚本不存在: " + s0);
-            out.scripts.add(new LuaHost.ScriptFile(s0, Files.readString(f), true));
+            out.scripts.add(new LuaRuntime.ScriptFile(s0, Files.readString(f), true));
         }
         // 兄弟模块（入口所在目录其余 .lua，供 require）
         Path entryDir = packageDir.resolve(scripts.get(0)).normalize().getParent();
@@ -75,7 +75,7 @@ public final class ScriptPackageLoader {
                 for (Path f : stream.filter(p -> p.toString().endsWith(".lua")).sorted().toList()) {
                     String rel = packageDir.relativize(f).toString();
                     boolean isEntry = scripts.stream().anyMatch(s0 -> packageDir.resolve(s0).normalize().equals(f));
-                    if (!isEntry) out.scripts.add(new LuaHost.ScriptFile(rel, Files.readString(f), false));
+                    if (!isEntry) out.scripts.add(new LuaRuntime.ScriptFile(rel, Files.readString(f), false));
                 }
             }
         }

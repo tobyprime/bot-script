@@ -3,6 +3,14 @@
 > 一套描述 Minecraft bot 行为的脚本语言与运行时，使**同一份脚本**可以安全可控地跑在不同 MC 版本、不同宿主上：
 > 基于 mod 的 Fabric/Java 客户端、基于协议的 mineflayer / mcc。
 
+> **实现状态（v0.2，2026-11）**：本文的「共享纯 Lua 核心 + 多宿主」决策未变，但边界契约已按
+> `ARCHITECTURE-REFACTOR.md` 落地为**契约先行**：`contracts/host-abi.yaml` 是 op/参数/gate 的唯一真源，
+> 四份生成物（Lua bridge / Node op 表 / Java op 表 / bot-api.d.lua）由 `tools/codegen.mjs` 产出；
+> Lua 唯一源码在 `runtime/lua/core`（LuaJ 补丁在 `runtime/lua/compat/luaj.lua`）；
+> Node 宿主实现在 `hosts/node/`（engine.js 仅为 <300 行组装），Fabric 宿主为
+> `AbiDispatcher / McState / LuaRuntime / DataRegistry / HttpApi`。
+> 下文出现的 `engine.js`/`LuaHost`/`CommandBus` 等名称属于历史描述，对应的新实现见 README 的目录结构。
+
 ---
 
 ## 0. 目标与非目标
@@ -33,19 +41,19 @@
   bslib.lua       行为策略（withdraw/deposit · equip_best · companion …）
 
 宿主 = 原生桥 + 内嵌 Lua（各自独立进程，即 bot 本体）
-  mineflayer 宿主   Node 程序：wasmoon + engine.js `__` 桥（14 动词实现）
-  fabric mod        JVM：Luaj（LuaHost `__` 桥）+ McRuntime + GUI 管理界面（支持 1.21.8~26.2）
+  mineflayer 宿主   Node 程序：wasmoon + engine.js `__` 桥（契约 op 表生成）
+  fabric mod        JVM：Luaj（LuaRuntime `__` 桥）+ McRuntime + GUI 管理界面（支持 1.21.8~26.2）
   mcc 宿主（规划）   C#：MoonSharp/NLua 桥 + 动作实现
 
 每宿主内置协议通用 HTTP API（常开、只绑 127.0.0.1、token 启动时生成并打印，规格见 CAPABILITIES.md §17）
-  /state /params /cmd /tasks /logs /persist /caps —— 测试、面板、MCP 同一入口
+  /state /params /pause /resume /tasks /logs /persist /caps —— 测试、面板、MCP 同一入口
 ```
 
 ### 为什么放弃"单引擎 + 驱动协议"（v1 → v2 演进）
 
-- **Lua 是唯一三栈都有成熟嵌入器的语言**（wasmoon/Node · Luaj/JVM · MoonSharp/C#）：把逻辑放进共享 Lua 文件，原生面收窄到"桥 + 14 动词"，可移植性不靠协议靠**共享文件**；
+- **Lua 是唯一三栈都有成熟嵌入器的语言**（wasmoon/Node · Luaj/JVM · MoonSharp/C#）：把逻辑放进共享 Lua 文件，原生面收窄到"桥 + 契约 op 表"，可移植性不靠协议靠**共享文件**；
 - **无进程拓扑**：部署 = mods 文件夹（或一个可执行文件）+ 脚本包目录；无 WS 层、无跨进程延迟、无"引擎进程挂了 bot 呆滞"的故障面；
-- v1 驱动协议实现已清除（`mod/legacy-ws-client/`、`drivers/fabric` WS 服务端、`test/fabric-live.js` 均已删除）；语义对齐经验沉淀为共享测试锁（`LuaHostTest` / `RuntimeP2Test` 模式）。
+- v1 驱动协议实现已清除（`mod/legacy-ws-client/`、`drivers/fabric` WS 服务端、`test/fabric-live.js` 均已删除）；语义对齐经验沉淀为共享测试锁（`LuaRuntimeTest` / `RuntimeContractTest` 模式）。
 
 ### 宿主分层（原"驱动协议"职责，进程内化为桥）
 
@@ -53,8 +61,8 @@
 |---|---|
 | 连接 | 登录 / keepalive / 重连 / 版本与能力（feature flags）上报 |
 | 数据面（入） | 包流 → 规范化事件 schema：世界更新、实体流、自身状态、窗口内容、聊天/HUD、kick/teleport（纯翻译，无逻辑） |
-| 动作面（出） | **14 个动词**：chat.send / window.open·close·click / use_entity / use_block / use_item / dig / rot / move_input / hop / respawn（+可选 path_to·cancel）；策略门控与限速在 Lua 核心执行 |
-| 可选智能 | 寻路器（Baritone / mineflayer-pathfinder / mcc 内建）；缺失时基于 move_input + 世界缓存朴素降级（P2） |
+| 动作面（出） | **按原版发包建模**：`act.look`（rotation）/ `act.input`（player_input 状态位）/ `act.dig`·`act.dig_stop`（player_action）/ `act.use_block`（interact + face/cursor/intent）/ `act.use_entity`（attack/interact/interact_at）/ `act.swing` / `act.use_item`（start·release）/ `act.select_slot` / `act.drop` / 窗口 click（state_id）/ `act.chat_send`（chat·command·reply）；策略门控与限速在宿主 dispatch 一处执行 |
+| 可选智能 | 寻路器（Baritone / mineflayer-pathfinder / mcc 内建）；缺失时核心做 `act.input` + `act.look` 直线退化（P2） |
 
 > 完整动词表与宿主实现量评估见 `CAPABILITIES.md` §14；HTTP 控制通道规格见 §17。
 
@@ -86,22 +94,24 @@
 
 规则细则：
 
-1. **动作 vs 查询**：动作型调用（`goto/open/attack/say/use_item…`）挂起协程直到完成，失败抛类型化错误（§7 故障模型）；查询型调用（`pos/health/slots/block…`）立即返回（读引擎缓存）。两类在 stub 注解与文档中显式区分。
+1. **动作 vs 查询**：动作型调用（`goto/open/attack/say/use_item…`）挂起协程直到完成，返回**跨平台 Result**（`{ok=true,value}` / `{ok=false,error={code,message}}`），确定性失败不再抛异常；查询型调用（`pos/health/slots/block…`）立即返回原值（读引擎缓存）。两类在 stub 注解与文档中显式区分。
 2. **并发 = 任务**：事件处理器被引擎 spawn 成任务（处理器内可挂起而不阻塞其他事件）；单线程协作式，脚本间无数据竞争、不需要锁。互斥仅限少数天然排他资源（移动路径、容器窗口）；朝向 yaw/pitch 是无状态写入（last-writer-wins），多任务并行操控身体无需许可（CAPABILITIES.md §3.1）。周期任务防重入：在任务声明处 `task("organize", { single = true }, fn)`，重复触发被丢弃。
 3. **循环即状态机**：反应式行为（追杀）用任务内 `while` 循环表达，不用事件接力；目标移动导致 goto 失败 → 循环自然重试。反之，顺序流程禁止手写状态机（风格指引）。
 4. **等待原语**：`wait_until(pred, {timeout, poll})`、`await_chat(rex"…", timeout)`、`time.sleep(d)`；事件订阅（`entity.gone` 等）留给"不属于任何任务的全局反应"。
 5. **结构化并发组合子**（bslib）：`parallel{f, g}` 全完成；`race{f, g}` 先完成者胜、另一个被取消；`with_timeout(d, f)`。
-6. **取消是特殊错误**：在下一个挂起点注入任务；取消错误带**来源标记**——`race`/`parallel` 只吞自己子分支的取消，父任务/外部取消穿透一切组合子；`parallel` 任一分支真实错误 → 取消其余、重抛首错。原生 `pcall` 会误捕取消（lint 对"包裹挂起点的裸 pcall"告警），脚本用 `try{ … }` 糖（自动重抛 `task.cancelled`）；`on_cancel(fn)` 做清理（关窗口、停走）。
+6. **取消是独立的控制事件**：在下一个挂起点展开当前任务；取消带**来源标记**——`race`/`parallel` 只吞自己子分支的取消，父任务/外部取消穿透一切组合子；取消不是 Result 错误、不进 `on_error`。`parallel` 任一分支 Lua 原生错误 → 取消其余、重抛首错。原生 `pcall` 会误捕取消（lint 对"包裹挂起点的裸 pcall"告警），脚本用 `try{ … }` 糖（自动重抛 `task.cancelled`）；`on_cancel(fn)` 做清理（关窗口、停走）。
 7. **纪律与后盾**：循环体内必须有挂起点——静态 lint 警告 + 引擎指令预算硬保底（`debug.sethook`）；有 `wait_until` 不写 sleep 轮询（lint 保守警告）；确定性原则不变（脚本侧纯逻辑确定，世界输入异步到达；dry-run 只记日志不执行）。
 
 ### 2.3 语法要点与能力面
 
 - **数据**：Lua 原生值 + 引擎记录类型（`vec3 / blockpos / region / duration / itemstack / window / entity / task`；活体句柄语义见 CAPABILITIES.md §2）。物品过滤就是普通 table 或谓词函数，无专门类型。
-- **声明式注册层**：`params{…}`（**统一参数**，元数据 `type/default/help/visible/perm`，无静态 config）、`persist.table/log/kv`、`task "名" function() … end`、`on_start / on_pause / on_resume / on_command / on_chat / on_timer / on_cancel`——加载期完成 schema 校验、权限标注、静态检查挂钩。
+- **声明式注册层**：`params{…}`（**统一参数**，元数据 `type/default/help/visible/perm`，无静态 config）、`persist.table/log/kv`、`task "名" function() … end`、`on_start / on_pause / on_resume / on_chat / on_timer / on_cancel`——加载期完成 schema 校验、权限标注、静态检查挂钩。**没有命令声明层**（无 `on_command` / 命令参数注入）。
 - **模块系统**：标准 `require`（模块 = 返回 table 的 Lua 文件，`package.loaded` 缓存），但 `package.searchers` 由引擎替换——仅允许 bslib（`package.preload` 预载）与本实例脚本目录，其余拒绝；每个脚本实例持有独立 `package.loaded`（脚本间状态隔离；热重载=引擎清缓存后重 require）。**文件一律 `.lua`**；"入口 vs 模块"按角色区分——入口 = `bot.yaml` `scripts:` 列出的文件，模块 = require 图可达的其余文件；声明层（params/persist/on_*）只允许出现在入口，静态检查按角色套规则，与扩展名无关。
-- **错误模型**：类型化错误（`nav.unreachable / container.closed / permission.denied / timeout …`）；`guard(cond, fn)` 守卫助手；`try{…}` 糖自动重抛取消错误。
+- **错误模型**：动作/ABI 失败 = Result（`error.code` 稳定跨宿主：`nav.unreachable / container.missing / permission.denied / policy.blocklist / runtime.paused / internal …`）；Lua 原生 `error()` 与守卫 `guard(cond, fn)` 仍按任务级失败处理；`try{…}` 糖自动重抛取消。
 - **能力面**：`nav / world / entity / container / inv / combat / chat / self / session / msg / time / task / log / persist / params / caps` 命名空间注入环境；行为策略复合在引擎自带的 **bslib** 库（Lua 源码随引擎分发，可读可覆盖，见 CAPABILITIES.md §13）。**能力 API 权威版本见 `CAPABILITIES.md`。**
-- **知识内置于引擎**：攻击力/堆叠上限/工具速度等由引擎按服务端版本选数据表（`data.stack_size(id)`、`data.weapon_score(id)`），脚本与驱动均不做版本判断。
+- **物品知识来自 ItemStack 组件**：堆叠上限 `max_stack_size`、耐久 `max_damage/damage`、攻击属性
+  `attribute_modifiers`（attack_damage/attack_speed）都从 `item.stack` 读，**不按 item id 查表、不做版本判断**；
+  跨宿主只共享非物品数据（容器方块表）。
 
 ### 2.4 四场景样例（Lua 定稿语法）
 
@@ -132,14 +142,18 @@ params {
   home      = { type = "blockpos", visible = true },   -- 残血撤退点
 }
 
-on_command("kill <target:player>", { perm = "pvp" }, function(a)
-  if contains(params.blacklist, a.target) then chat.reply("拒绝执行") return end
-  local t = entity.nearest{ type = "player", name = a.target, alive = true, within = params.range }
-  if not t then chat.reply("找不到 " .. a.target) return end
+on_chat(rex"^!kill (?<target>\w+)$", { source = "player" }, function(m)
+  if not is_op(m.sender) then chat.reply("拒绝执行") return end   -- is_op：脚本自管的名单
+  if contains(params.blacklist, m.target) then chat.reply("拒绝执行") return end
+  local t = entity.nearest{ type = "player", name = m.target, alive = true, within = params.range }
+  if not t then chat.reply("找不到 " .. m.target) return end
   task.spawn("hunt", t)
 end)
 
-on_command("stop", { perm = "pvp" }, function() task.cancel_all() end)  -- 全局急停
+on_chat(rex"^!stop$", { source = "player" }, function(m)
+  if not is_op(m.sender) then return end
+  task.cancel_all()                                  -- 全局急停（急停本身仍是宿主 pause）
+end)
 
 task("hunt", function(t)
   while entity.exists(t) and t.alive do
@@ -209,19 +223,21 @@ on_chat(rex"^(?<from>\w+) 存入了? ?(?<amount>\d+)$", { source = "system" }, f
   end)
 end)
 
-on_command("pay <to:player> <amount:number>", { perm = "bank" }, function(a)
-  local pay_id
-  txn(function()                                       -- 条件原子扣减：并发命令不双花
-    if not Account.adjust_if(a.to, function(acc) return acc.balance >= a.amount end, -a.amount) then
+on_chat(rex"^pay (?<to>\w+) (?<amount>\d+)$", { source = "player" }, function(m)
+  if not contains(params.bank_ops, m.sender) then chat.reply("权限不足") return end
+  local pay_id, to, amount = nil, m.to, tonumber(m.amount)
+  txn(function()                                       -- 条件原子扣减：并发请求不双花
+    if not Account.adjust_if(to, function(acc) return acc.balance >= amount end, -amount) then
       chat.reply("余额不足") return
     end
-    pay_id = Intent.append{ kind = "pay", player = a.to, amount = a.amount, state = "pending" }
+    pay_id = Intent.append{ kind = "pay", player = to, amount = amount, state = "pending" }
   end)
   if not pay_id then return end
-  chat.run_command("/pay " .. a.to .. " " .. a.amount)
-  local ok = await_chat(rex("已向\\s+" .. a.to), sec(5))  -- 等回执；超时 ok = nil
-  Intent.mark(pay_id, ok and "done" or "pending")
-  if not ok then chat.reply("支付确认超时，已挂账待对账") end
+  chat.run_command("/pay " .. to .. " " .. amount)
+  local rr = await_chat(rex("已向\\s+" .. to), sec(5))  -- Result；超时 value = nil
+  local got = rr.ok and rr.value ~= nil
+  Intent.mark(pay_id, got and "done" or "pending")
+  if not got then chat.reply("支付确认超时，已挂账待对账") end
   -- 超时**不回滚**（超时 ≠ 失败）：迟到回执由 "已向 <player>" 回执处理器按 id 核销，
   -- 杜绝"已回滚 + 迟到回执"双重入账；真失败由运维对账处理（宁可挂账，不可双花）
 end)
@@ -270,7 +286,7 @@ end)
 ## 4. 运行时
 
 - **调度**：事件循环 + 协程任务；任务有优先级；**资源仲裁**——"移动权"与"容器会话"是互斥资源，被占默认排队，`{steal=true}` 可抢占；实例级 **pause 门控**冻结一切任务（不经仲裁）。
-- **暂停**：pause = 冻结全部任务于挂起点 + 停走 + 停 timer + 告警；进行中的移动调用以 `runtime.paused` 失败（任务不销毁，恢复时于冻结点重抛走正常重试）。触发：内建 pause 命令、围栏越界、budget 耗尽、断线自动暂停；resume 反向恢复。脚本挂 `on_pause`/`on_resume` 做清理与重检。
+- **暂停**：pause = 冻结全部任务于挂起点 + 停走 + 停 timer + 告警；进行中的移动调用以 `runtime.paused` 失败（任务不销毁，恢复时于冻结点重抛走正常重试）。触发：宿主 `/pause`、围栏越界、budget 耗尽、断线自动暂停；`/resume` 反向恢复。脚本挂 `on_pause`/`on_resume` 做清理与重检。
 - **看门狗**：任务级进度检测（`task.progress` 自报为准，默认信号兜底；连续无净进度 → 取消该任务 + 告警）；全局指令预算与墙钟超时（耗尽 → 自动 pause + 告警）。
 - **可观测**：每个能力调用记结构化日志（任务、参数、结果、耗时）；任务状态可导出；JSONL 动作日志支持回放；dry-run。
 - **热重载**：脚本变更后新任务用新代码，运行中任务可选迁移（到达操作边界后切新版本）或保持旧版本至结束。
@@ -279,21 +295,21 @@ end)
 
 ## 5. 安全、策略与持久化
 
-### 5.1 策略层（实例部署配置，宿主强制，默认全拒）
+### 5.1 策略层（实例部署配置，宿主强制，默认开放）
 
 边界由**实例部署配置**授予（每服务器/每世界一份，§6），不由脚本包携带——包跨服务器通用，边界随环境走。宿主强制执行，脚本不可绕过：
 
 ```
 movement:  region fence（活动围栏；越界 → 引擎自动 pause + 告警，可恢复）
-blocks:    dig/place 授权（未授即禁）
-combat:    目标黑/白名单、攻击对象类型
-chat:      say/run_command 限速；命令白名单（首词元精确匹配：/pay 不放行 /payday）
-authority: 命令发送者权限（console > owner > 白名单玩家）；内建 pause/resume/status——
-           急停 = pause（冻结全部任务、停走、告警，resume 可恢复）；无 panic 关键词、无硬中止
+blocks:    dig/place 门控（缺省允许；显式 false/deny 才禁）
+combat:    配置 targets 后才限制攻击对象类型；max_engage 可选
+chat:      act.chat_send 按 kind 限速：chat/reply = say_rate（缺省不限）；command = 命令白名单（非空才限制）
+container: 容器访问门控（缺省允许；显式 false/deny 才拒）
 budget:    每任务/每小时动作次数与时长上限；耗尽 → 自动 pause + 告警
 ```
 
-**默认全拒**：部署者未配置的边界一律按最保守处理——无任何 boundary 的实例即观察模式
+**默认开放**：boundary 或字段未配置 = 不限制；只有显式写入的字段才收紧动作。
+平台不内置 owner/op/白名单判定——聊天控制的权限模型由脚本自己实现（参数、KV 或代码常量）。
 （查询与 params 可用，一切动作被拒）。把边界从包里拿走不是把安全拿走，而是把授权责任交给部署者。
 策略违规对脚本表现为可捕获的 `permission.denied`（脚本可优雅处理）；越界/预算耗尽为引擎自动 pause（任务冻结不销毁，可恢复）。
 
@@ -308,17 +324,17 @@ budget:    每任务/每小时动作次数与时长上限；耗尽 → 自动 pa
 
 - **无静态 config**：只有一套 `params`，全部可运行期修改；schema 由脚本声明（`type/default/help/visible/perm`）。
 - **初值与优先级**：包 schema 默认值 < 运行期持久化值（被显式设置过的值重启保留）。部署配置不携带业务参数——实例事实住持久化里，部署时经任意控制渠道设一次即可。
-- **修改渠道按 `visible` 划分**：`visible=true` → 驱动人机界面可直接改（fabric mod 的 GUI 设置页、mcc 的 `param get/set` 命令）；`visible=false` → 仅引擎控制 API（CLI / HTTP /cmd 总线）。所有渠道进入同一控制总线：`perm` 鉴权 + schema 校验 + 持久化。
+- **修改渠道按 `visible` 划分**：`visible=true` → 驱动人机界面可直接改（fabric mod 的 GUI 设置页、mcc 的 `param get/set`）；`visible=false` → 仅引擎控制 API（CLI / HTTP `/params`）。所有渠道进入同一 `params.set` 管线：schema 校验 + 持久化（脚本侧可挂校验钩）。
 - fabric GUI 的写入以驱动通道的权限身份进入控制总线（默认 owner 级，可配置）。
 - **函数型参数**（过滤器谓词）无法经 yaml/CLI 表达，只能作为脚本内默认值；schema 校验对 table 型做结构校验。
 - **热生效契约**：脚本每次读取取当前值（`params.input`），不做快照；需要稳定的旧值时由脚本自行局部保存。
 
 ### 5.4 控制：平台原生方案 + 协议通用 HTTP API
 
-控制面分两层，最终进入同一条命令总线、同一 authority 鉴权：
-- **平台原生控制方案**（人的日常入口）：fabric/游戏内 = 聊天命令 + Mod Menu 设置页；mineflayer = 宿主 CLI；mcc = 自身控制台。
-- **协议通用 HTTP API**（程序化入口，三宿主同 schema，规格见 CAPABILITIES.md §17）：MCP/agent/面板用它读状态、改 params、发命令、拉日志、查持久化表——验收全程无头。HTTP API 宿主**常开**（只绑 127.0.0.1），端口/token 自动管理，不在任何配置里声明。
-引擎内建命令：**pause / resume / status**（不经脚本，perm 默认 owner）——急停即 pause，无 panic 关键词。
+控制面分两层，最终进入同一套 HTTP/控制通道、同一 Bearer token 鉴权：
+- **平台原生控制方案**（人的日常入口）：fabric/游戏内 = 游戏聊天通道 + Mod Menu 设置页；mineflayer = 宿主 CLI；mcc = 自身控制台。
+- **协议通用 HTTP API**（程序化入口，三宿主同 schema，规格见 CAPABILITIES.md §17）：MCP/agent/面板用它读状态、改 params、暂停/恢复、拉日志、查持久化表——验收全程无头。HTTP API 宿主**常开**（只绑 127.0.0.1），端口/token 自动管理，不在任何配置里声明。
+引擎内建控制：**pause / resume / status**（不经脚本，owner 级）——急停即 pause，无 panic 关键词。
 
 ---
 
@@ -329,7 +345,7 @@ budget:    每任务/每小时动作次数与时长上限；耗尽 → 自动 pa
 | 层 | 内容 | 分发 |
 |---|---|---|
 | **脚本包**（能力自述） | name、scripts、params schema（含默认值）、persist 声明 | 随包分发，跨服务器通用 |
-| **实例边界**（授权） | fence、dig/place、combat 规则、chat 限速与命令白名单、authority 名单 | 每服务器/每世界一份 |
+| **实例边界**（限制） | fence、dig/place、combat 规则、chat 限速与命令白名单（全部可选；缺省不限制） | 每服务器/每世界一份 |
 | **连接**（宿主部署） | 服务器地址、账号凭据 | 宿主各平台原生形态 |
 
 ```yaml
@@ -348,9 +364,9 @@ package: ./hauler-1                # 指向脚本包
 server: 127.0.0.1:25565
 account: bot1                      # 凭据：用户名（offline）| {username, password}（微软 OAuth）
                                    # | {auth: session, username, uuid, accessToken}（托管平台注入，引擎不做 OAuth）
-boundary:                          # 授权边界：默认全拒，未授即禁（§5.1）
+boundary:                          # 限制边界：全部可选，缺省不限制（§5.1）
   fence: [[80,-30],[140,20]]
-  allow_move: true                 # 移动总开关：false 同时禁用 nav_goto/nav_follow/hop
+  allow_move: true                 # 移动总开关：false 同时禁用 nav.walk/nav.follow/nav.hop
   blocks: { dig: deny, place: deny }
   rate: { actions_per_sec: 20 }    # 每秒发包上限；省略 = 不限（与 budget.actions_per_hour 分工不同）
   chat:
@@ -359,7 +375,6 @@ boundary:                          # 授权边界：默认全拒，未授即禁�
     commands_deny: ["^/gamemode\\s+creative"] # 正则黑名单（命中即拒，先于 allow）
     commands_allow: ["^/msg\\s+.*"]           # 正则白名单（非空时必须命中其一）
   budget: { actions_per_hour: 20000 }         # 每小时总量；超额整实例 pause
-  authority: { op: ["Steve"] }
 ```
 
 **边界分层**：`chat.commands`（精确）→ `commands_deny`（正则）→ `commands_allow`（正则），逐层只能更严，
@@ -369,7 +384,7 @@ boundary:                          # 授权边界：默认全拒，未授即禁�
 **不多配的**：业务参数不在部署配置里——包给默认，运行期经控制渠道设置后持久化，持久化值即实例事实；
 HTTP API 是宿主常开能力（只绑 127.0.0.1、默认端口冲突自动顺延、token 启动时生成并打印到控制台/日志），
 绑定覆盖属宿主启动参数（env），不存在于任何通用配置。
-**默认全拒**：包不含任何授权；无 boundary 的实例即观察模式。宿主强制执行边界（脚本不可绕过，§5.1）。
+**默认开放**：包不含任何边界；未配置 boundary 的实例不限制动作，显式字段才收紧。宿主强制执行边界（脚本不可绕过，§5.1）。
 （实现现状（已落地）：mineflayer 宿主以**部署配置 yaml** 启动（`node engine/cli.js run/bank-demo.yaml`），
 包清单从 `package:` 目录加载；`persist:` 相对路径由宿主解析到**实例数据根**（部署文件所在目录）；
 fabric 宿主实例配置 = `<游戏目录>/config/botscript-mod.json`（package + boundary）。）

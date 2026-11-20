@@ -12,6 +12,8 @@ params {
   partial_chests = { type = "list<blockpos>", default = {}, visible = true,
                      help = "手工登记的不满盒（控制通道可增删，持久化）" },
   paused         = { type = "bool", default = false, visible = true, help = "暂停整理" },
+  ops            = { type = "string", default = "", visible = true,
+                     help = "控制命令运维名（逗号分隔；留空 = 不校验，示例用）" },
 }
 
 persist.table "ChestNote" {
@@ -66,28 +68,45 @@ end)
 
 on_pause(function() routing.reset_pending() end)   -- 冻结/断线自动 pause：free 全部标记未验证
 
--- ---------- 控制命令（游戏内 / CLI / WS 同一总线、同一鉴权） ----------
-on_command("partial add <pos:blockpos>", { perm = "op" }, function(a)
-  routing.add_partial(a.pos)
-  chat.reply("已登记不满盒 " .. tostring(a.pos))
+-- ---------- 控制（无命令体系：聊天正则 + 脚本自管的 ops 名单） ----------
+local function is_op(sender)
+  local list = params.ops or ""
+  if list == "" then return true end
+  for name in string.gmatch(list, "[^, ]+") do
+    if name == sender then return true end
+  end
+  return false
+end
+local function pos3(m)
+  return { x = tonumber(m.x), y = tonumber(m.y), z = tonumber(m.z) }
+end
+
+on_chat(rex[[^partial add (?<x>-?\d+) (?<y>-?\d+) (?<z>-?\d+)$]], { source = "player" }, function(m)
+  if not is_op(m.sender) then return end
+  routing.add_partial(pos3(m))
+  chat.reply("已登记不满盒 " .. m.x .. " " .. m.y .. " " .. m.z)
 end)
 
-on_command("partial del <pos:blockpos>", { perm = "op" }, function(a)
-  routing.del(a.pos)
-  chat.reply("已移除 " .. tostring(a.pos))
+on_chat(rex[[^partial del (?<x>-?\d+) (?<y>-?\d+) (?<z>-?\d+)$]], { source = "player" }, function(m)
+  if not is_op(m.sender) then return end
+  routing.del(pos3(m))
+  chat.reply("已移除 " .. m.x .. " " .. m.y .. " " .. m.z)
 end)
 
-on_command("stock add <pos:blockpos> <item:item>", { perm = "op" }, function(a)
-  routing.add_stock(a.pos, a.item)
-  chat.reply("已登记库存箱 " .. tostring(a.pos) .. " ← " .. a.item)
+on_chat(rex[[^stock add (?<x>-?\d+) (?<y>-?\d+) (?<z>-?\d+) (?<item>\S+)$]], { source = "player" }, function(m)
+  if not is_op(m.sender) then return end
+  routing.add_stock(pos3(m), m.item)
+  chat.reply("已登记库存箱 " .. m.x .. " " .. m.y .. " " .. m.z .. " ← " .. m.item)
 end)
 
-on_command("stock del <pos:blockpos>", { perm = "op" }, function(a)
-  routing.del(a.pos)
-  chat.reply("已移除 " .. tostring(a.pos))
+on_chat(rex[[^stock del (?<x>-?\d+) (?<y>-?\d+) (?<z>-?\d+)$]], { source = "player" }, function(m)
+  if not is_op(m.sender) then return end
+  routing.del(pos3(m))
+  chat.reply("已移除 " .. m.x .. " " .. m.y .. " " .. m.z)
 end)
 
-on_command("organize once", { perm = "op" }, function()
+on_chat(rex[[^organize once$]], { source = "player" }, function(m)
+  if not is_op(m.sender) then return end
   task.spawn("organize")
 end)
 

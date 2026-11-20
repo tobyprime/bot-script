@@ -1,0 +1,9 @@
+{
+  "name": "任务取消先跑清理钩、注入 task.cancelled、不再继续",
+  "script": "on_start(function()\n  task(\"victim\", function()\n    on_cancel(function() log.info(\"cleanup\") end)\n    time.sleep(1000)\n    log.info(\"should-not-run\")\n  end)\n  task.spawn(\"victim\")\n  log.info(\"spawned\")\nend)",
+  "steps": [
+    { "event": ["lifecycle", { "kind": "on_start" }] },
+    { "call": ["tasks.cancel", { "name": "victim" }] }
+  ],
+  "expectLogs": ["info|spawned", "info|任务 [victim] 取消（control）", "info|cleanup"]
+}

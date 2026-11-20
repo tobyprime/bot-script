@@ -1,0 +1,23 @@
+# contracts/events.yaml — 宿主 → 核心事件（__core_event 的 kind 与载荷，唯一真源）
+#
+# 载荷一律 JSON 对象；Lua 侧 __core_event_inner 按 kind 分派到声明层（on_event / on_chat /
+# on_timer / after / 生命周期钩子）。ABI v2 已移除命令事件。未列出的 kind 视为用户自定义事件，
+# 由 on_event(kind, fn) 接收（宿主插件/平台可注入）。
+abi: 2
+
+lifecycle_kinds: [on_start, on_pause, on_resume, on_error]
+
+events:
+  lifecycle:           { payload: "kind: on_start|on_pause|on_resume; payload? (pause/resume reason)", target: 生命周期钩子 }
+  chat:                { payload: "{text, raw, sender, sender_kind, ts}", target: "chat 管线（await_chat / on_chat）" }
+  timer:               { payload: "{id}", target: "on_timer 回调" }
+  after:               { payload: "{id}", target: "after 回调（一次性，触发即注销）" }
+  session.ready:       { payload: "{dimension}", target: "on_event('session.ready')" }
+  nav.failed:          { payload: "{reason, target}", target: "on_event('nav.failed')" }
+  container.closed:    { payload: "{id}", target: "on_event('container.closed')" }
+  world.block_changed: { payload: "{x,y,z,name}", target: "on_event('world.block_changed')" }
+  entity.appeared:     { payload: "{id, type, name}", target: "on_event('entity.appeared')" }
+  entity.gone:         { payload: "{id, type, name}", target: "on_event('entity.gone')" }
+  self.died:           { payload: "{}", target: "on_event('self.died')；宿主负责自动重生" }
+  self.respawned:      { payload: "{}", target: "on_event('self.respawned')" }
+  self.damaged:        { payload: "{amount, health}", target: "on_event('self.damaged')" }

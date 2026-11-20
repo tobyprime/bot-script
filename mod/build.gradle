@@ -37,6 +37,10 @@ processResources {
     filesMatching("fabric.mod.json") {
         expand "version": project.version
     }
+    // 唯一 Lua 源码在 ../runtime/lua（本仓不再提交第二份拷贝；lua-sync 门禁检查其存在性）
+    from("${rootDir}/../runtime/lua") { into "lua" }
+    // 跨宿主共享数据（容器方块表；物品属性已改为读 ItemStack 组件）
+    from("${rootDir}/../contracts/data") { into "botscript-data" }
 }
 
 tasks.withType(JavaCompile).configureEach {

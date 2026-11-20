@@ -2,28 +2,35 @@
 
 [![CI](https://github.com/tobyprime/bot-script/actions/workflows/ci.yml/badge.svg)](https://github.com/tobyprime/bot-script/actions/workflows/ci.yml)
 
-设计文档见 `DESIGN.md`（语言/运行时/部署）与 `CAPABILITIES.md`（能力目录/驱动协议/§16 客户端 mod）。
-本文档说明如何把实现跑起来。
+设计文档见 `DESIGN.md`（语言/运行时/部署）、`CAPABILITIES.md`（能力目录/驱动协议/§16 客户端 mod）
+与 `ARCHITECTURE-REFACTOR.md`（契约先行改造方案）。本文档说明如何把实现跑起来。
 
-## 目录结构（实现）
+## 目录结构（契约先行：ARCHITECTURE-REFACTOR §3/§4）
 
 ```
-engine/            mineflayer 宿主（Lua VM + 调度 + 持久化 + 策略 + 命令总线 + 暂停门控）
-  engine.js          引擎核心（wasm Lua 状态机、token/yield 协议、驱动桥）
-  httpapi.js         HTTP 控制通道（§17：127.0.0.1 + 自动 token 常开，九端点（含 /eval 一次性 Lua））
-  cli.js             运行器：node engine/cli.js <deploy.yaml>；validate 子命令 = 包静态校验
-  lua/               bootstrap.lua（调度/声明层/能力包装）+ bslib.lua（行为策略库）+ json.lua
-                     + bot-api.d.lua（编辑器补全声明，EmmyLua/LuaLS，不参与运行）
-  test/              run.js（15 项冒烟测试，mock 驱动，含边界/HTTP 断言）+ mock-driver.js
-drivers/
-  mineflayer/        mineflayer 驱动（进程内；L1 通道 + 14 动词 + pathfinder L3）
-mod/                fabric 宿主（v2 standalone：Luaj 内嵌运行时 + HttpApi + GUI 六页（状态/任务/参数/边界/日志/脚本）；
-                    脚本页：热重载 / 切包（写回 config）/ 拖拽导入提示；快捷键 K 一键启停 key.botscript.toggle；
-                    .lua 拖进游戏窗口 = 导入当前包，含 bot.yaml 的文件夹 = 导入为独立包，导入后自动热重载）
-examples/           验收场景（bank / organizer / coal_guard / heart / tour 自验证巡检；bot.yaml = 包能力自述）
-run/                实例部署配置（package/server/account/boundary；test/live.js 生成）
-test/live.js        实连验收（本地 Paper 服务器 + 三个 bot 全链路 + HTTP 断言）
-tools/rcon.mjs      最小 RCON 客户端（服务器管理用）
+contracts/                 唯一真源（全部生成物由 tools/codegen.mjs 产出）
+  host-abi.yaml            宿主 ABI v2：op/参数/同步性/gate/能力；动作=原版发包，item=Stack 组件
+  errors.yaml              类型化错误清单（kind → 责任分类 / HTTP 状态）
+  events.yaml              宿主→核心事件
+  api-surface.yaml         脚本公开 API（api-lint 与编辑器补全的同一份清单）
+  package/deploy/policy.schema.json · http17.openapi.yaml
+  data/                    跨宿主共享数据（武器评分 / 容器方块表）
+  vectors/                 跨宿主 golden（scheduler / policy / windows / persist / data）
+runtime/lua/
+  core/{bootstrap,bslib,json}.lua   唯一语义实现（Node/Fabric 共用）
+  core/bridge.generated.lua         生成物：bridge.self.get / bridge.act.* 等类型化存根
+  compat/luaj.lua                   LuaJ 兼容补丁（仅 Fabric 加载）
+hosts/node/                Node 宿主（薄适配器）
+  vm.js tokens.js abi.js state/ policy.js persist.js obs.js data.js deploy.js
+  engine.js                        <300 行组装（vm + tokens + state + abi + obs + driver）
+  http17.js                        §17 控制通道（路由表由 openapi 生成）
+  runners/{cli,worker,cluster}.js  进程模型与退出分类
+  drivers/mineflayer/              协议驱动 + patches/（版本适配登记表）
+hosts/fabric（mod/）        Fabric 宿主：AbiDispatcher / McState / LuaRuntime / DataRegistry / HttpApi
+engine/                    兼容入口：cli.js（含 validate 子命令）与 host.js 只做转发
+tools/                     codegen · contract-lint · lua-sync · api-lint · validate · gen-data-vectors
+testing/                   按域拆分的测试 + harness + 向量执行器（node testing/run.js）
+examples/                  验收场景（bank / organizer / coal_guard / heart / tour；bot.yaml = 包能力自述）
 ```
 
 ## 快速开始
@@ -31,30 +38,36 @@ tools/rcon.mjs      最小 RCON 客户端（服务器管理用）
 环境：Node >= 24（需 node:sqlite）、Java 21+、可访问互联网（首次 npm install）。
 
 ```bash
-npm install                      # wasmoon / mineflayer / mineflayer-pathfinder / yaml / ws
+npm install
+node tools/codegen.mjs           # 契约 → 生成物（改了 contracts/*.yaml 必须重建）
 
-# 1) 冒烟测试（无需 Minecraft，mock 驱动全栈）
-node engine/test/run.js
+# 1) 全量测试（mock 驱动全栈 + 契约向量；无需 Minecraft）
+node testing/run.js
 
-# 1.5) 脚本包静态校验（不连服务器、不执行脚本：清单 lint + params 形状 + Lua 5.4 编译）
+# 1.5) 契约/单一源门禁（CI 同款）
+node tools/contract-lint.mjs
+node tools/sync-lua.mjs --check
+
+# 2) 脚本包静态校验（不连服务器、不执行脚本：schema + Lua 编译 + API lint）
 node engine/cli.js validate examples/tour
 
-#     编辑器补全：把 engine/lua/bot-api.d.lua 加入 VS Code 工作区
+#     编辑器补全：engine/lua/bot-api.d.lua 由 contracts/api-surface.yaml 生成
 #     （Lua Language Server（sumneko）或 EmmyLua 插件即获得全 API 补全与类型提示）
 
-# 2) 跑一个 bot（v2 三层分离：包清单在 examples/bank/，部署配置给连接+边界）
+# 3) 跑一个 bot（v2 三层分离：包清单在 examples/bank/，部署配置给连接+边界）
 node engine/cli.js run/bank-demo.yaml
-#   控制台命令（console 权限）：pause / resume / status / quit
-#   HTTP 控制通道自动开启（CAPABILITIES §17）：127.0.0.1 + token，启动日志打印；
-#     curl -H "Authorization: Bearer <token>" http://127.0.0.1:<port>/state   # /params /cmd /tasks /logs /persist /caps
-#   实例业务参数不在任何配置里：运行期 POST /params 设置后持久化，重启保留。
+#   stdin 只做宿主控制：pause / resume / status / quit（ABI v2 已移除命令体系）
+#   HTTP 控制通道自动开启（§17）：127.0.0.1 + token，启动日志打印；
+#     curl -H "Authorization: Bearer <token>" http://127.0.0.1:<port>/state
+#     （/params /pause /resume /eval /event /session /tasks /tasks/cancel /logs /stream /chat /persist /caps）
 
-# 3) fabric 宿主（standalone，无需任何外部进程）
-cd mod && gradle build
-#   产物：mod/build/libs/botscript-mod-0.1.0.jar -> 放入客户端实例 mods/ 目录
+# 4) fabric 宿主（standalone，无需任何外部进程）
+cd mod && ./gradlew build
+#   产物：mod/build/libs/botscript-mod-0.2.0.jar -> 放入客户端实例 mods/ 目录
+#   构建期从 ../runtime/lua 与 ../contracts/data 拷入资源（仓内不保留第二份 Lua 拷贝）
 #   脚本包：<游戏目录>/botscript/<包名>/（整包复制，含 bot.yaml 清单）
 #   实例配置：<游戏目录>/config/botscript-mod.json:
-#     {"package": "bank", "boundary": {"authority": {"owner": ["你的玩家名"]}}}
+#     {"package": "bank", "boundary": {}}
 #   进世界自动加载；游戏内 /bsclient 打开管理界面（§16.5 五页）。
 ```
 
@@ -72,7 +85,7 @@ node test/live.js     # 构建场景 + 启动 bank/organizer/coal_guard + 断言
 
 验收项：bank 入账/seen 去重/转账/取款挂账+回执核销/私聊余额（5 项）；
 organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追击+放下即停+guard stop（2 项）；
-内建 pause/resume（1 项）；HTTP 控制通道（§17）鉴权/state/params/cmd/tasks/cancel/logs/persist/caps（3 项）。
+内建 pause/resume（1 项）；HTTP 控制通道（§17）鉴权/state/params/pause/resume/tasks/cancel/logs/persist/caps（3 项）。
 
 ## 收款 bot 部署与参数（TOB-522）
 
@@ -104,35 +117,59 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
 
 ## 实现要点（与设计文档的对应）
 
-- 调度：Lua 协程 + 就绪队列；yield 协议 `<token>|<kind>|<txn>`；事件处理器为脱离根
-  （完成后不级联取消其 spawn 的任务）；race/parallel 的 join 状态全在 Lua 侧
-  （wasmoon 的 JS->Lua 调用是无保护 lua_callk，顶层 Lua 错误会 wasm abort，故入口全部内嵌 pcall）。
-- 挂起点交付：`ej` 空串视同无错误（Lua 中空串为真值）；取消交付先跑 on_cancel 清理钩
-  （fire 模式，不挂起），再注入 `task.cancelled`。
-- 暂停：引擎级门控——pause 后所有挂起点交付冻结于队列；进行中的动作 settle 为
-  `runtime.paused`；resume 冲刷队列于冻结点重抛；pause 同时停走 + 取消寻路 + 告警。
-- persist：node:sqlite（WAL）；表 schema 支持 `string/number/blockpos` 与 `:key`、`?` 后缀；
-  `adjust_if` 在 Lua 侧读-判-写（协程单线程 + 同步原语，无挂起点，天然原子）。
-- L1 合帧：mineflayer 驱动 self 200ms / 实体 250ms / 窗口 50ms（全量快照、最后值胜）。
-- 窗口布局：驱动/引擎统一把 mineflayer 玩家背包（craft0-4/armor5-8/main9-35/hotbar36-44/off45）
-  归一化为引擎布局（hotbar 0-8 / main 9-35 / armor 36-39 / offhand 40）；
-  容器窗口 = 容器区 [0,size) + 玩家区（main 在 size..size+26，hotbar 在 size+27..size+35）。
-- 物品 id：统一规范名 `minecraft:x`（驱动侧 CANON，脚本侧直接比较）。
-- 账号三态：`account: 用户名`（offline）| `{username, password}`（微软 OAuth，驱动内走完整流程）
-  | `{auth: session, username, uuid, accessToken}`（托管平台注入——引擎不做 OAuth，
-  accessToken 由平台凭据服务签发，在线服加入时经会务器校验）。
-- nav 超时单位 = 秒（与设计样例 `timeout = 3` 一致）；walk 失败返回 `{ok=false, reason}`
-  而非抛错（样例语义：目标在动，由循环自然重试），nav.failed 事件同步发出。
-  API 命名 `nav.walk`（不叫 goto：goto 是 Lua 保留字，点号访问是语法错误）；
-  无源码预处理/改写层，用户代码所见即所得，报错行号即真实行号。
+- **契约先行**：op 名/参数/gate/错误只写在 `contracts/host-abi.yaml`；四份生成物
+  （Lua bridge / Node op 表 / Java op 表 / bot-api.d.lua）与 HTTP 路由表全部由 codegen 产出，
+  `contract-lint` 在 CI 里比对，手改生成物或核心手写桥名都会红。
+- **四个 ABI 入口**：`__host_q`（同步）/ `__host_a`（异步 token）/ `__core_call`（宿主→核心）/
+  `__core_resume`·`__core_event`（宿主→核心异步）。策略/速率/预算/dry-run/审计/token 结算
+  只在宿主 dispatch 一处执行（Node `hosts/node/abi.js` / Fabric `AbiDispatcher.java`）。
+- **唯一 Lua 源**：`runtime/lua/core`；Fabric 只额外加载 `compat/luaj.lua`
+  （`__TASK_ERR` 旁路、`math.type`/`atan2`）。`lua-sync` 禁止仓内出现第二份拷贝。
+- **原语下沉、编排上移**：导航（含无寻路器时的直线退化）、开箱瞄准与重试、装备点击序列、
+  战斗冷却都在 `runtime/lua/core/bslib.lua`；宿主只保留一次协议动作 + 确认。
+- 调度：Lua 协程 + 就绪队列；yield 协议 `<token>, <txnflag>`；事件处理器为脱离根；
+  race/parallel 的 join 状态全在 Lua 侧。
+- 挂起点交付：`ej` 空串视同无错误；取消交付先跑 on_cancel 清理钩（fire 模式），再注入 `task.cancelled`。
+- 暂停：交付冻结于队列；进行中的动作 settle 为 `runtime.paused`；resume 冲刷队列于冻结点重抛；
+  pause 同时停走 + 取消寻路 + 冻结脚本定时器。
+- persist：Node = node:sqlite（WAL，真事务）；Fabric = JSON 文件（事务用内存快照实现真实回滚）。
+  两宿主跑同一份 `contracts/vectors/persist`。
+- **ItemStack 组件真值**（ABI v2）：`item.stack` 直接读 stack 的 max_stack_size / max_damage /
+  attribute_modifiers；Fabric 走客户端组件，Node 走 prismarine-item 网络组件。堆叠数**不再按 item id 猜**
+  （旧前缀启发式 1.21.8 下 16.4% 判错，已删除；`contracts/vectors/data` 三版本全量护栏）。
+- 窗口归一化：只有 `hosts/node/state/windows.js` 与 Fabric `WindowLayout/McState` 允许出现槽位常量；
+  `contracts/vectors/windows` 锁死逐槽与点击映射。
+- 版本适配即数据：`hosts/node/drivers/mineflayer/patches/`（tick-end-26x / teleport-packets），
+  `/caps` 与启动日志列出已应用补丁 id。
+- **没有命令体系**（ABI v2）：删除了 `on_command` / 命令声明 / 命令参数注入 / 权威解析 / `/cmd`；
+  脚本用 `on_chat` 自己处理聊天控制（操作员名单也由脚本自行维护，平台不内置 owner/op）。
+  参数仍归核心：`/params` 经 `params.get/set`，校验钩在 Lua 侧执行；暂停/恢复走 `/pause`、`/resume`。
+- 动作按**原版发包**建模：`act.look`（rotation）、`act.input`（player_input 状态位，有符号轴）、
+  `act.dig`/`act.dig_stop`（player_action）、`act.use_block`（interact，带 face/cursor/intent）、
+  `act.use_entity`（attack/interact/interact_at）、`act.swing`、`act.use_item(start|release)`、
+  `act.select_slot`、`act.drop`；没有「模拟按键」的 hop/move_input/use_item.duration。
+- 补全数据面：`self.get`（药水效果/属性/速度/姿态）、`world.block`（block_state 属性/硬度/方块实体）、
+  `world.block_entity`、`world.reach`（raycast）、`world.env`（真实 time_of_day/weather）、实体全状态。
+- 账号三态：`account: 用户名`（offline）| `{username, password}`（微软 OAuth）
+  | `{auth: session, username, uuid, accessToken}`（平台注入）。
+- nav 超时单位 = 秒；walk 返回跨平台 Result（`{ok=true,value}` / `{ok=false,error={code,message}}`），
+  失败不抛异常（循环重试语义），同时经 `events.emit('nav.failed')` 上抛观测面。
+- **Result 协议（ABI v2.1）**：所有可能失败的 ABI/动作返回 `{ok,value}` / `{ok=false,error={code,message}}`；
+  纯查询（self/world/entity/inv/persist）仍返回原值。取消是独立控制通道（展开任务 + `on_cancel`），
+  不进 Result、不进 `on_error`；Lua 原生 `error()` 仍按任务级失败处理；宿主意外异常只记日志，
+  脚本最多看到稳定码 `internal`。
 - 任务取消全路径留痕：显式取消/父完成级联/race 败者/超时统一记一条
-  `任务 [名] 取消（来源）` 日志，静默消失可审计。
-- keep_rotation：直线退化模式下引擎不碰朝向；寻路器模式下由 pathfinder 自行控制。
+  `任务 [名] 取消（来源）` 日志。
 
-## 已知限制（v1）
+## 已知限制
 
-- fabric 驱动无 world_stream：`world.block` 走引擎缓存 + block_update 事件（定点查询降级）。
-- fabric 驱动 goto 走引擎直线退化（move_input + 跳跃），复杂地形显式 `nav.unreachable`。
-- 挖掘以 `attackBlock` 起手、`cancelBlockBreaking` 取消；完成确认的 block_update 事件链为简化版。
-- 抢占 `{steal=true}`、看门狗自动取消（P2/后续）；fabric 端热重载已实现（GUI 脚本页 / POST /reload，
-  客户端线程 stop+boot 原地重载，连接不断）。
+- fabric 驱动无寻路器：`nav.walk` 走核心直线退化（`act.input` + `act.look`）；复杂地形显式失败。
+- 挖掘由宿主状态机驱动 `player_action`（START + 进度 + STOP），完成以方块变空为准。
+- Node 侧 ItemStack 组件来自网络组件（prismarine-item）；`attribute_modifiers` 只做通用属性提取，
+  缺失时 `data.stack.attributes` 为 null（不造假）；Fabric 侧读客户端组件，字段更完整。
+- 容器访问可用 `boundary.containers` 收紧；**未配置 = 允许**，显式 `false/deny` 才拒。
+- 命令体系已移除：没有 `on_command`、没有命令参数注入、没有 `/cmd`；控制逻辑写在 `on_chat` 里，
+  操作员名单由脚本自己维护（例如参数 `ops` 或 KV），平台/引擎不提供 owner/op 判定。
+- **边界默认开放**：所有权限/限速/白名单未配置即不限制；只有显式写入的字段才收紧动作。
+- **运行时 `_ENV` 限制未默认开启**：包闸门用静态 API lint 判死（`__*` 内部桥、io/os/debug/load 等
+  一律拒绝入库）；运行期脚本仍以全局环境执行，存量包兼容后再切受限环境。

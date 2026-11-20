@@ -1,15 +1,20 @@
 {
   "name": "bot-script",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "bot-script 引擎 + mineflayer 驱动（见 DESIGN.md / CAPABILITIES.md）",
+  "description": "bot-script 引擎 + mineflayer 驱动（见 DESIGN.md / CAPABILITIES.md / ARCHITECTURE-REFACTOR.md）",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "bot": "node engine/cli.js",
-    "test": "node engine/test/run.js"
+    "test": "node testing/run.js",
+    "codegen": "node tools/codegen.mjs",
+    "contract-lint": "node tools/contract-lint.mjs",
+    "lua-sync": "node tools/sync-lua.mjs --check",
+    "api-lint": "node tools/api-lint.mjs",
+    "validate": "node engine/cli.js validate"
   },
   "dependencies": {
     "mineflayer": "^4.39.0",

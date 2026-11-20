@@ -39,6 +39,12 @@ public final class PersistStore {
     private final Map<String, Log> logs = new LinkedHashMap<>();
     private int txnDepth = 0;
 
+    // 事务快照（txn 体回滚需要真实撤销；Node 宿主是 SQLite ROLLBACK，语义必须一致）
+    private Map<String, String> txnKv;
+    private Map<String, Long> txnSeen;
+    private Map<String, Table> txnTables;
+    private Map<String, Log> txnLogs;
+
     public PersistStore(Path file) {
         this.file = file;
         load();
@@ -303,8 +309,16 @@ public final class PersistStore {
         save();
     }
 
-    public String adjust(String name, String key, double delta, String keyField, String numField) {
+    /** 主键/数值字段由表 schema 推导（ABI v2） */
+    public String adjust(String name, String key, double delta) {
         Table t = table(name);
+        String keyField = t.keyField;
+        String numField = null;
+        for (String f : t.fields) {
+            String base = t.schema.get(f).split(":")[0].replace("?", "");
+            if ("number".equals(base)) { numField = f; break; }
+        }
+        if (keyField == null || numField == null) throw new IllegalArgumentException("调整需要主键与数值字段: " + name);
         JsonObject where = new JsonObject();
         where.addProperty(keyField, key);
         String found = find(name, where);
@@ -407,75 +421,58 @@ public final class PersistStore {
         save();
     }
 
-    // ---- 事务（调度器保证体内无挂起点；这里仅嵌套深度标记，写盘即时生效） ----
-    public void txnBegin() { txnDepth++; }
-    public void txnCommit() { txnDepth = Math.max(0, txnDepth - 1); }
-    public void txnRollback() { txnDepth = 0; /* JSON 立即写盘，回滚为标记 */ }
-
-    // ---- LuaHost 桥注册 ----
-    public void registerBridges(LuaHost host) {
-        host.setRawBridge("__persist_seen",
-                (a) -> LuaValue_of(seen(a.checkjstring(1), a.checklong(2), System.currentTimeMillis())));
-        host.setRawBridge("__persist_table",
-                (a) -> { declareTable(a.checkjstring(1), a.checkjstring(2)); return LuaHost.NONE_VALUE; });
-        host.setRawBridge("__persist_find", (a) -> {
-            JsonObject o = LuaHost.parseObj(a.checkjstring(1));
-            return LuaValue_of(find(o.get("name").getAsString(), whereOf(o)));
-        });
-        host.setRawBridge("__persist_all", (a) -> {
-            JsonObject o = LuaHost.parseObj(a.checkjstring(1));
-            return LuaValue_of(all(o.get("name").getAsString()));
-        });
-        host.setRawBridge("__persist_upsert", (a) -> {
-            upsert(a.checkjstring(1), LuaHost.parseObj(a.checkjstring(2)));
-            return LuaHost.NONE_VALUE;
-        });
-        host.setRawBridge("__persist_del", (a) -> {
-            del(a.checkjstring(1), LuaHost.parseObj(a.checkjstring(2)));
-            return LuaHost.NONE_VALUE;
-        });
-        host.setRawBridge("__persist_adjust", (a) -> {
-            JsonObject o = LuaHost.parseObj(a.checkjstring(1));
-            return LuaValue_of(adjust(o.get("name").getAsString(), o.get("key").getAsString(),
-                    o.get("delta").getAsDouble(),
-                    o.has("key_field") ? o.get("key_field").getAsString() : null,
-                    o.has("num_field") ? o.get("num_field").getAsString() : null));
-        });
-        host.setRawBridge("__persist_log", (a) -> {
-            logDeclare(a.checkjstring(1));
-            return LuaHost.NONE_VALUE;
-        });
-        host.setRawBridge("__log_append", (a) -> {
-            JsonObject o = LuaHost.parseObj(a.checkjstring(1));
-            return LuaValue_of(logAppend(o.get("name").getAsString(),
-                    o.has("fields") ? o.getAsJsonObject("fields") : new JsonObject(),
-                    System.currentTimeMillis()));
-        });
-        host.setRawBridge("__log_find", (a) -> {
-            JsonObject o = LuaHost.parseObj(a.checkjstring(1));
-            return LuaValue_of(logFind(o.get("name").getAsString(), whereOf(o)));
-        });
-        host.setRawBridge("__log_mark", (a) -> {
-            logMark(a.checkjstring(1), a.checklong(2), a.checkjstring(3));
-            return LuaHost.NONE_VALUE;
-        });
-        host.setRawBridge("__kv_get", (a) -> LuaValue_of(kvGet(a.checkjstring(1), a.checkjstring(2))));
-        host.setRawBridge("__kv_set", (a) -> {
-            kvSet(a.checkjstring(1), a.checkjstring(2), a.checkjstring(3));
-            return LuaHost.NONE_VALUE;
-        });
+    // ---- 事务（调度器保证体内无挂起点；体内出现挂起点由核心回滚） ----
+    public void txnBegin() {
+        if (txnDepth == 0) {
+            txnKv = new LinkedHashMap<>(kv);
+            txnSeen = new LinkedHashMap<>(seen);
+            txnTables = deepCopy(tables, PersistStore::copyTable);
+            txnLogs = deepCopy(logs, PersistStore::copyLog);
+        }
+        txnDepth++;
     }
 
-    /** where 取值：json.lua 把空表编码为 "[]"（数组），需容忍 */
-    private static JsonObject whereOf(JsonObject o) {
-        return o.has("where") && o.get("where").isJsonObject() ? o.getAsJsonObject("where") : new JsonObject();
+    public void txnCommit() {
+        txnDepth = Math.max(0, txnDepth - 1);
+        if (txnDepth == 0) {
+            txnKv = null; txnSeen = null;
+            txnTables = null; txnLogs = null;
+            save();
+        }
     }
 
-    private static org.luaj.vm2.LuaValue LuaValue_of(String s) {
-        return org.luaj.vm2.LuaValue.valueOf(s == null ? "" : s);
+    public void txnRollback() {
+        if (txnDepth > 0) {
+            kv.clear(); kv.putAll(txnKv);
+            seen.clear(); seen.putAll(txnSeen);
+            tables.clear(); tables.putAll(txnTables);
+            logs.clear(); logs.putAll(txnLogs);
+            txnKv = null; txnSeen = null;
+            txnTables = null; txnLogs = null;
+            txnDepth = 0;
+            save();
+        }
     }
 
-    private static org.luaj.vm2.LuaValue LuaValue_of(long n) {
-        return org.luaj.vm2.LuaValue.valueOf(n);
+    private static <V> Map<String, V> deepCopy(Map<String, V> src, java.util.function.Function<V, V> copier) {
+        Map<String, V> out = new LinkedHashMap<>();
+        for (var e : src.entrySet()) out.put(e.getKey(), copier.apply(e.getValue()));
+        return out;
+    }
+
+    private static Table copyTable(Table t) {
+        Table n = new Table();
+        n.schema = new LinkedHashMap<>(t.schema);
+        n.keyField = t.keyField;
+        n.fields = new ArrayList<>(t.fields);
+        for (Map<String, Object> row : t.rows) n.rows.add(new LinkedHashMap<>(row));
+        return n;
+    }
+
+    private static Log copyLog(Log l) {
+        Log n = new Log();
+        n.nextId = l.nextId;
+        for (Map<String, Object> row : l.rows) n.rows.add(new LinkedHashMap<>(row));
+        return n;
     }
 }

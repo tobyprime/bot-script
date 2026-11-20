@@ -1,0 +1,13 @@
+{
+  "name": "未配置 boundary：默认不限制（动作允许）",
+  "boundary": null,
+  "op": "act.chat_send",
+  "args": {
+    "text": "hi",
+    "kind": "chat"
+  },
+  "expect": {
+    "allow": true,
+    "error": null
+  }
+}

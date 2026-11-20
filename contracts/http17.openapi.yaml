@@ -1,0 +1,211 @@
+openapi: 3.0.3
+info:
+  title: bot-script §17 控制通道
+  version: "1.0.0"
+  description: |
+    宿主常开的实例控制面（只绑 127.0.0.1；Bearer token 鉴权）。
+    Node 宿主（hosts/node/http17.js）与 Fabric 宿主（HttpApi.java）实现同一组形状；
+    http17-conformance 向量对两宿主逐路由比对状态码与响应形状。
+servers:
+  - url: http://127.0.0.1:{port}
+    variables:
+      port: { default: "25580" }
+security:
+  - bearer: []
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        detail: { type: string, nullable: true }
+    State:
+      type: object
+      properties:
+        name: { type: string }
+        host: { type: string }
+        session: { type: string }
+        paused: { type: boolean }
+        pause_reason: { type: string, nullable: true }
+        reconnecting: { type: boolean }
+        reconnect_attempts: { type: integer }
+        next_retry_in: { type: integer, nullable: true }
+        credential_updated_at: { type: integer, nullable: true }
+        tasks: { type: array, items: { type: object } }
+        window: { type: string, nullable: true }
+        caps: { type: object }
+        memory: { type: object, description: "worker process.memoryUsage()（排障用）" }
+    ParamsSnapshot:
+      type: object
+      required: [schema, values]
+      properties:
+        schema: { type: object }
+        values: { type: object }
+    StreamEvent:
+      type: object
+      required: [seq, type]
+      properties:
+        seq: { type: integer }
+        type: { enum: [log, action, chat, event] }
+paths:
+  /state:
+    get:
+      operationId: getState
+      summary: 实例状态（会话/暂停/重连/任务/窗口/能力）
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/State" } } } }
+  /params:
+    get:
+      operationId: getParams
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ParamsSnapshot" } } } }
+    post:
+      operationId: postParams
+      summary: 设置参数（逐键校验，首个失败即 400）
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        "200": { description: OK }
+        "400": { description: 参数被拒, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /pause:
+    post:
+      operationId: postPause
+      summary: 暂停实例（host 门控：冻结交付与定时器、停走）
+      requestBody:
+        required: false
+        content: { application/json: { schema: { type: object, properties: { reason: { type: string } } } } }
+      responses:
+        "200": { description: OK }
+  /resume:
+    post:
+      operationId: postResume
+      summary: 恢复实例
+      responses:
+        "200": { description: OK }
+  /reload:
+    post:
+      operationId: postReload
+      summary: 原地热重载脚本包（不重启连接；新脚本编译失败时保持旧脚本运行）
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+                package: { type: string, description: 包切换（Fabric 宿主）；Node 宿主按实例目录重读 }
+      responses:
+        "200": { description: OK }
+        "400": { description: 脚本编译/声明失败, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: 引擎未启动或重载进行中 }
+  /eval:
+    post:
+      operationId: postEval
+      summary: 一次性 Lua（作为具名任务，同环境同边界）
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [code], properties: { code: { type: string }, name: { type: string } } } } }
+      responses:
+        "200": { description: OK }
+        "400": { description: 编译失败 }
+  /event:
+    post:
+      operationId: postEvent
+      summary: 平台事件入站（events.next 消费）
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [type], properties: { type: { type: string }, data: { type: object } } } } }
+      responses:
+        "200": { description: OK }
+        "400": { description: type 缺失 }
+  /session:
+    post:
+      operationId: postSession
+      summary: 会话凭据更新（不打断在线连接；下一次连接即用新值）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [access_token]
+              properties:
+                access_token: { type: string }
+                username: { type: string }
+                uuid: { type: string }
+      responses:
+        "200": { description: OK }
+        "400": { description: 参数不合法 }
+        "409": { description: 账号模式或身份不匹配 }
+  /tasks:
+    get:
+      operationId: getTasks
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { tasks: { type: array, items: { type: object } } } } } } }
+  /tasks/cancel:
+    post:
+      operationId: postTasksCancel
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string } } } } }
+      responses:
+        "200": { description: OK }
+        "400": { description: name 缺失 }
+  /logs:
+    get:
+      operationId: getLogs
+      summary: 内存环增量（logs/actions/chats/events + next_seq）
+      parameters:
+        - in: query
+          name: since
+          schema: { type: integer }
+      responses:
+        "200": { description: OK }
+  /stream:
+    get:
+      operationId: getStream
+      summary: SSE 实时流（先补内存环历史，再接增量；15s 心跳）
+      parameters:
+        - in: query
+          name: since_seq
+          schema: { type: integer }
+      responses:
+        "200":
+          description: text/event-stream
+          content: { text/event-stream: { schema: { $ref: "#/components/schemas/StreamEvent" } } }
+  /chat:
+    post:
+      operationId: postChat
+      summary: 操作者发消息/命令（console 级，不过脚本 chat 策略）
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [text], properties: { text: { type: string } } } } }
+      responses:
+        "200": { description: OK }
+        "400": { description: 内容不合法 }
+  /persist:
+    get:
+      operationId: getPersist
+      parameters:
+        - in: query
+          name: table
+          schema: { type: string }
+        - in: query
+          name: kv
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+        "400": { description: 查询失败 }
+  /caps:
+    get:
+      operationId: getCaps
+      summary: 宿主能力 + 已应用协议补丁 + 包清单
+      responses:
+        "200": { description: OK }

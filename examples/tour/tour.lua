@@ -7,7 +7,7 @@
 -- 环境假设：平坦平台 + 一只含材料的箱子（params.chest）；放置落点 pad
 --       下方一格必须是可右键的实心地面（combat.place 落在 pos.up()）。
 -- 已知宿主局限（fabric）：inv_drop 为 no-op（跳过丢物实体链）；
---       world.scan 只扫描容器；无 world_stream（on_event block 流靠 P3 mixin）。
+--       world.scan 只扫描容器；无 chunk 流（world.block_changed 仅覆盖客户端可见变更）。
 -- ============================================================
 
 params {
@@ -47,14 +47,18 @@ end
 
 -- 期望被策略/权限拒绝的动作：kind_want 为空则接受任意 permission/policy 类错误
 local function expect_deny(name, fn, kind_want)
-  local ok, e = try(fn)
-  local kind = type(e) == "table" and e.kind or nil
+  local ok, r = try(fn)
+  local kind
+  if ok then
+    kind = (type(r) == "table" and r.ok == false and r.error) and r.error.code or nil
+  else
+    kind = type(r) == "table" and r.kind or nil
+  end
   local acceptable = kind == "permission.denied" or kind == "policy.blocklist"
-  if not ok and (kind == kind_want or (kind_want == nil and acceptable)) then
+  if kind ~= nil and (kind == kind_want or (kind_want == nil and acceptable)) then
     check(name, true)
   else
-    check(name, false, "期望拒绝(" .. tostring(kind_want or "permission/policy") .. ") 实际 ok="
-      .. tostring(ok) .. " kind=" .. tostring(kind))
+    check(name, false, "期望拒绝(" .. tostring(kind_want or "permission/policy") .. ") 实际 kind=" .. tostring(kind))
   end
 end
 
@@ -81,15 +85,17 @@ local function suite_sense()
   local w = world.weather()
   if w == nil then warnskip("world.weather", "宿主未实现该查询（fabric 端未注册）")
   else check("world.weather", w == "clear" or w == "rain" or w == "thunder", tostring(w)) end
-  check("world.staleness", (world.staleness(PAD) or -1) >= 0, tostring(world.staleness(PAD)))
+  check("world.block.stale", type(world.block(PAD).stale) == "boolean", tostring(world.block(PAD).stale))
 
-  check("caps.pathfinder=false", caps.has("nav.pathfinder") == false)
-  check("caps.window.click_authentic", caps.has("window.click_authentic") == true)
+  check("caps.item.components", caps.has("item.components") == true)
   check("caps.server_version", (caps.server_version() or "") ~= "", tostring(caps.server_version()))
   check("session.state", session.state() == "playing", tostring(session.state()))
-  check("session.info", session.info() and session.info().state == "playing", tostring(session.info()))
-  check("data.stack_size", data.stack_size(MAT) == 64, tostring(data.stack_size(MAT)))
-  check("data.weapon_score(wooden_sword)", (data.weapon_score("minecraft:wooden_sword") or 0) > 0)
+  check("session.info", session.info() and session.info().version ~= nil, tostring(session.info()))
+  local stack = data.stack({ id = MAT })
+  check("data.stack.max_count", stack.max_count == 64, tostring(stack.max_count))
+  local sword = data.stack({ id = "minecraft:wooden_sword" })
+  check("data.stack(wooden_sword)", sword.attributes and sword.attributes.attack_damage ~= nil or sword.max_damage ~= nil,
+    tostring(sword.attributes or sword.max_damage))
 end
 
 -- ============================================================
@@ -442,16 +448,17 @@ local function suite_chat()
 
   -- say 发送成功（限速内不抛错）；
   -- 自身回环不可测：宿主 onGameMessage 故意过滤 "<自己>" 回显（防脚本自激），事件域以他人/系统消息为准
-  local okS = pcall(function() chat.say("tour-probe " .. tag) end)
+  local okS = chat.say("tour-probe " .. tag).ok
   check("chat.say 发送", okS)
   warnskip("自身回环", "宿主过滤自身回显（防自激），属设计行为")
 
   expect_deny("命令白名单外被拒", function() chat.run_command("/gamemode creative") end,
     "permission.denied")
 
-  local okL = pcall(function() chat.run_command("/list") end)
+  local okL = chat.run_command("/list").ok
   check("白名单内 /list 放行", okL)
-  local m2 = chat.await_chat(rex("online|玩家"), 6000)
+  local rr = chat.await_chat(rex("online|玩家"), 6000)
+  local m2 = rr and rr.value
   if m2 then check("/list 输出回环", true) else warnskip("/list 输出回环", "服务器未回显系统消息") end
 end
 

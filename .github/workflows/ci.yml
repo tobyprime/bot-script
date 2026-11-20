@@ -6,8 +6,8 @@ on:
   pull_request:
 
 jobs:
-  engine:
-    name: engine（测试 + 包校验）
+  contracts:
+    name: 契约门禁（codegen / lua-sync / api-lint）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,16 +16,31 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: 冒烟测试（mock 驱动全栈）
-        run: node engine/test/run.js
-      - name: 包静态校验（全部示例包）
+      - name: 生成物与 manifest 一致（contract-lint）
+        run: node tools/contract-lint.mjs
+      - name: Lua 单一源（lua-sync）
+        run: node tools/sync-lua.mjs --check
+
+  engine:
+    name: engine（契约向量 + 冒烟测试 + 包校验）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: 全量测试（调度/持久化/策略/窗口/数据/HTTP/示例/驱动/向量）
+        run: node testing/run.js
+      - name: 包闸门（全部示例包：schema + Lua 编译 + API lint）
         run: |
           for d in examples/*/; do
             node engine/cli.js validate "$d" || exit 1
           done
 
   mod:
-    name: fabric mod 构建
+    name: fabric mod 构建（Luaj 契约向量 + 打包）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +49,8 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
+      # gradle processResources 会从 ../runtime/lua 与 ../contracts/data 拷入资源；
+      # JUnit（LuaRuntimeTest/RuntimeContractTest）跑同一份 contracts/vectors。
       - name: gradle build
         run: |
           cd mod

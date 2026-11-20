@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bot-script/contracts/deploy.schema.json",
+  "title": "deploy.yaml（实例部署配置：包 / 连接 / 授权 / 运行时）",
+  "type": "object",
+  "properties": {
+    "package": { "type": "string", "description": "包目录（相对 deploy.yaml）" },
+    "server": {
+      "oneOf": [
+        { "type": "string", "pattern": "^[^:]+(:[0-9]+)?$" },
+        {
+          "type": "object",
+          "properties": {
+            "host": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          },
+          "additionalProperties": false
+        }
+      ],
+      "description": "服务器地址。version 必须是顶层键（server 对象里会被忽略）"
+    },
+    "version": { "type": "string", "description": "MC 协议版本（缺省由宿主自动探测）" },
+    "server_version": { "type": "string", "description": "version 的旧别名" },
+    "account": {
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "properties": {
+            "username": { "type": "string" },
+            "password": { "type": "string" },
+            "uuid": { "type": "string" },
+            "auth": { "enum": ["session", "offline", "microsoft"] },
+            "accessToken": { "type": "string" },
+            "access_token": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "view_distance": { "type": "integer", "minimum": 2, "maximum": 12 },
+    "boundary": { "$ref": "policy.schema.json" },
+    "params": { "type": "object", "description": "实例参数初值" },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "reconnect": {
+          "type": "object",
+          "properties": {
+            "base_ms": { "type": "number", "minimum": 0 },
+            "max_ms": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "dry_run": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

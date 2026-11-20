@@ -1,6 +1,6 @@
 {
   "runtime.version": "Lua 5.4",
-  "workspace.library": ["engine/lua"],
+  "workspace.library": ["engine/lua", "runtime/lua/core"],
   "workspace.checkThirdParty": false,
   "diagnostics": { "unused-function": "Disabled" }
 }

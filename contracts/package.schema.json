@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bot-script/contracts/package.schema.json",
+  "title": "bot.yaml（脚本包清单：能力自述，不含边界/凭据）",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "description": "包名（缺省取目录名）" },
+    "scripts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^.*\\.lua$" },
+      "description": "入口 .lua 列表（相对包目录）；入口同目录的其它 .lua 自动进入 require 面"
+    },
+    "params": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/definitions/param" },
+      "description": "参数：schema 形态 {type,...} 或纯默认值字面量"
+    },
+    "persist": { "type": "string", "description": "持久化文件相对路径（缺省 :memory:）" }
+  },
+  "required": ["scripts"],
+  "additionalProperties": false,
+  "definitions": {
+    "paramType": {
+      "enum": ["string", "number", "boolean", "blockpos", "region", "list<blockpos>"]
+    },
+    "paramSchema": {
+      "type": "object",
+      "properties": {
+        "type": { "$ref": "#/definitions/paramType" },
+        "default": {},
+        "required": { "type": "boolean" },
+        "help": { "type": "string" }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    },
+    "param": {
+      "oneOf": [
+        { "$ref": "#/definitions/paramSchema" },
+        { "type": ["string", "number", "boolean", "null", "array"] }
+      ]
+    }
+  }
+}

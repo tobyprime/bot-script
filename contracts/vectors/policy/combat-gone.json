@@ -1,0 +1,1 @@
+{ "name": "攻击目标不在实体面 => entity.gone", "boundary": { "combat": { "targets": "player", "max_engage": 10 } }, "op": "act.use_entity", "args": { "id": "9", "kind": "attack" }, "entity": null, "expect": { "allow": false, "error": "entity.gone" } }

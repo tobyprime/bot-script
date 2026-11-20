@@ -13,7 +13,19 @@
 
 params {
   min_pay = { type = "number", default = 1, visible = true, help = "单笔取款下限" },
+  ops     = { type = "string", default = "", visible = true,
+              help = "运维玩家名（逗号分隔；留空 = 不校验，示例用）" },
 }
+
+-- 操作员校验属于脚本自己的业务规则（平台不提供 owner/op 名单）
+local function is_op(sender)
+  local list = params.ops or ""
+  if list == "" then return true end
+  for name in string.gmatch(list, "[^, ]+") do
+    if name == sender then return true end
+  end
+  return false
+end
 
 persist.table "Account" { player = "string:key", balance = "number" }
 persist.log  "Intent"                  -- L.append -> id；L.find{...} 查询；L.mark(id, state)
@@ -73,8 +85,8 @@ on_chat(rex[[^取款(?: (?<amount>\d+))?$]], { source = "player" }, function(m)
   chat.reply("已受理 " .. n .. "c")
   chat.run_command("/pay " .. from .. " " .. n)     -- 白名单仅放行 /pay（首词元精确匹配）
 
-  local ok = await_chat(rex("已向\\s+" .. from .. "\\b"), sec(5))   -- 服务器回执（模板按品牌调）
-  if ok then
+  local rr = await_chat(rex("已向\\s+" .. from .. "\\b"), sec(5))   -- 服务器回执（模板按品牌调）
+  if rr and rr.ok and rr.value then
     Intent.mark(pay_id, "done")
     chat.reply("取款成功 " .. n .. "c")
   else
@@ -95,10 +107,10 @@ on_chat(rex[[^已向 (?<to>\w+)]], { source = "system" }, function(m)
   end)
 end)
 
--- 运维命令（bot.yaml 配 msg_command → reply 走私聊，余额不进公屏）
-on_command("balance <who:player>", { perm = "op" }, function(a)
-  -- 回复给操作者（a.sender = 命令发送者，引擎注入）；余额不进公屏
-  chat.reply(a.sender or a.who, "余额: " .. bal(a.who) .. "c")
+-- 运维查询（无命令体系：聊天正则 + 脚本自管的 ops 名单；bot.yaml 配 msg_command → reply 走私聊）
+on_chat(rex[[^balance (?<who>\w+)$]], { source = "player" }, function(m)
+  if not is_op(m.sender) then return end
+  chat.reply(m.sender, "余额: " .. bal(m.who) .. "c")
 end)
 
 -- 恢复对账：启动/暂停恢复后扫描挂账，提醒运维（不自动退款）

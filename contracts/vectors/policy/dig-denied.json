@@ -1,0 +1,1 @@
+{ "name": "blocks.dig=false 才拒绝挖掘", "boundary": { "blocks": { "dig": false } }, "op": "act.dig", "args": { "pos": { "x": 1, "y": 64, "z": 1 } }, "expect": { "allow": false, "error": "policy.blocklist" } }

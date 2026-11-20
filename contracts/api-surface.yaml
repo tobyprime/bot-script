@@ -1,0 +1,204 @@
+# contracts/api-surface.yaml — 脚本公开 API（唯一真源，ABI v2）
+#
+# 用户脚本只允许访问本文件列出的全局 + Lua 标准库白名单；其余（尤其 __ 前缀）由 api-lint 判死。
+# engine/lua/bot-api.d.lua 由本文件生成。
+#
+# v2：命令体系整体移除（没有 on_command / 命令声明 / 命令参数注入）；
+#     物品数据改为 data.stack（读 ItemStack 组件），不再有 data.stack_size / data.weapon_score。
+#
+# Result 约定（ABI v2.1）：可能失败的 ABI/动作方法返回
+#   {ok=true, value=<结果>} | {ok=false, error={code=<稳定码>, message=<文案>}}
+# 纯查询（self.pos/world.block/entity.*/inv.*/persist.*…）仍返回原值。
+# 任务取消不是 Result 错误：取消会展开当前任务并运行 on_cancel，不会进入 on_error。
+abi: 2
+
+stdlib_allow:
+  [assert, error, ipairs, next, pairs, pcall, rawequal, rawget, rawlen, rawset,
+   require, select, setmetatable, tonumber, tostring, type, xpcall,
+   print, table, string, math, coroutine, utf8]
+
+stdlib_deny:
+  [io, os, debug, package, load, loadfile, dofile, loadstring, getfenv, setfenv,
+   collectgarbage, _G, _VERSION, warn]
+
+globals:
+  task:
+    kind: callable
+    doc: 声明具名任务：task("name", [opts], fn)。opts = {single=true}。
+    members:
+      spawn: "task.spawn(name|fn, ...) — 触发任务"
+      spawn_detached: "task.spawn_detached(fn, ...) — 脱离根（完成不级联）"
+      cancel: "task.cancel(name|handle|id, source?) — 协作式取消"
+      cancel_all: "task.cancel_all(source?)"
+      all: "task.all() → [{id,name,status}]"
+      progress: "task.progress(delta)"
+  on_start: { kind: function, doc: on_start(fn) — 启动序 }
+  on_pause: { kind: function, doc: on_pause(fn) }
+  on_resume: { kind: function, doc: on_resume(fn) }
+  on_error: { kind: function, doc: "on_error(fn) — 未捕获任务错误（fn(errorTable)）" }
+  on_timer: { kind: function, doc: "on_timer(interval_ms, fn) — 周期回调（pause 冻结）" }
+  after: { kind: function, doc: "after(delay_ms, fn) — 一次性（pause 冻结，触发后注销）" }
+  on_event: { kind: function, doc: "on_event(name, fn) — 平台/宿主事件" }
+  on_cancel: { kind: function, doc: "on_cancel(fn) — 任务取消钩" }
+  on_chat: { kind: function, doc: "on_chat(rex, [opts], fn) — opts: source=player|system, from=name" }
+  await_chat: { kind: function, doc: "await_chat(rex, timeout_ms) → Result（value = 命名分组 table | nil）" }
+  chat:
+    kind: namespace
+    doc: 发言（策略由宿主 gate 执行）
+    members:
+      say: "chat.say(text)"
+      reply: "chat.reply(msg|to, text?) — 单参 = 公开回复；双参 = 私聊（拼 boundary.chat.msg_command）"
+      msg: "chat.msg(to, text)"
+      run_command: "chat.run_command(text) — kind=command 包（受 boundary.chat 白名单约束）"
+      await_chat: "同 await_chat"
+  params:
+    kind: namespace
+    doc: 参数（只读；控制总线修改）。params{schema} 声明；params.key 读取。
+    members:
+      validator: "params_validator(key, fn) — 热更校验钩：fn(value) → true | nil,msg"
+  persist:
+    kind: namespace
+    doc: 持久化
+    members:
+      table: "persist.table \"Name\" { field = \"string:key\" | \"number\" ... } → 声明表（全局注入 Name）"
+      kv: "persist.kv \"Name\" → get(k)/set(k,v)"
+      log: "persist.log \"Name\" → append(fields)/find(where)/mark(id,state)"
+      seen: "persist.seen(key, window_ms) → true=重复"
+  txn: { kind: function, doc: "txn(fn) — 事务；体内挂起点 => 回滚 + persist.txn_yielded" }
+  params_validator: { kind: function, doc: "params_validator(key, fn) — 参数热更校验钩" }
+  rex: { kind: function, doc: "rex[[pattern]] → id（正则，命名分组 (?<name>...)）" }
+  entity:
+    kind: namespace
+    members:
+      find: "entity.find(pred) → [handle]"
+      nearest: "entity.nearest(pred) → handle|nil"
+      exists: "entity.exists(e) → boolean"
+  world:
+    kind: namespace
+    members:
+      block: "world.block(pos) → {id,properties,state_id,hardness,block_entity,is_container,stale}"
+      block_entity: "world.block_entity(pos) → {type,data,snbt}|nil"
+      scan: "world.scan(region, pred, {limit}) → [{x,y,z,id}]"
+      reach: "world.reach(pos, [max_distance]) → {reachable,distance,hit_block}"
+      dimension: "world.dimension()"
+      time_of_day: "world.time_of_day() → 0..24000"
+      weather: "world.weather() → clear|rain|thunder"
+  nav:
+    kind: namespace
+    members:
+      walk: "nav.walk(pos|[entity], {arrive, timeout}) → Result（失败 error.code = policy.* / nav.*）"
+      goto_near: "nav.goto_near(pos, radius, opts?)"
+      follow: "nav.follow(entity, {distance})"
+      stop: "nav.stop()"
+      flee: "nav.flee(pos, opts?)"
+      distance_to: "nav.distance_to(t) → number|nil"
+      can_reach: "nav.can_reach(pos) → boolean（宿主 raycast/reach）"
+      hop: "nav.hop() — 输入位 jump 一个短窗口（核心组合）"
+  look:
+    kind: namespace
+    members:
+      yaw: "look.yaw(deg)"
+      pitch: "look.pitch(deg)"
+      aim: "look.aim(yaw, pitch) — 单包写两轴"
+      current: "look.current() → {yaw,pitch}"
+  container:
+    kind: namespace
+    members:
+      open: "container.open(pos|[entity]) → window handle|nil"
+      close: "container.close(win?)"
+      current: "container.current() → handle|nil"
+  inv:
+    kind: namespace
+    members:
+      count: "inv.count(filter)"
+      has: "inv.has(filter)"
+      find: "inv.find(filter) → slot|nil"
+      slots: "inv.slots() → [{index,item}]"
+      held: "inv.held() → stack|nil"
+      click: "inv.click(slot, {button,mode})"
+      cursor: "inv.cursor()"
+      equip: "inv.equip(slot|filter) → stack|nil"
+      select_slot: "inv.select_slot(slot) — 快捷栏选择包"
+      drop: "inv.drop(filter, count) — 丢弃（held 走玩家动作，槽位走 click 包）"
+  combat:
+    kind: namespace
+    members:
+      attack: "combat.attack(entity)"
+      interact_entity: "combat.interact_entity(entity)"
+      range: "combat.range() → 3.0"
+      cooldown: "combat.cooldown() → ms（由 held stack 的 attack_speed 推导）"
+      use_block: "combat.use_block(pos, opts?)"
+      place: "combat.place(pos, face?) — intent=place（受 boundary.blocks.place 门控）"
+      use_item: "combat.use_item(duration_ms) — 核心组合 start/sleep/release"
+      dig: "combat.dig(pos, face?) — 开始并等待破坏完成"
+      dig_stop: "combat.dig_stop()"
+  self:
+    kind: namespace
+    members:
+      username: "self.username()"
+      pos: "self.pos() → {x,y,z}"
+      velocity: "self.velocity() → {x,y,z}"
+      health: "self.health()"
+      food: "self.food()"
+      held: "self.held() → stack|nil"
+      gamemode: "self.gamemode()"
+      effects: "self.effects() → [{id,amplifier,duration}]"
+      attributes: "self.attributes() → {armor,absorption,xp_level,xp_progress}"
+      pose: "self.pose()"
+  session:
+    kind: namespace
+    members:
+      state: "session.state()"
+      info: "session.info() → {version,brand,ping,players,view_distance,dimension}"
+      paused: "session.paused() → boolean"
+  caps:
+    kind: namespace
+    members:
+      has: "caps.has(flag)"
+      server_version: "caps.server_version()"
+  data:
+    kind: namespace
+    doc: ItemStack 数据（组件真值）
+    members:
+      stack: "data.stack(item|{id}) → {id,count,max_count,damage,max_damage,components,attributes,enchantments,custom_name}"
+  events:
+    kind: namespace
+    members:
+      next: "events.next(timeout_ms) → Result（value = {type,data,ts} | nil）"
+      emit: "events.emit(type, data)"
+  time:
+    kind: namespace
+    members:
+      sleep: "time.sleep(ms)"
+      now: "time.now() → ms"
+  log:
+    kind: namespace
+    members:
+      info: "log.info(fmt, ...)"
+      warn: "log.warn(fmt, ...)"
+      error: "log.error(fmt, ...)"
+  race: { kind: function, doc: "race({fn,...}) → 首个完成结果（兄弟取消）" }
+  parallel: { kind: function, doc: "parallel({fn,...}) → 结果数组" }
+  with_timeout: { kind: function, doc: "with_timeout(ms, fn)" }
+  try: { kind: function, doc: "try(fn) → ok, err" }
+  guard: { kind: function, doc: "guard(cond, fn?)" }
+  wait_until: { kind: function, doc: "wait_until(pred, {poll, timeout})" }
+  item_match: { kind: function, doc: "item_match(item, filter|fn) → boolean" }
+  contains: { kind: function, doc: "contains(list, v)" }
+  sec: { kind: function, doc: "sec(n) → ms" }
+  bslib:
+    kind: namespace
+    doc: 内置行为策略库（可覆盖）
+    members:
+      look: "bslib.look.at(target, opts?)"
+      ensure_holding: "bslib.ensure_holding(item_id|nil)"
+      equip_best: "bslib.equip_best(kind?) — 按 stack 属性选武器"
+      withdraw: "bslib.withdraw(win, filter, n)"
+      deposit: "bslib.deposit(win, filter, n)"
+      move: "bslib.move(from, to, filter, opts?)"
+      is_combat_ready: "bslib.is_combat_ready()"
+      try: "同 try"
+      race: "同 race"
+      parallel: "同 parallel"
+      with_timeout: "同 with_timeout"
+      wait_until: "同 wait_until"

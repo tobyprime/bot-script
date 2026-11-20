@@ -8,8 +8,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Vec3 } from 'vec3';
 import mineflayer from 'mineflayer';
-import { BotEngine } from '../engine/engine.js';
-import { MineflayerDriver } from '../drivers/mineflayer/index.js';
+import { BotEngine } from '../hosts/node/engine.js';
+import { MineflayerDriver } from '../hosts/node/drivers/mineflayer/index.js';
 
 const RUN_DIR = path.resolve('run');
 const HOST = '127.0.0.1';
@@ -106,7 +106,7 @@ async function main() {
         server: `${HOST}:${PORT}`,
         version: VERSION,
         account: { username: 'bank_bot' },
-        boundary: { authority: { op: ['tester'] }, chat: { say_rate: '10/min', commands: ['/pay'], msg_command: '/msg' } },
+        boundary: { chat: { say_rate: '10/min', commands: ['/pay'], msg_command: '/msg' } },
       },
     },
     organizer: {
@@ -116,7 +116,7 @@ async function main() {
         server: `${HOST}:${PORT}`,
         version: VERSION,
         account: { username: 'organizer_bot' },
-        boundary: { fence: [[-80, -480], [260, 240]], blocks: { dig: 'deny', place: 'deny' }, authority: { op: ['tester'] } },
+        boundary: { fence: [[-80, -480], [260, 240]], blocks: { dig: 'deny', place: 'deny' } },
       },
       // 实例事实（坐标）运行期设置（DESIGN §5.3），见下方启动后 setParam
       instanceParams: {
@@ -135,7 +135,6 @@ async function main() {
         boundary: {
           fence: [[-80, -480], [260, 240]],
           combat: { targets: 'player', max_engage: 24 },
-          authority: { op: ['tester'] },
         },
       },
     },
@@ -155,7 +154,6 @@ async function main() {
     if (b.blocks) lines.push(`  blocks: ${JSON.stringify(b.blocks)}`);
     if (b.combat) lines.push(`  combat: { targets: ${b.combat.targets}, max_engage: ${b.combat.max_engage} }`);
     if (b.chat) lines.push(`  chat: ${JSON.stringify(b.chat)}`);
-    lines.push(`  authority: { op: [${b.authority.op.map((s) => JSON.stringify(s)).join(', ')}] }`);
     return lines.join('\n') + '\n';
   };
   for (const [k, cfg] of Object.entries(cfgs)) fs.writeFileSync(path.join(RUN_DIR, `${k}.yaml`), yamlOf(cfg));
@@ -268,7 +266,8 @@ async function main() {
     }
     // 守恒不变量：羊毛 70 / 圆石 12 应在登记箱或 bot 背包中（不含世界损耗）
     const all = [...chestItems(POS.partial), ...chestItems(POS.stock)];
-    const invView = JSON.parse(engines.organizer.lua.global.get('__q_window')('{"window":"0"}') || '{}');
+    const raw = JSON.parse(engines.organizer.abi.sync('window.get', '{"window":"0"}') || '{}');
+    const invView = (raw.ok && raw.value) || {};
     const invAll = (invView.slots ?? []).filter((s) => s.item).map((s) => s.item);
     const cnt = (arr, id) => arr.filter((i) => i.id === id).reduce((n, i) => n + i.count, 0);
     const wool = cnt(all, 'minecraft:pink_wool') + cnt(invAll, 'minecraft:pink_wool');

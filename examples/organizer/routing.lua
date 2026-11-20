@@ -76,7 +76,7 @@ function M.plan_for(id)
 end
 
 -- 开箱校验（bslib.move 的 on_open 回调）：缓存失效、插件 GUI 防护、自由度实测回写。
--- free 以"该物品可放件数"计：空格数 × stack_size（引擎数据表）。
+-- free 以"该物品可放件数"计：空格数 × 该 stack 的 max_count（组件真值）。
 function M.validate(pos, win, filter)
   local n = ChestNote.find{ pos = pos }
   if not n then
@@ -91,7 +91,7 @@ function M.validate(pos, win, filter)
     if not s.item then empty = empty + 1 end
   end
   local id = (filter and filter.id) or n.item
-  local free = empty * (id and data.stack_size(id) or 1)
+  local free = empty * (id and (data.stack({ id = id }).max_count or 64) or 1)
   ChestNote.upsert{ pos = pos, role = n.role, item = n.item or id, free = free }
 end
 
@@ -105,7 +105,7 @@ function M.after_transfer(plan, id, moved)
     ChestNote.upsert{ pos = plan.pos, role = n.role, item = n.item or id, free = 0 }
     return
   end
-  local cur = (n.free and n.free >= 0) and n.free or (27 * data.stack_size(id))
+  local cur = (n.free and n.free >= 0) and n.free or (27 * (data.stack({ id = id }).max_count or 64))
   local free = math.max(0, cur - moved)
   ChestNote.upsert{
     pos  = plan.pos,

@@ -1,0 +1,13 @@
+{
+  "name": "无容器：背包视图原样，点击留在 '0'",
+  "raw": {
+    "id": "0", "type": "inventory", "title": "背包", "size": 36,
+    "slots": [ { "index": 5, "item": { "id": "minecraft:iron_ingot", "count": 12 } } ],
+    "cursor": null
+  },
+  "expect": {
+    "window": { "size": 36, "occupied": { "5": "minecraft:iron_ingot" } },
+    "inventory": { "size": 36, "occupied": { "5": "minecraft:iron_ingot" } },
+    "clicks": [ { "slot": 10, "target": "0", "target_slot": 10 } ]
+  }
+}

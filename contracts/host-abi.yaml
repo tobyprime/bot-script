@@ -1,0 +1,334 @@
+# contracts/host-abi.yaml — 宿主 ABI v2（唯一真源）
+#
+# 四个入口：
+#   核心→宿主 同步   __host_q(op, argsJson)                   → ResultJson
+#   核心→宿主 异步   __host_a(op, argsJson)                   → token
+#   宿主→核心 同步   __core_call(op, argsJson)                → {ok,result}|{ok:false,error}
+#   宿主→核心 异步   __core_resume(id, resultJson, ctlJson) · __core_event(kind, payloadJson)
+#
+# 结果协议（v2.1）：
+#   ResultJson = {"ok":true,"value":<any>} | {"ok":false,"error":{"code":"...","message":"..."}}
+#   ctlJson    = {"cancel":"<source>"} | {"fail":{"kind":"...","detail":"..."}}
+#   宿主绝不把 JS/运行时异常传入 Lua：确定性失败一律 Result；意外异常只记宿主日志，
+#   Lua 侧最多看到稳定码 internal。取消是独立的控制通道，不是 error.code。
+#
+# v2 变更（破坏性）：
+#   * 删除命令体系（command.declare / command.dispatch / on_command / 权威解析 / HTTP /cmd）
+#   * data.item(id) → item.stack(stack)：堆叠数/攻击属性从 **ItemStack components** 读，不再按 id 猜
+#   * 动作按「原版发什么包」建模：点击/挖掘/使用/交互/输入状态/视角，而不是按键操作；
+#     删除 hop / move_input / use_item.duration / chat_reply / respawn
+#   * 删除 protocol.tick_end 能力声明（那是对 mineflayer 的协议补丁，登记在 patches）
+#   * 补全 self（药水效果/属性）、world（block_state / block_entity / time_of_day / weather / reach）、
+#     实体全状态、ItemStack 组件与属性
+#
+# 规则：op/参数/gate/能力只在本文件声明；四份生成物由 tools/codegen.mjs 产出。
+
+abi: 2
+
+capabilities:
+  nav.pathfinder:      { description: 真实寻路器可用；缺失时核心用 act.input + act.look 直线退化 }
+  item.components:     { description: 宿主能读出 ItemStack components（Fabric 注册表 / Node 网络组件） }
+  world.block_entity:  { description: 宿主能读出方块实体（方块 NBT/数据） }
+
+# gate 类别 → 策略字段（policy.schema.json 以此为准）
+# 策略默认开放：没有配置 = 不限制。只有显式写入的 boundary 字段才会收紧对应动作。
+gates:
+  chat:      { description: 发言（boundary.chat：say 限速/命令白名单/正则黑白名单；缺省不限） }
+  move:      { description: 移动（boundary.allow_move=false 才禁止；fence 对移动目标生效） }
+  combat:    { description: 攻击实体（boundary.combat.targets 设置后才限制目标 / max_engage） }
+  dig:       { description: 开始挖掘（boundary.blocks.dig 显式拒绝才禁止）；停止挖掘不受门控 }
+  place:     { description: 放置（boundary.blocks.place 显式拒绝才禁止），由 act.use_block.intent=place 触发 }
+  container: { description: 容器访问（boundary.containers=false 才拒绝），作用于 window_open/click/close }
+
+sync_ops:
+  # ---------------- 基础设施 ----------------
+  - name: log
+    args: { level: { type: string, required: true }, msg: { type: string, required: true } }
+    result: void
+  - name: util.now
+    args: {}
+    result: number
+  - name: util.regex_new
+    args: { pattern: { type: string, required: true } }
+    result: number
+  - name: util.regex_match
+    args: { id: { type: number, required: true }, text: { type: string, required: true } }
+    result: object|null
+  - name: token.bind
+    args:
+      task_id: { type: number, required: true }
+      token: { type: number, required: true }
+      kind: { type: string, required: true }
+    result: void
+  - name: token.detach
+    args: { token: { type: number, required: true } }
+    result: void
+  - name: timer.after
+    args: { delay: { type: number, required: true } }
+    result: number
+  - name: timer.interval
+    args: { interval: { type: number, required: true } }
+    result: number
+  - name: events.emit
+    args: { type: { type: string, required: true }, data: { type: object } }
+    result: number
+  - name: waiter.resolve
+    args:
+      token: { type: number, required: true }
+      match: { type: string, required: true }
+    result: void
+
+  # ---------------- 自身 / 会话 ----------------
+  - name: self.get
+    args: {}
+    result: Self|null
+  - name: session.get
+    args: {}
+    result: SessionInfo
+  - name: caps.get
+    args: { flag: { type: string, required: true } }
+    result: boolean
+  - name: caps.list
+    args: {}
+    result: object                 # {flags:{宿主诊断}, patches:[{id,reason}], abi}
+
+  # ---------------- 实体 ----------------
+  - name: entities.list
+    args:
+      type: { type: string }       # 精确匹配 Entity.type（player / minecraft:zombie）
+      within: { type: number }     # 与自身的 3D 距离上限（减少高频脚本的序列化量）
+    result: Entity[]
+  - name: entities.get
+    args: { id: { type: string, required: true } }
+    result: Entity|null
+
+  # ---------------- 世界 / 方块 ----------------
+  - name: world.block
+    args: { pos: { type: blockpos, required: true } }
+    result: Block|null             # {id, properties, state_id, hardness, block_entity?, is_container, stale}
+  - name: world.block_entity
+    args: { pos: { type: blockpos, required: true } }
+    result: BlockEntity|null       # {type, data:object|null, snbt?: string}
+  - name: world.scan
+    args:
+      region: { type: region, required: true }
+      pred: { type: object }
+      limit: { type: number, default: 200 }
+    result: BlockPosInfo[]         # [{x,y,z,id}]
+  - name: world.env
+    args: {}
+    result: WorldEnv               # {dimension, time_of_day, weather}
+  - name: world.reach
+    args:
+      pos: { type: blockpos, required: true }
+      max_distance: { type: number, default: 4.5 }
+    result: ReachInfo               # {reachable, distance, hit_block?: id|null}
+
+  # ---------------- 容器窗口 ----------------
+  - name: window.current
+    args: {}
+    result: string|null
+  - name: window.get
+    args:
+      window: { type: string, required: true }
+      fields: { type: string, default: "full" }   # full | idcount；idcount = 只回 {id,count}（count/find 用，省序列化/解码）
+    result: Window|null            # 槽位布局已归一化；'0' = 背包（容器打开时为玩家区合并视图）
+
+  # ---------------- 物品栈（组件真值） ----------------
+  - name: item.stack
+    args: { stack: { type: object, required: true } }
+    result: StackInfo              # {id,count,max_count,damage,max_damage,components?,attributes?,enchantments?,custom_name?}
+
+  # ---------------- 聊天策略（只读） ----------------
+  - name: chat.config
+    args: {}
+    result: object                 # {msg_command: string|null}
+
+  # ---------------- persist（语义由 vectors/persist 锁定） ----------------
+  - name: persist.table
+    args: { name: { type: string, required: true }, schema: { type: object, required: true } }
+    result: void
+  - name: persist.find
+    args: { name: { type: string, required: true }, where: { type: object } }
+    result: object|null
+  - name: persist.all
+    args: { name: { type: string, required: true } }
+    result: object[]
+  - name: persist.upsert
+    args: { name: { type: string, required: true }, row: { type: object, required: true } }
+    result: void
+  - name: persist.del
+    args: { name: { type: string, required: true }, where: { type: object } }
+    result: void
+  - name: persist.adjust
+    args:
+      name: { type: string, required: true }
+      key: { type: any, required: true }
+      delta: { type: number, required: true }
+    result: object                 # 主键/数值字段由 persist.table 的 schema 推导
+  - name: persist.seen
+    args: { key: { type: string, required: true }, window_ms: { type: number, required: true } }
+    result: number
+  - name: kv.get
+    args: { name: { type: string, required: true }, key: { type: string, required: true } }
+    result: string
+  - name: kv.set
+    args:
+      name: { type: string, required: true }
+      key: { type: string, required: true }
+      value: { type: string, required: true }
+    result: void
+  - name: persist.log_declare
+    args: { name: { type: string, required: true } }
+    result: void
+  - name: persist.log_append
+    args: { name: { type: string, required: true }, fields: { type: object } }
+    result: number
+  - name: persist.log_find
+    args: { name: { type: string, required: true }, where: { type: object } }
+    result: object[]
+  - name: persist.log_mark
+    args:
+      name: { type: string, required: true }
+      id: { type: number, required: true }
+      state: { type: string, required: true }
+    result: void
+  - name: txn.begin
+    args: {}
+    result: void
+  - name: txn.commit
+    args: {}
+    result: void
+  - name: txn.rollback
+    args: {}
+    result: void
+
+async_ops:
+  # ---------------- 调度原语 ----------------
+  - name: util.sleep
+    args: { ms: { type: number, required: true } }
+    result: void
+  - name: events.next
+    args: { timeout: { type: number, default: 30000 } }
+    result: Event|null
+  - name: waiter.new
+    args: { timeout: { type: number, default: 5000 } }
+    result: object|null
+
+  # ---------------- 协议动作原语（按「发什么包」建模） ----------------
+  - name: act.chat_send
+    gate: chat
+    args:
+      text: { type: string, required: true }
+      kind: { type: string, default: chat }   # chat | command | reply（reply=私聊包，策略按正文 say 限速）
+    result: object
+  - name: act.look
+    args: { yaw: { type: number|null }, pitch: { type: number|null } }   # 度；一个 rotation 包
+    result: object
+  - name: act.input
+    gate: move
+    # 原版 player_input 的状态位（有符号轴映射 forward/backward、right/left）
+    args:
+      forward: { type: number, default: 0 }   # -1..1
+      right: { type: number, default: 0 }     # -1..1
+      up: { type: number, default: 0 }        # 0/1（跳跃位）
+      sprint: { type: boolean, default: false }
+      sneak: { type: boolean, default: false }
+    result: object
+  - name: act.path_to
+    gate: move
+    args:
+      target: { type: blockpos, required: true }
+      arrive: { type: number, default: 1.5 }
+      timeout_ms: { type: number, default: 30000 }
+    result: NavResult
+  - name: act.path_cancel
+    args: {}
+    result: object
+  - name: act.dig
+    gate: dig
+    # 发 player_action START 并持续进度直到破坏（与 act.dig_stop 成对）
+    args:
+      pos: { type: blockpos, required: true }
+      face: { type: number, default: 1 }
+    result: object
+  - name: act.dig_stop
+    args: {}
+    result: object
+  - name: act.use_block
+    gate: place
+    args:
+      pos: { type: blockpos, required: true }
+      face: { type: number, default: 1 }
+      hand: { type: string, default: main }
+      intent: { type: string, default: use }  # use | place（同一 interact 包；intent 只用于策略）
+      cursor: { type: object }
+    result: object
+  - name: act.use_entity
+    gate: combat
+    args:
+      id: { type: string, required: true }
+      kind: { type: string, default: attack }  # attack | interact | interact_at
+      target: { type: object }
+      hand: { type: string, default: main }
+    result: object
+  - name: act.swing
+    args: { hand: { type: string, default: main } }
+    result: object
+  - name: act.use_item
+    args: { hand: { type: string, default: main }, phase: { type: string, default: start } }
+    result: object
+  - name: act.select_slot
+    args: { slot: { type: number, required: true } }
+    result: object
+  - name: act.drop
+    args: { slot: { type: number|null }, all: { type: boolean, default: false } }
+    result: object
+  - name: act.window_open
+    gate: container
+    args: { target: { type: any, required: true } }
+    result: WindowRef
+  - name: act.window_click
+    gate: container
+    args:
+      window: { type: string, default: "0" }
+      slot: { type: number, required: true }
+      button: { type: number, default: 0 }
+      mode: { type: number, default: 0 }
+      state_id: { type: number|null }
+    result: object
+  - name: act.window_close
+    gate: container
+    args: { window: { type: string|null } }
+    result: object
+
+reverse_ops:
+  - name: params.bind
+    args: { manifest: { type: object }, instance: { type: object } }
+    result: object                 # {schema, values}
+  - name: params.get
+    args: {}
+    result: object                 # {schema, values}
+  - name: params.set
+    args: { key: { type: string, required: true }, value: { type: any } }
+    result: object
+  - name: tasks.list
+    args: {}
+    result: object[]
+  - name: tasks.cancel
+    args: { name: { type: string, required: true } }
+    result: object                 # {ok, found}
+  - name: eval.once
+    args: { name: { type: string, required: true }, code: { type: string, required: true } }
+    result: object                 # {ok, task}
+
+models:
+  Self:        "username, pos, yaw, pitch, health, food, gamemode, held:Stack|null, held_slot, velocity, pose, on_fire, sneaking, sprinting, effects:[{id,amplifier,duration}], attributes{armor,absorption,xp_level,xp_progress}"
+  Entity:      "id, uuid, type, name, pos, velocity, yaw, pitch, health(null=不可见), effects[], equipment{hand,offhand,helmet,chestplate,leggings,boots}, pose, alive, flags{on_fire,sneaking,sprinting,invisible,glowing}, vehicle_id"
+  Block:       "id, properties{...}, state_id, hardness, block_entity?:{type,data?,snbt?} , is_container, stale"
+  BlockPosInfo: "x, y, z, id"
+  ReachInfo:   "reachable, distance, hit_block(id|null)"
+  Window:      "id, type, title, size, state_id, slots[{index,item:Stack|null}], cursor, revision"
+  StackInfo:   "id, count, max_count, damage?, max_damage?, components?, attributes?, enchantments?, custom_name?"
+  SessionInfo: "state, paused, pause_reason, info{version,brand,ping,players,view_distance,dimension}"
+  WorldEnv:    "dimension, time_of_day, weather"

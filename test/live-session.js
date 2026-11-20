@@ -10,9 +10,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
-import { BotEngine } from '../engine/engine.js';
-import { MineflayerDriver } from '../drivers/mineflayer/index.js';
-import { startHttpApi } from '../engine/httpapi.js';
+import { BotEngine } from '../hosts/node/engine.js';
+import { MineflayerDriver } from '../hosts/node/drivers/mineflayer/index.js';
+import { startHttpApi } from '../hosts/node/http17.js';
 
 const HOST = '127.0.0.1', PORT = 25565;
 const SERVER_DIR = path.resolve(process.env.BOTSCRIPT_TEST_SERVER_DIR ?? path.join(process.env.HOME, 'paper-475'));
@@ -106,15 +106,15 @@ try {
   });
 
   await check('场景 1：playing 中 POST /session → 200 next_connect，连接不断、任务不受影响', async () => {
-    const t0 = Number(bot.engine.lua.global.get('__ticks'));
+    const t0 = Number(bot.engine.lua.lua.global.get('__ticks'));
     const r = await (await bot.postSession({ access_token: TOKEN_NEW })).json();
     if (r.applied !== true || r.effective !== 'next_connect') {
       throw new Error(`响应异常: ${JSON.stringify(r)}`);
     }
     if (bot.engine.paused) throw new Error(`在线 bot 不得 pause（${bot.engine.pauseReason}）`);
     // 在线连接零动作：观察数秒仍 playing，timer 照常走
-    const t1 = await waitFor(() => Number(bot.engine.lua.global.get('__ticks')) > t0 + 2, 10000, 250, 'timer 前进')
-      .then(() => Number(bot.engine.lua.global.get('__ticks')));
+    const t1 = await waitFor(() => Number(bot.engine.lua.lua.global.get('__ticks')) > t0 + 2, 10000, 250, 'timer 前进')
+      .then(() => Number(bot.engine.lua.lua.global.get('__ticks')));
     if (bot.engine.sessionState !== 'playing') throw new Error(`POST 后应保持 playing: ${bot.engine.sessionState}`);
     const s = await bot.state();
     if (!(s.credential_updated_at > 0 && s.credential_updated_at <= Date.now())) {

@@ -1,0 +1,1 @@
+{ "name": "未配置 combat.targets：攻击不限制目标", "boundary": {}, "op": "act.use_entity", "args": { "id": "1", "kind": "attack" }, "entity": { "id": "1", "type": "player", "pos": { "x": 3, "y": 64, "z": 0 } }, "self_pos": { "x": 0, "y": 64, "z": 0 }, "expect": { "allow": true, "error": null } }

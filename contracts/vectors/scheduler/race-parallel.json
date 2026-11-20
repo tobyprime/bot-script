@@ -1,0 +1,10 @@
+{
+  "name": "race 取最快分支、parallel 全部完成（含败者取消留痕）",
+  "script": "__DONE = false\non_start(function()\n  task.spawn(function()\n    local w = race({ function() time.sleep(10) return \"fast\" end, function() time.sleep(50) return \"slow\" end })\n    log.info(\"race=%s\", w)\n    local rs = parallel({ function() time.sleep(10) return 1 end, function() time.sleep(10) return 2 end })\n    log.info(\"par=%d,%d\", rs[1], rs[2])\n    __DONE = true\n  end)\nend)",
+  "steps": [
+    { "event": ["lifecycle", { "kind": "on_start" }] },
+    { "advance": 10 },
+    { "advance": 10 }
+  ],
+  "expectLogs": ["info|race=fast", "info|par=1,2", "info|任务 [race#2] 取消（parent:2）"]
+}
