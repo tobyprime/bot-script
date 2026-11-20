@@ -201,6 +201,7 @@ export class BotEngine {
     this.reconnectDueAt = null;
     this.timers.clearAll();
     try { await this.driver.stop?.(); } catch { /* ignore */ }
+    try { this.lua?.close(); } catch { /* ignore */ }
     this.persist?.close();
   }
 

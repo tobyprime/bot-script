@@ -43,3 +43,23 @@ test('Result：确定性失败不抛异常；宿主意外异常只给稳定码�
   assert.ok(await waitFor(() => g(engine, '__R_native_failed') === true, 3000), 'Lua 原生错误仍应进入 on_error');
   await engine.stop();
 });
+
+test('detach 动作立即出账：高频 look 不堆积 tokens/settled', async () => {
+  script('detach.lua', `
+    __R_done = false
+    task("spin", { single = true }, function()
+      for i = 1, 500 do
+        look.aim(0, 0)
+        time.sleep(1)
+      end
+      __R_done = true
+    end)
+    on_start(function() task.spawn("spin") end)
+  `);
+  const { engine } = await makeEngine({ scripts: ['detach.lua'], driver: new MockDriver(), boundary: {} });
+  assert.ok(await waitFor(() => g(engine, '__R_done') === true, 8000), 'spin 应跑完');
+  await waitFor(() => engine.hub.tokens.size <= 4, 2000);
+  assert.ok(engine.hub.tokens.size <= 4, `detach token 应出账（实际 ${engine.hub.tokens.size}）`);
+  assert.strictEqual(engine.hub.settled.size, 0, 'settled 不应残留');
+  await engine.stop();
+});

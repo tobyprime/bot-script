@@ -58,6 +58,8 @@ export function startHttpApi(engine, { log = console.log, port, token: tokenArg 
         tasks: engine.taskListFull(),
         window: engine.currentWindowId,
         caps: engine.driver.caps?.() ?? {},
+        // 长跑排障：worker isolate 的堆/外部内存（RSS 是进程级，含 host + 所有 worker）
+        memory: process.memoryUsage(),
       });
     },
     getParams: (req, res) => {

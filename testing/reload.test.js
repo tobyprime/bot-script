@@ -65,3 +65,13 @@ test('热重载：新脚本接管、旧任务停止、会话不中断；编译�
   assert.strictEqual(driver.stopCalls, undefined, '驱动不应被重启');
   await engine.stop();
 });
+
+test('热重载不累积 process 监听：反复 reload 后 uncaughtException 数量不增长', async () => {
+  const before = process.listenerCount('uncaughtException');
+  script('reload2.lua', 'on_start(function() end)');
+  const { engine } = await makeEngine({ scripts: ['reload2.lua'], driver: new MockDriver(), boundary: {} });
+  for (let i = 0; i < 5; i++) await engine.reloadScripts({ reason: 'listener' });
+  assert.ok(process.listenerCount('uncaughtException') <= before + 1,
+    `process 监听应随旧 VM 释放（before=${before} now=${process.listenerCount('uncaughtException')}）`);
+  await engine.stop();
+});

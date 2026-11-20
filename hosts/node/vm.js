@@ -30,11 +30,20 @@ export class LuaVm {
     // Windows 下 emscripten 对非 file:// 路径误用 fetch：初始化期间屏蔽 fetch 强制走 fs
     const realFetch = globalThis.fetch;
     globalThis.fetch = undefined;
+    // Emscripten 每个引擎都向 process 注册 uncaughtException/unhandledRejection；
+    // 热重载会不断新建引擎，必须在 close 时只移除「本引擎新增的」监听，否则监听器与闭包泄漏
+    const procEvents = ['uncaughtException', 'unhandledRejection', 'beforeExit', 'exit'];
+    const before = Object.fromEntries(procEvents.map((e) => [e, process.listeners(e)]));
     try {
       this.factory = new LuaFactory();
       this.lua = await this.factory.createEngine();
     } finally {
       globalThis.fetch = realFetch;
+    }
+    this._procListeners = [];
+    for (const e of procEvents) {
+      const added = process.listeners(e).filter((fn) => !before[e].includes(fn));
+      for (const fn of added) this._procListeners.push([e, fn]);
     }
 
     for (const [mountName, file] of Object.entries(CORE_FILES)) {
@@ -85,6 +94,13 @@ export class LuaVm {
 
   close() {
     try { this.lua?.global.close(); } catch { /* 已关闭 */ }
+    // 只摘掉本引擎新增的 process 监听（wasmoon/Emscripten 的每引擎注册）
+    for (const [ev, fn] of this._procListeners ?? []) {
+      try { process.removeListener(ev, fn); } catch { /* ignore */ }
+    }
+    this._procListeners = [];
+    this.factory = null;
+    this.lua = null;
   }
 }
 

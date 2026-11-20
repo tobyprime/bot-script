@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import { test } from './registry.js';
 import { makeEngine, script, g, waitFor } from './harness.js';
 import { MockDriver } from './mock-driver.js';
+import { WorldState } from '../hosts/node/state/world.js';
 
 test('entity 查询是实时的：查询之间的目标移动立即可见（不经任何缓存层）', async () => {
   script('live-ent.lua', `
@@ -170,4 +171,11 @@ test('entity 句柄装备按名字暴露：hand/offhand/boots/leggings/chestplat
   assert.ok(r.includes('chestplate=minecraft:leather_chestplate'), `胸甲应可读，实际 ${r}`);
   assert.ok(r.includes('offhand=minecraft:shield'), `副手应可读，实际 ${r}`);
   await engine.stop();
+});
+
+test('world 观测缓存有界：持续 block_update 不得让 Map 只增不减', () => {
+  const w = new WorldState();
+  for (let i = 0; i < 6000; i++) w.onBlockChanged({ x: i, y: 64, z: 0 }, 'minecraft:stone');
+  assert.ok(w.cache.size <= 4096, `cache 应有界，实际 ${w.cache.size}`);
+  assert.ok(w.cache.has('5999,64,0'), '最近更新的位置必须保留');
 });

@@ -45,12 +45,24 @@ export class TokenHub {
 
   detach(token) {
     const rec = this.tokens.get(Number(token));
-    if (rec) rec.detached = true;
+    if (!rec) return;
+    rec.detached = true;
+    // fire-and-forget 若已结算，没人会来 bind/交付：立刻出账，避免 tokens/settled 永久增长
+    if (rec.settled && !rec.waiterRegistered) {
+      this.tokens.delete(Number(token));
+      this.settled.delete(Number(token));
+    }
   }
 
   settle(token, okj, ej) {
     const rec = this.tokens.get(token);
     if (!rec) return;
+    // 已 detach 的 token 不会有人再 await：直接出账（高频 look/rot 的审计口径）
+    if (rec.detached && !rec.waiterRegistered) {
+      this.tokens.delete(token);
+      this.settled.delete(token);
+      return;
+    }
     rec.settled = true;
     this.settled.set(token, [okj ?? '', ej ?? '']);
     if (rec.waiterRegistered) this.deliverToken(token);

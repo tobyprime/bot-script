@@ -157,6 +157,8 @@ local function finish(t, ok, errv)
     end
     bridge.log("error", "任务 [" .. (t.decl_name or t.name) .. "] 失败: " .. errstr(e))
   end
+  -- 结束的任务从台账删除：事件处理器按消息 spawn，长期不清理会让 __T 只增不减
+  __T[t.id] = nil
 end
 
 local function run_cancel_hooks(t)

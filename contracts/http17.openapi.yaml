@@ -39,6 +39,7 @@ components:
         tasks: { type: array, items: { type: object } }
         window: { type: string, nullable: true }
         caps: { type: object }
+        memory: { type: object, description: "worker process.memoryUsage()（排障用）" }
     ParamsSnapshot:
       type: object
       required: [schema, values]
