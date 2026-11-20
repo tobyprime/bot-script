@@ -180,7 +180,7 @@ function bslib.nav_follow(entity_id, opts)
   while true do
     local cur = bridge.value(bridge.entities.get(tostring(entity_id)), nil)
     if not cur or cur.alive == false then return { ok = true, value = { gone = true } } end
-    local sp = bridge.value(bridge.self.get(), nil)
+    local sp = bridge.value(__self_snapshot(), nil)
     local d = (sp and sp.pos and cur.pos) and dist3(sp.pos, cur.pos) or math.huge
     if d > want + 1 then
       if bridge.value(bridge.caps.get("nav.pathfinder"), false) then
@@ -224,7 +224,7 @@ function bslib.container_open(target, opts)
 
   local function aim(t)
     -- 服务器校验交互视线：开箱前先看向方块中心（fabric 客户端不会自动瞄准）
-    local sp = bridge.value(bridge.self.get(), nil)
+    local sp = bridge.value(__self_snapshot(), nil)
     if not sp or not sp.pos then return end
     local p = sp.pos
     local dx = t.x + 0.5 - p.x
@@ -248,7 +248,7 @@ function bslib.container_open(target, opts)
   local res
   -- 先贴脸：survival reach 有限，走到 1.2 格内再交互最稳
   if pos ~= nil then
-    local sp = bridge.value(bridge.self.get(), nil)
+    local sp = bridge.value(__self_snapshot(), nil)
     if sp and sp.pos and dist3(sp.pos, pos) > 2.5 then approach(pos, 1.2, 10) end
     aim(pos)
   end
@@ -264,7 +264,7 @@ function bslib.container_open(target, opts)
   if not open_r.ok then
     -- 重试：先走近（服务器对超出交互距离的交互静默拒绝），再开
     if pos ~= nil then
-      local sp = bridge.value(bridge.self.get(), nil)
+      local sp = bridge.value(__self_snapshot(), nil)
       if sp and sp.pos and dist3(sp.pos, pos) > 4 then approach(pos, 2, 8) end
     end
     awaited(bridge.act.window_close(nil))
@@ -307,7 +307,7 @@ end
 -- ---------- 背包 / 窗口槽位助手 ----------
 
 local function held_slot()
-  local s = bridge.value(bridge.self.get(), nil)
+  local s = bridge.value(__self_snapshot(), nil)
   return (s and (s.held_slot or s.heldSlot)) or 0
 end
 

@@ -186,10 +186,11 @@ bridge.window.current = function()
   return q("window.current", {
 })
 end
---- window.get(window) → Window|null
-bridge.window.get = function(window)
+--- window.get(window, fields) → Window|null
+bridge.window.get = function(window, fields)
   return q("window.get", {
     window = window,
+    fields = fields ~= nil and fields or "full",
   })
 end
 --- item.stack(stack) → StackInfo

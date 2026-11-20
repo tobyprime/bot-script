@@ -30,6 +30,8 @@ export class MineflayerDriver {
     this.cfg = {};
     this.windowSeq = 1;
     this.selfDirty = false;
+    this.invDirty = true;      // 背包变化才重建 self 事件里的 inv 列表
+    this.invSnapshot = null;
     this.pathWait = null;
     this.alive = false;
     this.transportErrLogged = false;
@@ -222,7 +224,7 @@ export class MineflayerDriver {
       win?.on?.('update', () => this.pushWindowsDirty());
       this.pushWindowsDirty();
     });
-    bot.inventory?.on?.('update', () => this.pushWindowsDirty());
+    bot.inventory?.on?.('update', () => { this.invDirty = true; this.pushWindowsDirty(); });
     bot.on('blockUpdate', (oldBlock, newBlock) => {
       if (newBlock) this.emit('block_update', { pos: NORM(newBlock.position ?? oldBlock?.position), name: CANON(newBlock.name) });
     });
@@ -232,6 +234,7 @@ export class MineflayerDriver {
   }
 
   stopSampling() {
+    this.invSnapshot = null;
     clearInterval(this.selfTimer);
     clearInterval(this.windowTimer);
   }
@@ -278,13 +281,18 @@ export class MineflayerDriver {
   pushSelf() {
     const s = this.query_self();
     if (!s) return;
-    const inv = [];
-    for (const it of this.bot.inventory?.items() ?? []) {
-      if (it.slot >= 9 && it.slot <= 44) {
-        inv.push({ slot: it.slot, id: it.name, count: it.count, name: it.displayName ?? it.name });
+    // inv 只在背包变化时重建：原先每 200ms 全量遍历一次，对 UI/诊断字段来说纯属浪费
+    if (this.invDirty || !this.invSnapshot) {
+      const inv = [];
+      for (const it of this.bot.inventory?.items() ?? []) {
+        if (it.slot >= 9 && it.slot <= 44) {
+          inv.push({ slot: it.slot, id: it.name, count: it.count, name: it.displayName ?? it.name });
+        }
       }
+      this.invSnapshot = inv;
+      this.invDirty = false;
     }
-    this.emit('self', { ...s, inv });
+    this.emit('self', { ...s, inv: this.invSnapshot });
   }
 
   snapshotOf(e) {
@@ -395,9 +403,9 @@ export class MineflayerDriver {
       if (bot.currentWindow && bot.currentWindow.id !== 0) this.pushWindow(bot.currentWindow);
       else this.pushInventory();
     }, 50);
-    bot.inventory?.on?.('update', () => { dirty = true; });
+    bot.inventory?.on?.('update', () => { this.invDirty = true; dirty = true; });
     bot.on('spawn', () => {
-      bot.inventory?.on?.('update', () => { dirty = true; });
+      bot.inventory?.on?.('update', () => { this.invDirty = true; dirty = true; });
       this.pushInventory();
     });
   }
@@ -698,16 +706,25 @@ export class MineflayerDriver {
     const z1 = Math.min(c1.z, c2.z), z2 = Math.max(c1.z, c2.z);
     const center = new Vec3((x1 + x2) / 2, (y1 + y2) / 2, (z1 + z2) / 2);
     const maxDistance = Math.ceil(Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2 + (z2 - z1) ** 2) / 2) + 2;
+    // useExtraInfo=true 会短路 mineflayer 的 section palette 剪枝（blocks.js:178），
+    // 退化成「区域体积 × 4096 次 blockAt」。谓词只读 name/position，不需要 extraInfo。
+    // 区域边界并入谓词：count 只统计域内命中，无需 limit*2 + 事后过滤。
+    // palette 预筛传入的合成 Block 没有 position（prismarine-block 默认 null）→ 只做名字判断。
+    const inRegion = (block) => {
+      const p = block?.position;
+      if (!p) return true;
+      return p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2 && p.z >= z1 && p.z <= z2;
+    };
+    const matching = (block) => !!block && inRegion(block) && kindSet.has(block.name);
     const found = bot.findBlocks({
       point: center,
       maxDistance,
-      count: limit * 2,
-      useExtraInfo: true,
-      matching: (block) => kindSet.has(block.name),
+      count: limit,
+      useExtraInfo: false,
+      matching,
     }) ?? [];
     return found
       .map((p) => ({ x: p.x, y: p.y, z: p.z, id: CANON(bot.blockAt(p)?.name ?? null) }))
-      .filter((p) => p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2 && p.z >= z1 && p.z <= z2)
       .slice(0, limit);
   }
 

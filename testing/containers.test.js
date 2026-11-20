@@ -62,3 +62,21 @@ test('窗口归一化：容器打开时背包 = 玩家区合并视图（槽位�
   assert.strictEqual(g(engine, '__R_inv_slot'), 9, '主背包槽在合并视图里仍是 9');
   await engine.stop();
 });
+
+test('window.get fields=idcount：只回 id/count（count/find 不再展开整份 StackInfo）', async () => {
+  const driver = new MockDriver();
+  const { engine } = await makeEngine({ scripts: [], driver });
+  driver.give(0, 'minecraft:pink_wool', 10);
+  driver.give(9, 'minecraft:dirt', 5);
+  const full = JSON.parse(engine.abi.sync('window.get', JSON.stringify({ window: '0' })));
+  const compact = JSON.parse(engine.abi.sync('window.get', JSON.stringify({ window: '0', fields: 'idcount' })));
+  assert.ok(full.ok && compact.ok);
+  const fullItem = full.value.slots.find((s) => s.item).item;
+  const compactItem = compact.value.slots.find((s) => s.item).item;
+  assert.deepStrictEqual(Object.keys(compactItem).sort(), ['count', 'id'],
+    'idcount 投影只应包含 id/count，便于 Lua 侧 count/find 使用');
+  assert.strictEqual(compactItem.id, fullItem.id);
+  assert.strictEqual(compactItem.count, fullItem.count);
+  assert.ok(fullItem.max_count != null, 'full 仍应展开 StackInfo（默认行为不变）');
+  await engine.stop();
+});

@@ -198,19 +198,7 @@ export class AbiDispatcher {
       'entities.get': ({ id }) => entityOf(driver.query_entity?.(String(id)) ?? null),
 
       // ---- 世界 ----
-      'world.block': ({ pos }) => {
-        const live = driver.block_info?.(pos);
-        if (live) {
-          return {
-            ...live,
-            is_container: data.isContainerName(live.id),
-            stale: false,
-          };
-        }
-        const cached = s.world.cache.get(`${Math.round(pos.x)},${Math.round(pos.y)},${Math.round(pos.z)}`);
-        if (!cached) return null;
-        return { id: cached.name, properties: null, state_id: null, hardness: null, block_entity: null, is_container: data.isContainerName(cached.name), stale: true };
-      },
+      'world.block': ({ pos }) => s.world.block(pos),
       'world.block_entity': ({ pos }) => driver.block_entity?.(pos) ?? null,
       'world.scan': ({ region, pred, limit }) => driver.scan_blocks?.(region, data.scanKinds(pred), limit ?? 200) ?? [],
       'world.env': () => {
@@ -226,13 +214,19 @@ export class AbiDispatcher {
 
       // ---- 容器窗口 ----
       'window.current': () => windows.current(),
-      'window.get': ({ window: wid }) => {
+      'window.get': ({ window: wid, fields }) => {
         const v = windows.view(wid);
         if (!v) return null;
+        // fields=idcount：只回 {id,count}，供 inv/win 的 count/find 使用。
+        // 全量 StackInfo 的组件展开 + 90 槽解码是查询 CPU 的主项（PERF-REFACTOR §2.3）。
+        const idcount = String(fields ?? 'full') === 'idcount';
+        const itemOfSlot = idcount
+          ? (it) => (it ? { id: it.id, count: it.count } : null)
+          : stackOf;
         return {
           ...v,
-          slots: v.slots.map((sl) => ({ index: sl.index, item: stackOf(sl.item) })),
-          cursor: stackOf(v.cursor),
+          slots: v.slots.map((sl) => ({ index: sl.index, item: itemOfSlot(sl.item) })),
+          cursor: itemOfSlot(v.cursor),
         };
       },
 

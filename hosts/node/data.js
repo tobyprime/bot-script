@@ -45,6 +45,8 @@ export class DataRegistry {
     this.version = null;
     this.items = null;       // Map<name, {stackSize,maxDurability,enchantCategories}>
     this.registry = false;
+    this.idStatic = new Map();   // CANON id -> {maxCount, maxDamage}（注册表只读，跨调用缓存）
+    this.compCache = new WeakMap(); // components 数组对象 -> 解析结果（同一物品重复展开时命中）
     this.initSync(version);
   }
 
@@ -52,6 +54,7 @@ export class DataRegistry {
     const want = mcd ? resolveVersion(version) : '1.21.8';
     if (want === this.version && (this.items !== null || mcd === null)) return;
     this.version = want;
+    this.idStatic = new Map();
     const cache = dbCache.get(want);
     if (cache) { this.items = cache.items; this.registry = !!cache.items; return; }
     try {
@@ -93,6 +96,57 @@ export class DataRegistry {
     return this.items?.get(name) ?? null;
   }
 
+  /** 注册表默认值（只读）：按 id 缓存，避免每个槽重复查 minecraft-data。 */
+  staticOf(id) {
+    let hit = this.idStatic.get(id);
+    if (hit) return hit;
+    const en = this.itemEnum(id);
+    hit = { maxCount: en?.stackSize ?? 64, maxDamage: en?.maxDurability ?? null };
+    this.idStatic.set(id, hit);
+    return hit;
+  }
+
+  /**
+   * 组件解析（每个 components 数组只解析一次）：
+   * 网络组件形态 [{type|name, data|value}]，只需一次遍历建索引，替代 5 次线性 findComp。
+   */
+  parseComponents(components) {
+    let hit = this.compCache.get(components);
+    if (hit) return hit;
+    const by = new Map();
+    for (const c of components) {
+      const key = String(c?.type ?? c?.name ?? '').split(':').pop();
+      if (key && !by.has(key)) by.set(key, c?.data ?? c?.value ?? null);
+    }
+    const parsed = {
+      maxCount: typeof by.get('max_stack_size') === 'number' ? by.get('max_stack_size') : null,
+      maxDamage: typeof by.get('max_damage') === 'number' ? by.get('max_damage') : null,
+      customName: by.has('custom_name') ? by.get('custom_name') : null,
+      enchantments: by.has('enchantments') ? by.get('enchantments') : null,
+      attributes: null,
+    };
+    const attrs = by.get('attribute_modifiers');
+    if (Array.isArray(attrs)) {
+      const out = {};
+      for (const a of attrs) {
+        const key = String(a?.type ?? a?.name ?? a?.id ?? '').split(':').pop();
+        const amount = Number(a?.amount ?? a?.value ?? NaN);
+        if (!Number.isFinite(amount)) continue;
+        if (key === 'attack_damage') out.attack_damage = amount;
+        else if (key === 'attack_speed') out.attack_speed = amount;
+        else if (key === 'armor') out.armor = amount;
+        else if (key === 'armor_toughness') out.armor_toughness = amount;
+        else if (key === 'max_health') out.max_health = amount;
+        else if (key === 'movement_speed') out.movement_speed = amount;
+        else if (key === 'knockback_resistance') out.knockback_resistance = amount;
+      }
+      if (Object.keys(out).length) parsed.attributes = out;
+    }
+    // 输入是调用方给的数组；WeakMap 以数组对象为键：同一物品被重复展开时直接命中
+    this.compCache.set(components, parsed);
+    return parsed;
+  }
+
   /**
    * ItemStack 归一化（组件真值优先）：
    *   stack 可以是 {id,name,count,maxDurability,durabilityUsed,components,nbt...}
@@ -104,49 +158,17 @@ export class DataRegistry {
     const id = CANON(raw.id ?? raw.name);
     if (!id) return { id: null, count: 0, max_count: null, max_damage: null, damage: null, components: null, attributes: null, enchantments: null, custom_name: null };
 
-    const en = this.itemEnum(id);
+    const st = this.staticOf(id);
     const components = Array.isArray(raw.components) && raw.components.length ? raw.components : null;
+    const parsed = components ? this.parseComponents(components) : null;
 
     // max_count：优先组件里的 max_stack_size，其次注册表默认，最后 64
-    let maxCount = en?.stackSize ?? 64;
+    let maxCount = parsed?.maxCount ?? st.maxCount;
     let damage = raw.damage ?? raw.durabilityUsed ?? null;
-    let maxDamage = raw.maxDurability ?? en?.maxDurability ?? null;
-    let customName = raw.customName ?? null;
-    let attributes = null;
-    let enchantments = null;
-
-    if (components) {
-      const findComp = (suffix) => {
-        const c = components.find((x) => String(x?.type ?? x?.name ?? '').split(':').pop() === suffix);
-        return c ? (c.data ?? c.value ?? null) : null;
-      };
-      const mcs = findComp('max_stack_size');
-      if (typeof mcs === 'number') maxCount = mcs;
-      const md = findComp('max_damage');
-      if (typeof md === 'number') maxDamage = md;
-      const cn = findComp('custom_name');
-      if (cn != null) customName = cn;
-      const enchs = findComp('enchantments');
-      if (enchs != null) enchantments = enchs;
-      const attrs = findComp('attribute_modifiers');
-      if (Array.isArray(attrs)) {
-        // 网络组件形态：[{type/name, amount, operation, slot, id}]；只取通用属性
-        attributes = {};
-        for (const a of attrs) {
-          const key = String(a?.type ?? a?.name ?? a?.id ?? '').split(':').pop();
-          const amount = Number(a?.amount ?? a?.value ?? NaN);
-          if (!Number.isFinite(amount)) continue;
-          if (key === 'attack_damage') attributes.attack_damage = amount;
-          else if (key === 'attack_speed') attributes.attack_speed = amount;
-          else if (key === 'armor') attributes.armor = amount;
-          else if (key === 'armor_toughness') attributes.armor_toughness = amount;
-          else if (key === 'max_health') attributes.max_health = amount;
-          else if (key === 'movement_speed') attributes.movement_speed = amount;
-          else if (key === 'knockback_resistance') attributes.knockback_resistance = amount;
-        }
-        if (!Object.keys(attributes).length) attributes = null;
-      }
-    }
+    let maxDamage = parsed?.maxDamage ?? raw.maxDurability ?? raw.max_damage ?? st.maxDamage;
+    let customName = parsed?.customName ?? raw.customName ?? null;
+    const attributes = parsed?.attributes ?? null;
+    const enchantments = parsed?.enchantments ?? null;
 
     return {
       id,
@@ -166,9 +188,16 @@ export class DataRegistry {
     return CONTAINER_SET.has(String(namespaced ?? '').replace('minecraft:', ''));
   }
   scanKinds(pred) {
-    if (!pred) return ['chest'];
-    if (pred.type === 'container') return this.containerPaths();
-    return pred.names ?? ['chest'];
+    if (!pred || (typeof pred === 'object' && Object.keys(pred).length === 0)) return ['chest'];
+    const keys = Object.keys(pred);
+    if (keys.length === 1 && pred.type === 'container') return this.containerPaths();
+    if (keys.length === 1 && Array.isArray(pred.names) && pred.names.length) {
+      return pred.names.map((n) => String(n));
+    }
+    // 静默吞掉未知谓词会把「过滤生效」说成谎：显式失败（PERF-REFACTOR §2.2-5）
+    const e = new Error(`world.scan: 不支持的 pred ${JSON.stringify(pred)}（支持 {type="container"} 或 {names=[...]}`);
+    e.kind = 'abi.invalid_args';
+    throw e;
   }
 }
 

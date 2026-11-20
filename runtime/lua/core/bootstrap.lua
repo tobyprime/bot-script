@@ -33,6 +33,11 @@ __DECL = { tasks = {}, timers = {}, afters = {} }
 __LIFE = {}
 __CLEANUP_FLAG = {}   -- taskid -> true（on_cancel 清理中：动作改 fire-and-forget）
 __IN_CLEANUP = false
+-- 帧编号：每次宿主交互（await 返回 / 事件 / resume）自增。
+-- 实体句柄与 self 快照在同帧内复用，跨帧至多刷新一次（PERF-REFACTOR §3.3）。
+__EPOCH = 0
+__SELF = nil
+__SELF_EPOCH = -1
 
 local TASK_ERR_BYPASS = __COMPAT_TASK_ERR == true   -- LuaJ 由 compat/luaj.lua 置真
 
@@ -78,6 +83,7 @@ end
 -- 取消/内部任务失败走独立控制通道：取消 => 展开当前任务；内部失败 => 按任务级失败处理。
 local function await(token)
   local resultj, ctlj = coroutine.yield(token, __TXN_FLAG and 1 or 0)
+  __EPOCH = __EPOCH + 1   -- 挂起点返回 = 新的一帧：句柄/self 快照失效
   if ctlj ~= nil and ctlj ~= "" then
     local c = decode(ctlj)
     if type(c) ~= "table" then error({ kind = "runtime.error", detail = raw_tostring(c) }, 0) end
@@ -442,6 +448,7 @@ function __core_event(kind, j)
 end
 
 function __core_event_inner(kind, j)
+  __EPOCH = __EPOCH + 1   -- 事件到达 = 新的一帧
   local p = (j ~= nil and j ~= "") and decode(j) or nil
   if kind == "timer" then
     local spec = p and __DECL.timers[p.id]
@@ -932,48 +939,90 @@ function events.emit(type, data)
   return rv(bridge.events.emit(tostring(type), data or {}), nil)
 end
 
--- ---------- 实体句柄（活读：动态字段每次访问穿透到最新缓存） ----------
+-- ---------- 实体句柄（帧快照：同帧内零跨桥，跨帧至多重取一次） ----------
+--
+-- 语义：字段值 = 最近一次宿主交互（await/事件/resume）之后的最新快照。
+-- 同一帧内重复读多个字段只读本地表；跨帧后每个句柄至多重取一次（原先每个字段一次，
+-- 单次 entities.get ≈1ms）。需要强制新鲜时用 e:refresh()（PERF-REFACTOR §3.3）。
 
 local function snap_of(id)
   if id == nil then return nil end
   return rv(bridge.entities.get(tostring(id)), nil)
 end
 
+local function shallow_copy(t)
+  local out = {}
+  for k, v in pairs(t) do out[k] = v end
+  return out
+end
+
 local ent_mt = {
   __index = function(e, k)
     local id = rawget(e, "__id")
     if k == "id" then return id end
-    if k == "snapshot" then
+    if k == "refresh" then
       return function()
         local s = snap_of(id)
-        if not s then return nil end
-        local copy = {}
-        for kk, vv in pairs(s) do copy[kk] = vv end
-        return copy
+        rawset(e, "__s", s)
+        rawset(e, "__epoch", __EPOCH)
+        return e
+      end
+    end
+    if k == "snapshot" then
+      return function()
+        local s = rawget(e, "__s")
+        if rawget(e, "__epoch") ~= __EPOCH then
+          s = snap_of(id)
+          rawset(e, "__s", s)
+          rawset(e, "__epoch", __EPOCH)
+        end
+        return s and shallow_copy(s) or nil
       end
     end
     if k == "exists" then return function() return snap_of(id) ~= nil end end
-    local s = snap_of(id)
+    local s = rawget(e, "__s")
+    if s == nil or rawget(e, "__epoch") ~= __EPOCH then
+      s = snap_of(id)
+      rawset(e, "__s", s)
+      rawset(e, "__epoch", __EPOCH)
+    end
     if not s then return nil end
     return s[k]
   end,
 }
 
-local function make_entity(id) return setmetatable({ __id = id }, ent_mt) end
+local function make_entity(s)
+  if type(s) ~= "table" then return nil end
+  return setmetatable({ __id = s.id, __s = s, __epoch = __EPOCH }, ent_mt)
+end
+
+local function entity_id(e)
+  return type(e) == "table" and (rawget(e, "__id") or e.id) or e
+end
 
 entity = {
-  exists = function(e) return snap_of(type(e) == "table" and (rawget(e, "__id") or e.id) or e) ~= nil end,
+  exists = function(e) return snap_of(entity_id(e)) ~= nil end,
 }
 
+-- 自身快照按帧缓存：look.at / nearest / inv.held 在同一帧共用一次 self.get
+local function self_snapshot()
+  if __SELF_EPOCH ~= __EPOCH then
+    __SELF = rv(bridge.self.get(), nil)
+    __SELF_EPOCH = __EPOCH
+  end
+  return __SELF
+end
+
+_G.__self_snapshot = self_snapshot
+
 local function self_pos()
-  local sp = rv(bridge.self.get(), nil)
+  local sp = self_snapshot()
   return sp and sp.pos or nil
 end
 
-local function within_ok(s, pred)
+local function within_ok(s, pred, sp)
   if not pred or not pred.within then return true end
   if not s.pos then return false end
-  local sp = self_pos()
   if not sp then return false end
   local dx, dy, dz = s.pos.x - sp.x, s.pos.y - sp.y, s.pos.z - sp.z
   return math.sqrt(dx * dx + dy * dy + dz * dz) <= pred.within
@@ -1018,10 +1067,11 @@ end
 
 function entity.find(pred)
   local list = rv(bridge.entities.list(pred and pred.type, pred and pred.within), {}) or {}
+  local sp = (pred and pred.within) and self_pos() or nil
   local out = {}
   for _, s in ipairs(list) do
-    if within_ok(s, pred) and pred_match(s, pred) then
-      out[#out + 1] = make_entity(s.id)
+    if within_ok(s, pred, sp) and pred_match(s, pred) then
+      out[#out + 1] = make_entity(s)
     end
   end
   return out
@@ -1032,7 +1082,7 @@ function entity.nearest(pred)
   local sp = self_pos()
   local best, bd
   for _, s in ipairs(list) do
-    if within_ok(s, pred) and pred_match(s, pred) and s.pos then
+    if within_ok(s, pred, sp) and pred_match(s, pred) and s.pos then
       local d
       if sp then
         local dx, dy, dz = s.pos.x - sp.x, s.pos.y - sp.y, s.pos.z - sp.z
@@ -1041,7 +1091,7 @@ function entity.nearest(pred)
       if not bd or (d and d < bd) then best, bd = s, d or 0 end
     end
   end
-  return best and make_entity(best.id) or nil
+  return make_entity(best)
 end
 
 -- ---------- world ----------
@@ -1050,7 +1100,12 @@ world = {
   block = function(pos) return rv(bridge.world.block(pos), nil) or {} end,
   block_entity = function(pos) return rv(bridge.world.block_entity(pos), nil) end,
   scan = function(region, pred, opts)
-    return rv(bridge.world.scan(region, pred, (opts or {}).limit), nil) or {}
+    local r = bridge.world.scan(region, pred, (opts or {}).limit)
+    -- 未知谓词不得静默变成「空结果/默认 chest」：把宿主的类型化错误交还给脚本
+    if type(r) == "table" and r.ok == false and r.error then
+      error({ kind = r.error.code or "runtime.error", detail = r.error.message }, 0)
+    end
+    return rv(r, nil) or {}
   end,
   reach = function(pos, max_distance)
     return rv(bridge.world.reach(pos, max_distance), nil) or { reachable = false, distance = nil, hit_block = nil }
@@ -1073,7 +1128,9 @@ function item_match(item, filter)
   return true
 end
 
-local function win_snap(id) return rv(bridge.window.get(tostring(id)), nil) end
+local function win_snap(id, fields)
+  return rv(bridge.window.get(tostring(id), fields), nil)
+end
 
 local win_mt = {
   __index = function(w, k)
@@ -1145,7 +1202,7 @@ local win_mt = {
     elseif k == "count" then
       return function(a, b, c)
         local _, filter = split(a, b, c)
-        local s = win_snap(id)
+        local s = win_snap(id, "idcount")
         local n = 0
         if s and s.slots then
           for _, sl in ipairs(s.slots) do
@@ -1157,7 +1214,7 @@ local win_mt = {
     elseif k == "find" then
       return function(a, b, c)
         local _, filter = split(a, b, c)
-        local s = win_snap(id)
+        local s = win_snap(id, "idcount")
         if s and s.slots then
           for _, sl in ipairs(s.slots) do
             if sl.item and item_match(sl.item, filter) then return sl.index end
@@ -1197,7 +1254,7 @@ container = {
 
 inv = {
   count = function(filter)
-    local s = win_snap("0")
+    local s = win_snap("0", "idcount")
     local n = 0
     if s and s.slots then
       for _, sl in ipairs(s.slots) do
@@ -1208,7 +1265,7 @@ inv = {
   end,
   has = function(filter) return inv.count(filter) > 0 end,
   find = function(filter)
-    local s = win_snap("0")
+    local s = win_snap("0", "idcount")
     if s and s.slots then
       for _, sl in ipairs(s.slots) do
         if sl.item and sl.index <= 35 and item_match(sl.item, filter) then return sl.index end
@@ -1221,7 +1278,7 @@ inv = {
     return (s and s.slots) or {}
   end,
   held = function()
-    local s = rv(bridge.self.get(), nil)
+    local s = self_snapshot()
     return s and s.held or nil
   end,
   click = function(slot, opts)
@@ -1241,7 +1298,7 @@ inv = {
     local slot = slot_or_filter
     if type(slot) ~= "number" then slot = inv.find(slot_or_filter) end
     if slot == nil then return nil end
-    local s = rv(bridge.self.get(), nil) or {}
+    local s = self_snapshot() or {}
     local held_slot = s.held_slot or s.heldSlot or 0
     if slot ~= held_slot then
       if slot >= 0 and slot <= 8 then
@@ -1335,7 +1392,7 @@ look = {
     bridge.token.detach(tok)
   end,
   current = function()
-    local s = rv(bridge.self.get(), {}) or {}
+    local s = self_snapshot() or {}
     return { yaw = ((((s.yaw or 0) % 360) + 360) % 360), pitch = s.pitch or 0 }
   end,
 }
@@ -1393,16 +1450,16 @@ combat = {
 }
 
 self = {
-  username = function() local s = rv(bridge.self.get(), nil); return s and s.username or nil end,
-  pos = function() local s = rv(bridge.self.get(), nil); return s and s.pos or nil end,
-  velocity = function() local s = rv(bridge.self.get(), nil); return s and s.velocity or nil end,
-  health = function() local s = rv(bridge.self.get(), nil); return s and s.health or nil end,
-  food = function() local s = rv(bridge.self.get(), nil); return s and s.food or nil end,
-  held = function() local s = rv(bridge.self.get(), nil); return s and s.held or nil end,
-  gamemode = function() local s = rv(bridge.self.get(), nil); return s and s.gamemode or nil end,
-  effects = function() local s = rv(bridge.self.get(), nil); return s and s.effects or nil end,
-  attributes = function() local s = rv(bridge.self.get(), nil); return s and s.attributes or nil end,
-  pose = function() local s = rv(bridge.self.get(), nil); return s and s.pose or nil end,
+  username = function() local s = self_snapshot(); return s and s.username or nil end,
+  pos = function() local s = self_snapshot(); return s and s.pos or nil end,
+  velocity = function() local s = self_snapshot(); return s and s.velocity or nil end,
+  health = function() local s = self_snapshot(); return s and s.health or nil end,
+  food = function() local s = self_snapshot(); return s and s.food or nil end,
+  held = function() local s = self_snapshot(); return s and s.held or nil end,
+  gamemode = function() local s = self_snapshot(); return s and s.gamemode or nil end,
+  effects = function() local s = self_snapshot(); return s and s.effects or nil end,
+  attributes = function() local s = self_snapshot(); return s and s.attributes or nil end,
+  pose = function() local s = self_snapshot(); return s and s.pose or nil end,
 }
 
 session = {

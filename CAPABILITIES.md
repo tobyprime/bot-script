@@ -13,7 +13,7 @@
 
 ### ② 追杀 bot
 - 步骤：收到命令（鉴权）→ 查实体 → 循环{检查目标存活 → 选最强武器 → 距离远则追（目标在动！）、近则瞄准+攻击（受攻击冷却约束）} → 目标死亡报告 → 随时可中止。
-- **逼出**：实体查询与**活体句柄**语义（`e.pos` 每次读取都取最新值，非快照）；`nav.follow` 与重发路径；物品属性从 **ItemStack 组件**读（`attribute_modifiers` 的 attack_damage/attack_speed 排序 → `equip_best`；冷却按 attack_speed 计算）；聊天触发与脚本自管的操作员名单（`on_chat`）；战斗黑名单策略；任务取消与 `on cancel` 清理；自身死亡/重生时的任务处置。
+- **逼出**：实体查询与**活体句柄**语义（`e.pos` 按帧快照活读：同一帧内复用，跨帧自动刷新；`e:refresh()` 强制取最新）；`nav.follow` 与重发路径；物品属性从 **ItemStack 组件**读（`attribute_modifiers` 的 attack_damage/attack_speed 排序 → `equip_best`；冷却按 attack_speed 计算）；聊天触发与脚本自管的操作员名单（`on_chat`）；战斗黑名单策略；任务取消与 `on cancel` 清理；自身死亡/重生时的任务处置。
 
 ### ③ 整理 bot
 - 步骤：定时触发 → 开输入箱 → 逐物品决策（不满盒缓存 → 开箱校验缓存 → 尽量放入；溢出 → 该物品库存箱；无缓存 → 告警/跳过）→ 回写缓存 → 关箱。
@@ -35,7 +35,7 @@
 | `duration` | 毫秒整数 + `sec(5)` 等助手 | — | 全部 |
 | `itemstack` | `{id, count, meta?}` | id 为规范名 `minecraft:x`，引擎按服务端版本做映射 | 全部 |
 | `window` | 会话对象（container.open 返回） | **互斥**：同时最多一个；异步打开（服务器确认）；失效抛 `container.closed` | ①③ |
-| `entity` | 活体句柄 `{id, type, name?, ...}` | **字段分两类**：静态（type/name）缓存即可；动态（pos/health）每次读取穿透到最新缓存，并受 `world.staleness` 约束；`e:snapshot()` 可冻结 | ② |
+| `entity` | 活体句柄 `{id, type, name?, ...}` | **帧快照**：动态字段（pos/equipment/alive）在同一帧（一次宿主交互）内读本地快照（零跨桥），跨帧后至多重取一次；`e:refresh()` 强制最新；`e:snapshot()` 返回冻结副本。新鲜度上界 = 一次宿主交互，受 `world.staleness` 约束 | ② |
 | `chatmsg` | `{text, sender?, sender_kind: player\|system\|unknown, raw, ts}` | sender 尽力解析；结构化判断依赖 `sender_kind` 而非文本 | ④ |
 | `task` | 句柄 `{id, name, status}` | 可 `cancel`；操作边界响应取消 | 全部 |
 
@@ -162,7 +162,8 @@ entity.find(pred) -> [entity]     -- pred {type=, name=, uuid=, alive=, within=,
                                   --   holding：主手物品 id（= equipment.hand）
                                   --   equipment：按部件名匹配；写 false = 该部件必须为空
 entity.nearest(pred) -> entity?   -- ②
-e.pos e.health e.alive            -- 动态字段活读；health 可能为 unknown（协议端看玩家血量）
+e.pos e.health e.alive            -- 帧快照活读：同帧复用，跨帧自动刷新（上界 1 次宿主交互）
+e:refresh()                      -- 强制重取最新快照（需要逐字段实时值时用）
 e.equipment.hand/.offhand/.boots/.leggings/.chestplate/.helmet   -- 每件 item 或 nil（槽位索引不外露）
 e:snapshot() e:id() e:exists()
 -- 事件（可选订阅）：entity.appeared / entity.gone

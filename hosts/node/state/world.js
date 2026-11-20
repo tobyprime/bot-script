@@ -27,26 +27,34 @@ export class WorldState {
     }
   }
 
-  /** 查询出：实时优先；实时不可用才回落缓存（并标记 stale） */
+  /**
+   * 查询出：实时优先（driver.block_info 给出完整方块信息），实时不可用才回落缓存并标记 stale。
+   * 这是「实时优先/缓存兜底」的唯一实现；ABI 层直接调用，不再各写一份。
+   */
   block(pos) {
     if (!pos) return null;
     const key = posKey(pos);
-    const live = this.driver?.query_block_sync?.(pos) ?? null;
-    let hit = null;
-    let stale = false;
+    const live = this.driver?.block_info?.(pos) ?? null;
     if (live) {
-      hit = { name: live, ts: this.now() };
-      this.cache.set(key, hit);
-    } else {
-      hit = this.cache.get(key);
-      stale = !!hit;
+      this.cache.set(key, { name: live.id, ts: this.now() });
+      // 重新插入 => LRU 顺序
+      if (this.cache.size > MAX_CACHE) this.cache.delete(this.cache.keys().next().value);
+      return {
+        ...live,
+        is_container: this.data?.isContainerName?.(live.id) ?? false,
+        stale: false,
+      };
     }
+    const hit = this.cache.get(key);
     if (!hit) return null;
     return {
-      name: hit.name,
+      id: hit.name,
+      properties: null,
+      state_id: null,
+      hardness: null,
+      block_entity: null,
       is_container: this.data?.isContainerName?.(hit.name) ?? false,
-      ts: hit.ts,
-      stale,
+      stale: true,
     };
   }
 

@@ -81,6 +81,7 @@ export const SYNC_OPS = {
   "window.current": { args: {}, result: "string|null" },
   "window.get": { args: {
     "window": {"type":"string","required":true},
+    "fields": {"type":"string","required":false,"default":"full"},
   }, result: "Window|null" },
   "item.stack": { args: {
     "stack": {"type":"object","required":true},

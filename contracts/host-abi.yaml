@@ -129,7 +129,9 @@ sync_ops:
     args: {}
     result: string|null
   - name: window.get
-    args: { window: { type: string, required: true } }
+    args:
+      window: { type: string, required: true }
+      fields: { type: string, default: "full" }   # full | idcount；idcount = 只回 {id,count}（count/find 用，省序列化/解码）
     result: Window|null            # 槽位布局已归一化；'0' = 背包（容器打开时为玩家区合并视图）
 
   # ---------------- 物品栈（组件真值） ----------------

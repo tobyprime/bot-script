@@ -83,6 +83,25 @@ test('data：容器方块表补齐 1.21.8 新容器', () => {
   assert.deepStrictEqual(reg.scanKinds({ names: ['minecraft:chest'] }), ['minecraft:chest']);
 });
 
+test('data：world.scan 的未知谓词必须显式失败（不得静默降级成 chest）', () => {
+  const reg = new DataRegistry({ version: '1.21.8' });
+  assert.throws(() => reg.scanKinds({ type: 'chest' }), (e) => e.kind === 'abi.invalid_args');
+  assert.throws(() => reg.scanKinds({ names: [] }), (e) => e.kind === 'abi.invalid_args');
+});
+
+test('data：组件解析按数组对象缓存（同一物品重复展开不重复扫描）', () => {
+  const reg = new DataRegistry({ version: '1.21.8' });
+  const components = [{ type: 'minecraft:max_stack_size', data: 16 }];
+  const p1 = reg.parseComponents(components);
+  const p2 = reg.parseComponents(components);
+  assert.strictEqual(p1, p2, '同一 components 数组应命中同一解析结果');
+  const raw = { id: 'minecraft:stone', count: 1, components };
+  const a = reg.stack(raw);
+  const b = reg.stack({ ...raw });
+  assert.strictEqual(a.max_count, 16);
+  assert.strictEqual(b.max_count, 16);
+});
+
 test('lua data.stack：读到 stack 的 max_count/属性，而不是 id 写死值', async () => {
   const { makeEngine, script, g, waitFor } = await import('./harness.js');
   script('data.lua', `

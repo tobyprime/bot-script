@@ -197,3 +197,66 @@ test('entities.list 支持宿主侧过滤：高频 entity.nearest 不再序列�
   assert.strictEqual(far.value.length, 0, 'within 过滤应排除范围外玩家');
   await engine.stop();
 });
+
+test('实体句柄帧快照：同帧多字段零重取，跨帧至多一次', async () => {
+  script('frame-ent.lua', `
+    task('probe', { single = true }, function()
+      local e = entity.nearest{ type = 'player', within = 30 }
+      __R_fields = tostring(e.pos.x) .. '|' .. tostring(e.alive) .. '|' .. tostring(e.name)
+      time.sleep(250)
+      __R_after = string.format('%.2f', e.pos.x)
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addPlayer('Mover', { x: 1, y: 64, z: 0 });
+  let gets = 0;
+  const orig = driver.query_entity.bind(driver);
+  driver.query_entity = (id) => { gets += 1; return orig(id); };
+  const { engine } = await makeEngine({ scripts: ['frame-ent.lua'], driver });
+  assert.ok(await waitFor(() => g(engine, '__R_fields') != null, 3000));
+  assert.strictEqual(gets, 0, `同帧内多个字段读不应重取实体（实际 ${gets} 次）`);
+  driver.movePlayer('Mover', { x: 7, y: 64, z: 0 });
+  assert.ok(await waitFor(() => g(engine, '__R_after') != null, 3000));
+  assert.strictEqual(gets, 1, `跨帧后一个句柄应至多重取一次（实际 ${gets} 次）`);
+  assert.strictEqual(String(g(engine, '__R_after')), '7.00', '跨帧后应读到新位置');
+  await engine.stop();
+});
+
+test('self 帧缓存：同帧多次 self.* 只取一次宿主快照', async () => {  script('frame-self.lua', `
+    task('probe', { single = true }, function()
+      __R_a = tostring(self.pos().x) .. '|' .. tostring(self.health()) .. '|' .. tostring(self.username())
+      time.sleep(250)
+      __R_b = tostring(self.pos().x)
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  let gets = 0;
+  const orig = driver.query_self.bind(driver);
+  driver.query_self = () => { gets += 1; return orig(); };
+  const { engine } = await makeEngine({ scripts: ['frame-self.lua'], driver });
+  assert.ok(await waitFor(() => g(engine, '__R_a') != null, 3000));
+  assert.strictEqual(gets, 1, `同帧 3 次 self.* 应只取一次快照（实际 ${gets} 次）`);
+  assert.ok(await waitFor(() => g(engine, '__R_b') != null, 3000));
+  assert.strictEqual(gets, 2, `跨帧后应再取一次（实际 ${gets} 次）`);
+  await engine.stop();
+});
+
+test('world.scan：未知谓词显式报错（不得静默降级成 chest / 空结果）', async () => {
+  script('scan-bad-pred.lua', `
+    task('probe', { single = true }, function()
+      local ok, err = pcall(function()
+        world.scan({ { x = 0, y = 0, z = 0 }, { x = 1, y = 1, z = 1 } }, { type = 'chest' })
+      end)
+      __R_scan_ok = tostring(ok)
+      __R_scan_kind = type(err) == 'table' and err.kind or tostring(err)
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const { engine } = await makeEngine({ scripts: ['scan-bad-pred.lua'], driver: new MockDriver() });
+  assert.ok(await waitFor(() => g(engine, '__R_scan_ok') != null, 3000));
+  assert.strictEqual(String(g(engine, '__R_scan_ok')), 'false', '未知谓词应抛错而不是返回空列表');
+  assert.strictEqual(String(g(engine, '__R_scan_kind')), 'abi.invalid_args');
+  await engine.stop();
+});

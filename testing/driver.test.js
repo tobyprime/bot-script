@@ -291,3 +291,45 @@ test('snapshotOf 接受真实 prismarine-entity：isValid 是布尔属性，不�
   e2.isValid = false;
   assert.equal(d.snapshotOf(e2).alive, false);
 });
+
+test('world.scan：关闭 useExtraInfo（启用 palette 剪枝）+ 区域并入谓词', async () => {
+  const { MineflayerDriver } = await import('../hosts/node/drivers/mineflayer/index.js');
+  const driver = new MineflayerDriver();
+  let opts = null;
+  driver.bot = { findBlocks(o) { opts = o; return []; }, blockAt() { return { name: 'minecraft:chest' }; } };
+  driver.scan_blocks([{ x: 0, y: 60, z: 0 }, { x: 15, y: 60, z: 15 }], ['minecraft:chest'], 5);
+  assert.ok(opts, '应调用 findBlocks');
+  assert.strictEqual(opts.useExtraInfo, false, '不得传 useExtraInfo=true（会短路 palette 预筛）');
+  assert.strictEqual(opts.count, 5, '区域已并入谓词，count 不再翻倍');
+  assert.strictEqual(opts.matching({ name: 'chest', position: null }), true,
+    'palette 预筛的合成 Block 没有坐标，应按名字放行');
+  assert.strictEqual(opts.matching({ name: 'chest', position: { x: 99, y: 64, z: 99 } }), false,
+    '域外命中应在谓词阶段被排除');
+  assert.strictEqual(opts.matching({ name: 'stone', position: { x: 1, y: 61, z: 1 } }), false);
+});
+
+test('pushSelf：背包列表按脏标记重建（空闲采样不再遍历背包）', async () => {
+  const { MineflayerDriver } = await import('../hosts/node/drivers/mineflayer/index.js');
+  const driver = new MineflayerDriver();
+  let itemsCalls = 0;
+  let emitted = null;
+  driver.on('self', (p) => { emitted = p; });
+  driver.bot = {
+    username: 'Bot',
+    entity: {
+      position: { x: 0, y: 64, z: 0 }, velocity: { x: 0, y: 0, z: 0 },
+      yaw: 0, pitch: 0, effects: {}, pose: 'standing',
+      onFire: false, sneaking: false, sprinting: false,
+    },
+    health: 20, food: 20, game: { gameMode: 'survival' }, heldItem: null, quickBarSlot: 0,
+    experience: { level: 0, progress: 0 }, players: {},
+    inventory: { items() { itemsCalls += 1; return [{ slot: 9, name: 'stone', count: 3, displayName: 'Stone' }]; } },
+  };
+  driver.pushSelf();
+  driver.pushSelf();
+  assert.strictEqual(itemsCalls, 1, `未变更时不应重复遍历背包（实际 ${itemsCalls} 次）`);
+  assert.ok(emitted && Array.isArray(emitted.inv) && emitted.inv.length === 1, 'self 事件仍应带背包列表');
+  driver.invDirty = true;
+  driver.pushSelf();
+  assert.strictEqual(itemsCalls, 2, '背包变更后应重建一次');
+});
