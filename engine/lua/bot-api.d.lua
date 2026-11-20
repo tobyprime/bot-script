@@ -94,12 +94,10 @@ function world.time_of_day(...) end
 function world.weather(...) end
 ---@class nav
 nav = {}
---- nav.walk(pos|[entity], {arrive, timeout}) → Result（失败 error.code = policy.* / nav.*）
+--- nav.walk(pos|[entity], {arrive, timeout}) → Result（失败 error.code = policy.* / nav.*；无寻路器 = nav.unsupported）
 function nav.walk(...) end
 --- nav.goto_near(pos, radius, opts?)
 function nav.goto_near(...) end
---- nav.follow(entity, {distance})
-function nav.follow(...) end
 --- nav.stop()
 function nav.stop(...) end
 --- nav.flee(pos, opts?)
@@ -122,7 +120,7 @@ function look.aim(...) end
 function look.current(...) end
 ---@class container
 container = {}
---- container.open(pos|[entity]) → window handle|nil
+--- container.open(pos|[entity]) → window handle|nil（裸打开；瞄准/贴身/重试见可选库 container_lib）
 function container.open(...) end
 --- container.close(win?)
 function container.close(...) end
@@ -158,7 +156,7 @@ function combat.attack(...) end
 function combat.interact_entity(...) end
 --- combat.range() → 3.0
 function combat.range(...) end
---- combat.cooldown() → ms（由 held stack 的 attack_speed 推导）
+--- combat.cooldown() → ms|nil（由 held stack 的 attack_speed 推导；数据缺失返回 nil）
 function combat.cooldown(...) end
 --- combat.use_block(pos, opts?)
 function combat.use_block(...) end
@@ -184,6 +182,8 @@ function self.health(...) end
 function self.food(...) end
 --- self.held() → stack|nil
 function self.held(...) end
+--- self.held_slot() → 0..8（快捷栏选中槽）
+function self.held_slot(...) end
 --- self.gamemode()
 function self.gamemode(...) end
 --- self.effects() → [{id,amplifier,duration}]
@@ -254,29 +254,3 @@ function item_match(...) end
 function contains(...) end
 --- sec(n) → ms
 function sec(...) end
----@class bslib
-bslib = {}
---- bslib.look.at(target, opts?)
-function bslib.look(...) end
---- bslib.ensure_holding(item_id|nil)
-function bslib.ensure_holding(...) end
---- bslib.equip_best(kind?) — 按 stack 属性选武器
-function bslib.equip_best(...) end
---- bslib.withdraw(win, filter, n)
-function bslib.withdraw(...) end
---- bslib.deposit(win, filter, n)
-function bslib.deposit(...) end
---- bslib.move(from, to, filter, opts?)
-function bslib.move(...) end
---- bslib.is_combat_ready()
-function bslib.is_combat_ready(...) end
---- 同 try
-function bslib.try(...) end
---- 同 race
-function bslib.race(...) end
---- 同 parallel
-function bslib.parallel(...) end
---- 同 with_timeout
-function bslib.with_timeout(...) end
---- 同 wait_until
-function bslib.wait_until(...) end

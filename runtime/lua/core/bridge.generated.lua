@@ -14,7 +14,7 @@ local function q(op, args)
   return { ok = true, value = r }
 end
 
--- Result 解包（核心/bslib 内部取纯数据用；失败 -> default，不抛错）
+-- Result 解包（核心/可选库内部取纯数据用；失败 -> default，不抛错）
 local function value(r, default)
   if type(r) == "table" and r.ok == true then return r.value end
   return default

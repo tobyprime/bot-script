@@ -13,7 +13,7 @@
 
 ### ② 追杀 bot
 - 步骤：收到命令（鉴权）→ 查实体 → 循环{检查目标存活 → 选最强武器 → 距离远则追（目标在动！）、近则瞄准+攻击（受攻击冷却约束）} → 目标死亡报告 → 随时可中止。
-- **逼出**：实体查询与**活体句柄**语义（`e.pos` 按帧快照活读：同一帧内复用，跨帧自动刷新；`e:refresh()` 强制取最新）；`nav.follow` 与重发路径；物品属性从 **ItemStack 组件**读（`attribute_modifiers` 的 attack_damage/attack_speed 排序 → `equip_best`；冷却按 attack_speed 计算）；聊天触发与脚本自管的操作员名单（`on_chat`）；战斗黑名单策略；任务取消与 `on cancel` 清理；自身死亡/重生时的任务处置。
+- **逼出**：实体查询与**活体句柄**语义（`e.pos` 按帧快照活读：同一帧内复用，跨帧自动刷新；`e:refresh()` 强制取最新）；持续性导航与重发路径（follow 已移出 ABI，脚本用 nav.walk 循环）；物品属性从 **ItemStack 组件**读（`attribute_modifiers` 的 attack_damage/attack_speed 排序 → `equip_best`；冷却按 attack_speed 计算）；聊天触发与脚本自管的操作员名单（`on_chat`）；战斗黑名单策略；任务取消与 `on cancel` 清理；自身死亡/重生时的任务处置。
 
 ### ③ 整理 bot
 - 步骤：定时触发 → 开输入箱 → 逐物品决策（不满盒缓存 → 开箱校验缓存 → 尽量放入；溢出 → 该物品库存箱；无缓存 → 告警/跳过）→ 回写缓存 → 关箱。
@@ -54,7 +54,6 @@
 ```lua
 nav.walk(target, opts)        -- target: pos|entity；opts {arrive=半径, timeout, max_cost, sprint}（不叫 goto：goto 是 Lua 保留字）
 nav.goto_near(pos, radius)    -- 语法糖
-nav.follow(entity, opts)      -- opts {distance, lose_radius}；目标移动自动重发（②）
 nav.stop()
 nav.distance_to(pos|entity) -> number
 nav.can_reach(pos) -> bool
@@ -64,13 +63,14 @@ look.yaw(a)  look.pitch(a)  look.current() -> {yaw, pitch}   -- 最基础朝向 
 nav.hop()                       -- 单次跳跃（按下~100ms）；脚本循环调用 = "边跑边跳"
 nav.walk(pos, {keep_rotation=true})     -- 寻路期间不碰朝向（默认 false = 寻路自行控制朝向）
 ```
-P0: goto/goto_near/stop/distance_to/can_reach；P1: follow。
+P0: goto/goto_near/stop/distance_to/can_reach；follow 已移除（需要持续跟随的脚本自行 `while` + `nav.walk`）。
 
-**朝向无仲裁（评审定稿）**：yaw/pitch 是**无状态写入**（last-writer-wins），写入即生效、无许可、无清理——多任务同时操控身体不需要任何机制："spin 写 yaw、track 写 pitch"天然并行；同通道双写属脚本错误，直接可见而非被仲裁掩盖。寻路 vs 手动朝向的冲突用 `keep_rotation` 标志显式划分。`look_at(entity)` 只是 atan2 角度数学，**不进 HAL**：bslib 提供 `bslib.look.at(pos|e, {only="pitch"})`（角度计算 + 原语写入）。
+**朝向无仲裁（评审定稿）**：yaw/pitch 是**无状态写入**（last-writer-wins），写入即生效、无许可、无清理——多任务同时操控身体不需要任何机制："spin 写 yaw、track 写 pitch"天然并行；同通道双写属脚本错误，直接可见而非被仲裁掩盖。寻路 vs 手动朝向的冲突用 `keep_rotation` 标志显式划分。`look_at(entity)` 只是 atan2 角度数学，**不进 HAL**：可选库 `bslib.look.at(pos|e, {only="pitch"})` 提供（脚本 `local bslib = require "bslib"`）。
 
 **持续型伴随行为 = 脚本侧循环任务**（父任务结束/取消时子任务级联终止，`{detach=true}` 可脱离）：
 
 ```lua
+-- 以下示例需在脚本顶部：local bslib = require "bslib"
 -- 移动时持续看向最近的玩家（脚本自主实现）
 task("walk_and_watch", function()
   task.spawn(function()                    -- 子任务：父任务结束/取消时自动终止
@@ -107,12 +107,11 @@ end)[1]
 ```
 
 - 参考实现（walk_and_watch / spin_and_track / 看向名单等）收入 **bslib/companion.lua**，用户 fork 改谓词即得自己的伴随行为；引擎与驱动**不内置**任何特定伴随行为。
-
 ### 3.2 `container` — 窗口会话与精确槽位操作
 > 定位（评审定稿）：HAL 是**精确的窗口/槽位操作模型**，不设 withdraw/deposit 这类泛用语义——
 > 它们预设了"存储容器"，覆盖不了服务器的自定义 GUI（以箱子为界面的菜单/传送/银行插件，槽位即按钮）。
 > vanilla 或插件 GUI 的每一次交互都可归约为点击协议，因此原语集 = **点击协议全集**；
-> withdraw/deposit/transfer/move 全部下沉 bslib，由点击原语复合（§13）。
+> withdraw/deposit/transfer/move 全部下沉到**可选库 container_lib**，由点击原语复合（§13）。
 
 ```lua
 container.open(pos|entity_id) -> Window  -- 互斥；异步等服务器确认；失败: container.missing|blocked|denied
@@ -135,10 +134,11 @@ win.swap_offhand(slot)             -- F 交换副手
 container.close(win)
 -- 不变量：同时至多一个窗口；bot 死亡/走远/服务器关闭 → 自动失效抛 container.closed
 
--- bslib 复合（构建在点击之上，脚本层名称不变，§13）：
---   withdraw/deposit/transfer(...) -> moved（moved<count=箱满 成为 bslib 约定而非引擎契约）
---   container.move 多趟、free_space（用 data.stack.max_count）
--- ⚠ 安全规则：未知窗口（win:type()=="custom"）上禁跑 bslib 传送复合——点击可能触发任意命令；
+-- 可选容器库复合（local clib = require "container_lib"；构建在点击之上）：
+--   clib.withdraw/deposit(...) -> moved（moved<count=箱满 成为库约定而非引擎契约）
+--   clib.move 多趟；clib.open 带瞄准/贴身/重试
+-- 核心 container.open 只做裸打开（act.window_open + Result），不做瞄准/贴脸/重试。
+-- ⚠ 安全规则：未知窗口（win:type()=="custom"）上禁跑容器库传送复合——点击可能触发任意命令；
 --   脚本应先 title()/已知布局识别，再决定精确点击还是复合传送
 ```
 P0：open/close/slots/peek/click/click_hotbar/drop_slot/drop_cursor；P1：current/window_opened/drag/swap_offhand。
@@ -193,9 +193,9 @@ P0: block/staleness；P1: scan；P2: raycast。
 ```lua
 combat.attack(entity)            -- 策略门控（②）
 combat.range() -> number         -- 3.0（引擎约定）
-combat.cooldown() -> duration    -- 1.9+ 按手持武器计算；旧版本 0（②）
--- attack 原语不校验朝向（原版服务器语义，由服务器距离判定命中）；是否瞄准属行为策略 → bslib.look.at + bslib.is_combat_ready
--- look_at → bslib（角度计算 + look.yaw/pitch，§3.1）
+combat.cooldown() -> ms|nil      -- 按手持 StackInfo.attributes.attack_speed 推导；读不到返回 nil（脚本自定节奏）
+-- attack 原语不校验朝向（原版服务器语义，由服务器距离判定命中）；是否瞄准属行为策略 → 可选库 bslib.look.at
+-- 冷却语义也属脚本策略：cd==nil 时由脚本决定等多久（引擎不再发明 500ms 下限）
 combat.use_block(pos)            -- 开箱/按钮（受 use 策略）
 combat.dig(pos) combat.place(pos, item)   -- P2，默认策略禁止（①③默认不开挖）
 ```
@@ -368,7 +368,7 @@ if not r.ok then log.warn("send failed: %s", r.error.code) end
 | `msg.teams_changed` | {…} | （teamCreated/Updated；敌我识别） | P1 |
 | `msg.scoreboard_changed` | {…} | （scoreboard*） | P2 |
 | **nav 域** | | | |
-| `nav.arrived` / `nav.failed` | {target} / {reason} | 寻路结果（goto 的返回值即其同步形式；follow 场景订阅） | P0 |
+| `nav.arrived` / `nav.failed` | {target} / {reason} | 寻路结果（nav.walk 的返回值即其同步形式；宿主实时流事件） | P0 |
 | `nav.progress` | {fraction, eta} | 进度 | P1 |
 | **task 域** | | | |
 | `task.started` / `task.finished` / `task.failed` | {name, status?, error?} | 任务生命周期（编排/看板；HTTP /tasks 的数据源） | P1 |
@@ -431,17 +431,17 @@ params schema 校验（YAML 契约 + 实例值）→ state 打开（固定路径
 | | nav | container | inv | entity | world | combat | chat | state | 控制/策略 |
 |---|---|---|---|---|---|---|---|---|---|
 | ①搬运 | goto_near | open/close/withdraw/deposit/move | count | — | block | — | log | — | 围栏、禁挖、abort |
-| ②追杀 | follow/goto | — | equip_best | nearest/alive/pos | — | attack/cooldown | reply | — | 命令鉴权、黑名单、内建 pause |
+| ②追杀 | goto + 脚本循环 | — | equip_best | nearest/alive/pos | — | attack/cooldown | reply | — | 命令鉴权、黑名单、内建 pause |
 | ③整理 | goto_near | free_space/deposit/count | — | — | scan/block | — | log | 表+校验回写 | params、看门狗 |
 | ④银行 | — | — | — | — | — | — | on_chat/await/run_command/seen | 键值账户 + 意图集合 | 命令白名单、脚本自管 ops、限速 |
 
 结论：四列并集无缺口；②③共同逼出的"ItemStack 组件读取"、①③共同逼出的"容器复合语义"、④独有的"事务+回执"均为公共能力，无场景需要目录之外的机制。
-（§13/§3.2 定稿后注：矩阵中的 withdraw/deposit/free_space/move/equip_best 由 bslib 提供，脚本层名称不变；HAL 对应面为点击协议全集。）
+（§13/§3.2 定稿后注：矩阵中的 withdraw/deposit/free_space/move/equip_best 由可选库提供（`container_lib` / `bslib`）；HAL 对应面为点击协议全集。）
 
 ## 10. 优先级汇总
 
 - **P0（M1，mineflayer，验收=①④）**：nav 基础、container 全部、inv 基础、chat 全部、宿主控制（HTTP `/pause` `/resume`）、self 基础、time/task/log、state 全部、params、策略（围栏/禁挖/命令白名单/容器门控；缺省不限制）、HTTP 控制通道（§17）、dry_run、动作日志。
-- **P1（M2，验收=②③）**：entity、follow、combat 四件套、equip_best（按 ItemStack 组件排序）、world.scan、caps、seen 之外的生命周期事件（death/suspend/resume）、看门狗、`item.stack` 组件全量。
+- **P1（M2，验收=②③）**：entity、combat 四件套、equip_best（按 ItemStack 组件排序）、world.scan、caps、seen 之外的生命周期事件（death/suspend/resume）、看门狗、`item.stack` 组件全量。
 - **P2**：raycast、webhook 告警、metrics 导出。
 
 ---
@@ -482,14 +482,14 @@ session.info()    -- {server_brand, protocol_version, view_distance}  ★brand �
 ```lua
 -- entity（P1）：
 e.equipment                        -- {hand, offhand, armor[4]}：对手拿盾还是拿剑；老版本/部分实体 → unknown
-entity.drops_of(e)              -- 死亡掉落物追踪（②战利品、③回收）；pickup 动作属行为策略 → bslib（§13）
+entity.drops_of(e)              -- 死亡掉落物追踪（②战利品、③回收）；pickup 动作属行为策略 → 可选库（§13）
 -- inv（槽位模型 P0，equip 依赖它）：
 inv.slots   -- hotbar 0-8 / main 9-35 / armor 36-39 / offhand 40；换持槽位操作归 inv.equip
-            --（ensure_holding 属行为策略 → bslib，§13）
+            --（ensure_holding 属行为策略 → 可选库 bslib，§13）
 -- combat / 交互（P1）：
 combat.use_item(duration)    -- 吃/喝/拉弓（蓄力时长语义）—— HAL 只保留这一个原语
 combat.interact_entity(e)    -- 右键实体（骑乘/村民）  P2
--- eat_until_full / ensure_holding / equip_best 等行为策略不入 HAL → bslib 内置 Lua 库（§13）
+-- eat_until_full / ensure_holding / equip_best 等行为策略不入 HAL → 可选库（§13）
 ```
 
 ### 11.4 world 环境只读（P1，成本低）
@@ -511,10 +511,12 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 - **P2 增补**：scoreboard；sound/particle；interact_entity。
 - 一句话理由：四场景在真实服务器上分别依赖 teams（②安全）、进食（②续航）、server_brand（④解析模板）、断线恢复（全部长期运行）——不补这几项，M2 实机验收会失败，而非功能不全。
 
-## 13. 分层规则（定稿）：HAL 只留正交控制面，行为策略进 bslib 内置 Lua 库
+## 13. 分层规则（定稿）：HAL 只留正交控制面，行为策略进可选 Lua 库
 
 > 决策：`eat_until_full` 这类复合行为不进能力面。能力面（HAL）只提供最小、相互正交的控制面与查询；
-> "行为策略"一律实现为**引擎自带的内置 Lua 库（bslib，bot-script stdlib）**，随引擎分发、构建在 HAL 之上。
+> "行为策略"一律实现为**不占 ABI、不全局注入的可选 Lua 库**，脚本显式 `require`。
+> 可选库不是新机制：引擎把 `bslib` / `container_lib` 作为模块挂入 VFS，脚本 `local x = require "..."`；
+> 引擎不承诺其 API 稳定，也不把它算作契约 API（`api-surface.yaml` 不再列 `bslib`）。
 
 三层分工与判据：
 
@@ -522,7 +524,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 |---|---|---|---|
 | 宿主动作 [H] | 各栈原生桥（engine.js+abi.js · AbiDispatcher+McRuntime · mcc 桥） | look / input / dig / use_block / use_entity / swing / use_item / select_slot / drop / 窗口点击协议全集 / chat_send / path_to / 包流 | 一次网络往返或一次客户端动作 |
 | 引擎核心 | 引擎原生代码 | 调度、资源仲裁（移动权/**窗口互斥**）、窗口内容同步与失效语义、state、params、引擎侧正则；**不做物品数据表**（属性读 ItemStack 组件） | 必须成立的跨后端不变量；需要引擎内部状态或原子读改写 |
-| bslib 内置 Lua 库 | 引擎随附（Lua 源码，可读、可覆盖） | withdraw / deposit / transfer（moved<count 约定）/ container.move 多趟、eat_until_full、equip_best、ensure_holding、entity.pickup、is_combat_ready、find_ground / is_dangerous 等谓词 | **行为策略**——用户可能想调整的决策逻辑 |
+| 可选 Lua 库 | 引擎随附（Lua 源码，可读、可覆盖；不注入全局、不进 ABI） | `bslib`：look.at / ensure_holding / equip_best；`container_lib`：container_open / wait_revision / withdraw / deposit / move | **行为策略**——用户可能想调整的决策逻辑 |
 
 场景落点：②的"会吃饭、换最强武器"是 bslib 的职责（如 `bslib/combat.lua`），HAL 只保证 `combat.use_item`、`inv.equip`、`item.stack`（组件属性）这些底层件存在。
 
@@ -530,10 +532,10 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 1. HAL 面进一步收缩，驱动实现成本随之收敛（驱动照 §12 的 P0/P1 原语清单实现即可）；
 2. 策略可读、可覆盖、可复制改造——用户的整理 bot 可以直接 fork `equip_best` 改成自己的选装逻辑；
-3. 策略迭代不绑引擎版本，bslib 可独立热更；
-4. 静态分析白名单不变：bslib 只调用 HAL，无任何特权，脚本引用 bslib 与引用自己的模块走同一套检查。
+3. 策略迭代不绑引擎版本，可选库可独立热更；
+4. 静态分析白名单不变：可选库只调用公开 API/原语，无任何特权；脚本引用可选库与引用自己的模块走同一套检查（库不占 ABI，也不出现在脚本全局名单里）。
 
-迁移注记：§3 中 equip_best / ensure_holding / move / pickup 等条目一并归类为 bslib；脚本层函数名不变（作为 `bslib` 全局注入），仅实现层从引擎原生代码改为引擎随附的 Lua 源码。~~判据上拿不准的条目（如 withdraw/deposit 是否下沉 bslib）~~ **已定稿：withdraw/deposit/transfer 下沉 bslib**（评审指出泛用传送语义覆盖不了服务器插件 GUI；HAL 收敛为精确点击协议，moved<count 转为 bslib 约定）。多趟跨箱转移统一命名 **`bslib.move(from, to, filter, opts)`**（原 transfer_via_bot，organizer 示例已更名）。
+迁移注记：§3 中 equip_best / ensure_holding / move / pickup 等条目归类为可选库；脚本需显式 `require`（不再有 `bslib` 全局注入）。~~判据上拿不准的条目（如 withdraw/deposit 是否下沉 bslib）~~ **已定稿：withdraw/deposit/transfer 下沉可选库 container_lib**（评审指出泛用传送语义覆盖不了服务器插件 GUI；HAL 收敛为精确点击协议，moved<count 转为库约定）。多趟跨箱转移统一命名 **`container_lib.move(from, to, filter, opts)`**（原 transfer_via_bot / bslib.move，organizer 示例已更名）。
 
 ---
 
@@ -568,7 +570,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 | `act.swing(hand?)` | 攻击/挥手的显式包 | 与 attack 分开，便于无伤害交互 |
 | `act.select_slot(slot)` | inv.equip | 选主手槽（服务器确认） |
 | `act.drop(all?)` | inv.drop | 丢弃手持物 |
-| `act.path_to(target, arrive, timeout_ms)` / `act.path_cancel()` 〔L3〕 | nav.walk / follow | 唯一的驱动侧智能，进度事件回传 |
+| `act.path_to(target, arrive, timeout_ms)` / `act.path_cancel()` 〔L3〕 | nav.walk（Result + nav.failed） | 唯一的驱动侧智能，进度事件回传 |
 
 共 15 个动作 op。**策略门控与限速全部在宿主 dispatch 一处**，驱动不做二次判断。
 

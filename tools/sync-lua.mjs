@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // tools/sync-lua.mjs — Lua 单一源门禁（lua-sync）
 //
-// 唯一源码：runtime/lua/core/*.lua + runtime/lua/compat/luaj.lua
+// 唯一源码：runtime/lua/core/*.lua + runtime/lua/lib/*.lua + runtime/lua/compat/luaj.lua
 // Fabric 构建由 mod/build.gradle 的 processResources 直接拷入资源（不提交第二份拷贝）。
 //
 // 用法：
@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CORE = path.join(ROOT, 'runtime', 'lua', 'core');
+const LIB = path.join(ROOT, 'runtime', 'lua', 'lib');
 const COMPAT = path.join(ROOT, 'runtime', 'lua', 'compat');
 const SECOND_COPY = path.join(ROOT, 'mod', 'src', 'main', 'resources', 'lua');
 
@@ -26,7 +27,7 @@ function list(dir) {
     .map((f) => ({ rel: path.relative(ROOT, path.join(dir, f)).replaceAll('\\', '/'), hash: sha(path.join(dir, f)) }));
 }
 
-const files = [...list(CORE), ...list(COMPAT)];
+const files = [...list(CORE), ...list(LIB), ...list(COMPAT)];
 
 if (process.argv.includes('--print') || !process.argv.includes('--check')) {
   for (const f of files) console.log(`${f.hash}  ${f.rel}`);
@@ -39,14 +40,21 @@ if (process.argv.includes('--check')) {
     bad++;
   }
   const core = list(CORE).map((f) => path.basename(f.rel));
-  for (const required of ['bootstrap.lua', 'bslib.lua', 'json.lua', 'bridge.generated.lua']) {
+  for (const required of ['bootstrap.lua', 'json.lua', 'bridge.generated.lua']) {
     if (!core.includes(required)) {
       console.error(`[lua-sync] runtime/lua/core 缺少 ${required}`);
       bad++;
     }
   }
-  if (files.length < 5) {
-    console.error('[lua-sync] runtime/lua 文件数异常（core + compat 至少 5 个）');
+  const lib = list(LIB).map((f) => path.basename(f.rel));
+  for (const required of ['bslib.lua', 'container_lib.lua']) {
+    if (!lib.includes(required)) {
+      console.error(`[lua-sync] runtime/lua/lib 缺少 ${required}`);
+      bad++;
+    }
+  }
+  if (files.length < 6) {
+    console.error('[lua-sync] runtime/lua 文件数异常（core + lib + compat 至少 6 个）');
     bad++;
   }
   if (bad) process.exit(1);

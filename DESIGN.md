@@ -38,7 +38,8 @@
 ```
 共享纯 Lua 核心（同一份文件，三栈复用，逻辑只写一遍）
   bootstrap.lua   调度器 · 任务 · 事件总线 · 容器句柄（纯 Lua，无 IO）
-  bslib.lua       行为策略（withdraw/deposit · equip_best · companion …）
+  lib/bslib.lua   可选通用库（look.at · equip_best · ensure_holding）
+  lib/container_lib.lua 可选容器库（open 编排 · withdraw/deposit/move）
 
 宿主 = 原生桥 + 内嵌 Lua（各自独立进程，即 bot 本体）
   mineflayer 宿主   Node 程序：wasmoon + engine.js `__` 桥（契约 op 表生成）
@@ -106,9 +107,9 @@
 
 - **数据**：Lua 原生值 + 引擎记录类型（`vec3 / blockpos / region / duration / itemstack / window / entity / task`；活体句柄语义见 CAPABILITIES.md §2）。物品过滤就是普通 table 或谓词函数，无专门类型。
 - **声明式注册层**：参数 schema 只在 `bot.yaml`（`type/default/required/help/visible`，脚本内不再有 `params{…}` 声明）；`state.get/set/all/delete/update/seen` 为实例级小状态；`task "名" function() … end`、`on_start / on_pause / on_resume / on_chat / on_timer / on_cancel`——加载期完成 schema 校验、静态检查挂钩。**没有命令声明层**（无 `on_command` / 命令参数注入）。
-- **模块系统**：标准 `require`（模块 = 返回 table 的 Lua 文件，`package.loaded` 缓存），但 `package.searchers` 由引擎替换——仅允许 bslib（`package.preload` 预载）与本实例脚本目录，其余拒绝；每个脚本实例持有独立 `package.loaded`（脚本间状态隔离；热重载=引擎清缓存后重 require）。**文件一律 `.lua`**；"入口 vs 模块"按角色区分——入口 = `bot.yaml` `scripts:` 列出的文件，模块 = require 图可达的其余文件；声明层（on_*/state 初始化）只允许出现在入口（参数 schema 在 bot.yaml），静态检查按角色套规则，与扩展名无关。
+- **模块系统**：标准 `require`（模块 = 返回 table 的 Lua 文件，`package.loaded` 缓存），但 `package.searchers` 由引擎替换——仅允许引擎可选库（`bslib` / `container_lib`，`package.preload` 预载）与本实例脚本目录，其余拒绝；每个脚本实例持有独立 `package.loaded`（脚本间状态隔离；热重载=引擎清缓存后重 require）。**文件一律 `.lua`**；"入口 vs 模块"按角色区分——入口 = `bot.yaml` `scripts:` 列出的文件，模块 = require 图可达的其余文件；声明层（on_*/state 初始化）只允许出现在入口（参数 schema 在 bot.yaml），静态检查按角色套规则，与扩展名无关。
 - **错误模型**：动作/ABI 失败 = Result（`error.code` 稳定跨宿主：`nav.unreachable / container.missing / permission.denied / policy.blocklist / runtime.paused / internal …`）；Lua 原生 `error()` 与守卫 `guard(cond, fn)` 仍按任务级失败处理；`try{…}` 糖自动重抛取消。
-- **能力面**：`nav / world / entity / container / inv / combat / chat / self / session / msg / time / task / log / state / params / caps` 命名空间注入环境；行为策略复合在引擎自带的 **bslib** 库（Lua 源码随引擎分发，可读可覆盖，见 CAPABILITIES.md §13）。**能力 API 权威版本见 `CAPABILITIES.md`。**
+- **能力面**：`nav / world / entity / container / inv / combat / chat / self / session / msg / time / task / log / state / params / caps` 命名空间注入环境；行为策略复合在**可选 Lua 库** `bslib` / `container_lib`（不占 ABI、不注入全局，脚本 `require`；见 CAPABILITIES.md §13）。**能力 API 权威版本见 `CAPABILITIES.md`。**
 - **物品知识来自 ItemStack 组件**：堆叠上限 `max_stack_size`、耐久 `max_damage/damage`、攻击属性
   `attribute_modifiers`（attack_damage/attack_speed）都从 `item.stack` 读，**不按 item id 查表、不做版本判断**；
   跨宿主只共享非物品数据（容器方块表）。
@@ -125,8 +126,8 @@ params {
 }
 
 task("haul", { single = true }, function()
-  -- bslib.move：多趟复合（走-开-取-关-走-开-放-关 循环）——背包满自动多趟，返回净转移件数
-  local moved = bslib.move(params.from, params.to, params.item)
+  -- container_lib.move：多趟复合（走-开-取-关-走-开-放-关 循环）——背包满自动多趟，返回净转移件数
+  local moved = clib.move(params.from, params.to, params.item)
   log.info("搬运完成：%d 件", moved)
 end)
 
@@ -157,7 +158,7 @@ end)
 
 task("hunt", function(t)
   while entity.exists(t) and t.alive do
-    bslib.equip_best("weapon")                    -- 物品表排序(bslib)，换持走 inv.equip
+    bslib.equip_best("weapon")                    -- 可选库（local bslib = require "bslib"），换持走 inv.equip
     local retreated = false
     race{                                         -- 主行为 + 残血守护
       function()
@@ -166,7 +167,10 @@ task("hunt", function(t)
         else
           bslib.look.at(t)                        -- 攻击前瞄准（attack 原语不校验朝向，瞄准属行为策略）
           combat.attack(t)
-          wait_until(bslib.is_combat_ready)       -- 1.8 恒就绪；1.9+ 等冷却
+          wait_until(function()                       -- 冷却由脚本决定；数据缺失时自行给节奏下限
+            local cd = combat.cooldown()
+            return cd == nil or cd <= 0
+          end)
         end
       end,
       function()
@@ -260,14 +264,14 @@ end)
 
 每个能力域在驱动协商时上报 feature flags，脚本可查询 `caps.container.transfer_bulk` 等；不支持的复合操作由引擎基于原语**降级实现**（可能更慢、更多步），并打日志标注。
 
-| 能力域 | 原语（驱动实现） | 复合（引擎核心/bslib 实现，语义跨后端一致） |
+| 能力域 | 原语（驱动实现） | 复合（可选库实现，语义跨后端一致） |
 |---|---|---|
-| nav | path_to/cancel/进度事件 | goto_near、follow、超时/代价上限、can_reach |
+| nav | path_to/cancel/进度事件 | goto_near、超时/代价上限、can_reach（follow 已移除） |
 | world | 方块/实体变更流、定点读、raycast | scan、缓存新鲜度管理 |
-| container | open/close、窗口读取、**点击协议全集** | （bslib）transfer/withdraw/deposit/move、free_space |
+| container | open/close、窗口读取、**点击协议全集** | （container_lib）transfer/withdraw/deposit/move、free_space |
 | entity | 实体流、（部分后端）读写 | find/nearest 过滤、威胁评估 |
 | chat/msg | 发送、聊天与 HUD 包流 | pattern 解析、await_chat、限速、去重、模板库 |
-| interact | attack/use_item/dig/place/look | （bslib）equip_best、eat_until_full 等行为策略 |
+| interact | attack/use_item/dig/place/look | （bslib）equip_best；cooldown 由脚本读属性 |
 
 ### 3.3 版本差异的三条处理原则
 
@@ -363,7 +367,7 @@ account: bot1                      # 凭据：用户名（offline）| {username,
                                    # | {auth: session, username, uuid, accessToken}（托管平台注入，引擎不做 OAuth）
 boundary:                          # 限制边界：全部可选，缺省不限制（§5.1）
   fence: [[80,-30],[140,20]]
-  allow_move: true                 # 移动总开关：false 同时禁用 nav.walk/nav.follow/nav.hop
+  allow_move: true                 # 移动总开关：false 同时禁用 nav.walk/nav.hop
   blocks: { dig: deny, place: deny }
   packets: true                    # 权限位：允许自定义网络包收发（缺省拒绝；servux 等插件通道）
   rate: { actions_per_sec: 20 }    # 每秒发包上限；省略 = 不限（与 budget.actions_per_hour 分工不同）

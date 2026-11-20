@@ -4,23 +4,24 @@ import { test } from './registry.js';
 import { makeEngine, script, g, waitFor } from './harness.js';
 import { MockDriver } from './mock-driver.js';
 
-test('container + bslib：withdraw 精确取出、deposit、move 多趟', async () => {
+test('container + container_lib：withdraw 精确取出、deposit、move 多趟', async () => {
   script('t6.lua', `
+    local clib = require "container_lib"
     task("haul", function()
       local A = { x = 5, y = 64, z = 5 }
       local B = { x = 10, y = 64, z = 5 }
-      local w = container.open(A)
+      local w = clib.open(A)
       __R_type = w:type()
       __R_size = w:size()
-      local got = bslib.withdraw(w, { id = "minecraft:pink_wool" }, 30)
+      local got = clib.withdraw(w, { id = "minecraft:pink_wool" }, 30)
       __R_withdrawn = got
       container.close(w)
       __R_inv_after_w = inv.count{ id = "minecraft:pink_wool" }
-      local w2 = container.open(B)
-      local put = bslib.deposit(w2, { id = "minecraft:pink_wool" }, got)
+      local w2 = clib.open(B)
+      local put = clib.deposit(w2, { id = "minecraft:pink_wool" }, got)
       __R_deposited = put
       container.close(w2)
-      __R_moved = bslib.move(A, B, { id = "minecraft:pink_wool" })
+      __R_moved = clib.move(A, B, { id = "minecraft:pink_wool" })
     end)
     on_start(function() task.spawn("haul") end)
   `);

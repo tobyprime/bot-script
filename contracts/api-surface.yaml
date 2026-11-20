@@ -86,9 +86,8 @@ globals:
   nav:
     kind: namespace
     members:
-      walk: "nav.walk(pos|[entity], {arrive, timeout}) → Result（失败 error.code = policy.* / nav.*）"
+      walk: "nav.walk(pos|[entity], {arrive, timeout}) → Result（失败 error.code = policy.* / nav.*；无寻路器 = nav.unsupported）"
       goto_near: "nav.goto_near(pos, radius, opts?)"
-      follow: "nav.follow(entity, {distance})"
       stop: "nav.stop()"
       flee: "nav.flee(pos, opts?)"
       distance_to: "nav.distance_to(t) → number|nil"
@@ -104,7 +103,7 @@ globals:
   container:
     kind: namespace
     members:
-      open: "container.open(pos|[entity]) → window handle|nil"
+      open: "container.open(pos|[entity]) → window handle|nil（裸打开；瞄准/贴身/重试见可选库 container_lib）"
       close: "container.close(win?)"
       current: "container.current() → handle|nil"
   inv:
@@ -126,7 +125,7 @@ globals:
       attack: "combat.attack(entity)"
       interact_entity: "combat.interact_entity(entity)"
       range: "combat.range() → 3.0"
-      cooldown: "combat.cooldown() → ms（由 held stack 的 attack_speed 推导）"
+      cooldown: "combat.cooldown() → ms|nil（由 held stack 的 attack_speed 推导；数据缺失返回 nil）"
       use_block: "combat.use_block(pos, opts?)"
       place: "combat.place(pos, face?) — intent=place（受 boundary.blocks.place 门控）"
       use_item: "combat.use_item(duration_ms) — 核心组合 start/sleep/release"
@@ -141,6 +140,7 @@ globals:
       health: "self.health()"
       food: "self.food()"
       held: "self.held() → stack|nil"
+      held_slot: "self.held_slot() → 0..8（快捷栏选中槽）"
       gamemode: "self.gamemode()"
       effects: "self.effects() → [{id,amplifier,duration}]"
       attributes: "self.attributes() → {armor,absorption,xp_level,xp_progress}"
@@ -192,19 +192,3 @@ globals:
   item_match: { kind: function, doc: "item_match(item, filter|fn) → boolean" }
   contains: { kind: function, doc: "contains(list, v)" }
   sec: { kind: function, doc: "sec(n) → ms" }
-  bslib:
-    kind: namespace
-    doc: 内置行为策略库（可覆盖）
-    members:
-      look: "bslib.look.at(target, opts?)"
-      ensure_holding: "bslib.ensure_holding(item_id|nil)"
-      equip_best: "bslib.equip_best(kind?) — 按 stack 属性选武器"
-      withdraw: "bslib.withdraw(win, filter, n)"
-      deposit: "bslib.deposit(win, filter, n)"
-      move: "bslib.move(from, to, filter, opts?)"
-      is_combat_ready: "bslib.is_combat_ready()"
-      try: "同 try"
-      race: "同 race"
-      parallel: "同 parallel"
-      with_timeout: "同 with_timeout"
-      wait_until: "同 wait_until"

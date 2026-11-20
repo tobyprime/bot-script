@@ -16,6 +16,7 @@ export const ROUTES = [
   { method: "GET", path: "/stream", operationId: "getStream" },
   { method: "POST", path: "/chat", operationId: "postChat" },
   { method: "GET", path: "/store", operationId: "getStore" },
+  { method: "POST", path: "/store", operationId: "setStore" },
   { method: "DELETE", path: "/store", operationId: "deleteStore" },
   { method: "GET", path: "/caps", operationId: "getCaps" },
 ];

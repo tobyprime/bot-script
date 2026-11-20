@@ -10,6 +10,9 @@
 --       world.scan 只扫描容器；无 chunk 流（world.block_changed 仅覆盖客户端可见变更）。
 -- ============================================================
 
+local bslib = require "bslib"              -- ensure_holding
+local clib = require "container_lib"       -- 开箱编排 + withdraw/deposit
+
 local function pos3(p)
   if type(p) == "table" and p.x then return { x = p.x, y = p.y, z = p.z } end
   return { x = p[1], y = p[2], z = p[3] }
@@ -183,9 +186,9 @@ local function suite_block()
     if not bslib.ensure_holding(MAT) then
       local r1 = nav.goto_near(CHEST, 3, { timeout = 20 })
       guard(r1 and r1.ok == true)
-      local w = container.open(CHEST)
+      local w = clib.open(CHEST)
       if w then
-        bslib.withdraw(w, WOOL, 5)
+        clib.withdraw(w, WOOL, 5)
         container.close(w)
       end
       local r2 = nav.goto_near(PAD, 3, { timeout = 20 })
@@ -242,7 +245,7 @@ local function suite_container()
 
   local r = nav.goto_near(CHEST, 3, { timeout = 20 })
   guard(r and r.ok == true)
-  local win = container.open(CHEST)
+  local win = clib.open(CHEST)
   guard(win ~= nil, "开箱失败")
   check("窗口类型", win:type() == "chest", tostring(win:type()))
   if (win:title() or "") == "" then
@@ -255,7 +258,7 @@ local function suite_container()
 
   -- 保底补货（点击路径：受窗口重同步缺陷影响，失败降 WARN，不阻塞后续）
   if n0 < 20 then
-    bslib.withdraw(win, WOOL, 20 - n0)
+    clib.withdraw(win, WOOL, 20 - n0)
     n0 = inv.count(WOOL)
     if n0 >= 20 then check("补货后背包>=20", true)
     else warnskip("补货", "withdraw 后背包 " .. n0 .. "（点击路径失效，窗口重同步缺陷）") end
@@ -278,11 +281,11 @@ local function suite_container()
   -- 存/取/存三轮：断言"路径可用"；数量只记录漂移。
   -- 已知引擎缺陷：Paper 对点击会重发窗口同步，bslib 点击槽号过期打到错误槽，
   -- 物品可跨槽漂移甚至丢失（v7 实测总羊毛 76->56）。修窗口层前，会计类只 WARN。
-  local dep = bslib.deposit(win, WOOL, 10)
+  local dep = clib.deposit(win, WOOL, 10)
   check("deposit 路径可用", dep > 0 or inv.count(WOOL) == 0, "moved=" .. dep)
-  local got = bslib.withdraw(win, WOOL, 5)
+  local got = clib.withdraw(win, WOOL, 5)
   check("withdraw 路径可用", got > 0 or section_count(win, WOOL) == 0, "moved=" .. got)
-  local put = bslib.deposit(win, WOOL, got)
+  local put = clib.deposit(win, WOOL, got)
   check("deposit 回存路径可用", put > 0 or inv.count(WOOL) == 0, "moved=" .. put)
   local total_now = inv.count(WOOL) + section_count(win, WOOL)
   local total_0 = n0 + c0

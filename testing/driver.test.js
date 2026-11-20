@@ -125,6 +125,7 @@ test('mineflayer 驱动：custom payload 走 custom_payload 包，入站二进�
 
 test('bslib.look.at 单轮只发一个视角包（避免 invalid_player_movement 踢人）', async () => {
   script('aim_rate.lua', `
+    local bslib = require "bslib"
     on_start(function()
       task.spawn(function()
         time.sleep(50)

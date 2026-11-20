@@ -29,7 +29,7 @@ import java.util.function.LongSupplier;
  * Lua 运行时（Fabric 宿主）：Luaj + runtime/lua/core 唯一源码 + runtime/lua/compat/luaj.lua。
  *
  * 本类只负责：
- *   - Lua 状态装载（compat → json/bridge → bootstrap/bslib → 用户脚本）
+ *   - Lua 状态装载（compat → json/bridge → bootstrap；可选库 preload 但不注入）
  *   - token 结算 / 定时器 / 交付门控（pause 冻结、Lua 帧内排队）
  *   - 四个 ABI 入口的宿主侧接线：__host_q / __host_a / __core_call / __core_event
  *
@@ -129,16 +129,18 @@ public final class LuaRuntime {
         return result;
     }
 
-    /** 装载 runtime/lua（唯一源码）：compat → json/bridge → bootstrap/bslib。 */
+    /** 装载 runtime/lua（唯一源码）：compat → json/bridge → bootstrap；可选库只 preload 不注入。 */
     public void bootRuntimeLibs() {
         // 1) LuaJ 兼容补丁必须先于 json（json 的 encode_number 依赖 math.type）
         exec(resource("/lua/compat/luaj.lua"), "=compat/luaj");
         // 2) 模块
         preloadModule("json", resource("/lua/core/json.lua"));
         preloadModule("bridge", resource("/lua/core/bridge.generated.lua"));
-        preloadModule("bslib", resource("/lua/core/bslib.lua"));
         preloadModule("bootstrap", resource("/lua/core/bootstrap.lua"));
-        exec("require \"bootstrap\"\nbslib = require \"bslib\"", "=runtime");
+        // 可选库：不注入全局，脚本自行 local x = require "..."
+        preloadModule("bslib", resource("/lua/lib/bslib.lua"));
+        preloadModule("container_lib", resource("/lua/lib/container_lib.lua"));
+        exec("require \"bootstrap\"", "=runtime");
         registerAbi();
     }
 

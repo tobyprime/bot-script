@@ -200,9 +200,18 @@ paths:
       summary: 只读实例状态（localStorage 语义；键值 + 用量）
       responses:
         "200": { description: OK }
+    post:
+      operationId: setStore
+      summary: 写入/覆盖一个实例状态键（运维编辑；值须可 JSON 序列化）
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [key], properties: { key: { type: string }, value: {} } } } }
+      responses:
+        "200": { description: OK }
+        "400": { description: 键或值不合法/超配额 }
     delete:
       operationId: deleteStore
-      summary: 清空实例状态（含去重窗口）
+      summary: 清空实例状态（含去重窗口）；带 ?key= 时只删除该键
       responses:
         "200": { description: OK }
   /caps:

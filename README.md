@@ -17,7 +17,8 @@ contracts/                 唯一真源（全部生成物由 tools/codegen.mjs �
   data/                    跨宿主共享数据（武器评分 / 容器方块表）
   vectors/                 跨宿主 golden（scheduler / policy / windows / data）
 runtime/lua/
-  core/{bootstrap,bslib,json}.lua   唯一语义实现（Node/Fabric 共用）
+  core/{bootstrap,json}.lua        唯一语义实现（Node/Fabric 共用）
+  lib/{bslib,container_lib}.lua    可选库（不占 ABI、脚本 require）
   core/bridge.generated.lua         生成物：bridge.self.get / bridge.act.* 等类型化存根
   compat/luaj.lua                   LuaJ 兼容补丁（仅 Fabric 加载）
 hosts/node/                Node 宿主（薄适配器）
@@ -123,10 +124,10 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
 - **四个 ABI 入口**：`__host_q`（同步）/ `__host_a`（异步 token）/ `__core_call`（宿主→核心）/
   `__core_resume`·`__core_event`（宿主→核心异步）。策略/速率/预算/dry-run/审计/token 结算
   只在宿主 dispatch 一处执行（Node `hosts/node/abi.js` / Fabric `AbiDispatcher.java`）。
-- **唯一 Lua 源**：`runtime/lua/core`；Fabric 只额外加载 `compat/luaj.lua`
+- **唯一 Lua 源**：`runtime/lua/core` + `runtime/lua/lib`；Fabric 只额外加载 `compat/luaj.lua`
   （`__TASK_ERR` 旁路、`math.type`/`atan2`）。`lua-sync` 禁止仓内出现第二份拷贝。
-- **原语下沉、编排上移**：导航（含无寻路器时的直线退化）、开箱瞄准与重试、装备点击序列、
-  战斗冷却都在 `runtime/lua/core/bslib.lua`；宿主只保留一次协议动作 + 确认。
+- **原语下沉、编排上移**：开箱瞄准与重试、装备点击序列在可选库；无寻路器时 `nav.walk`
+  返回 `nav.unsupported`（不再直线假寻路）；战斗冷却是脚本策略（数据缺失返回 nil）。宿主只保留一次协议动作 + 确认；
 - 调度：Lua 协程 + 就绪队列；yield 协议 `<token>, 0`；事件处理器为脱离根；
   race/parallel 的 join 状态全在 Lua 侧。
 - 挂起点交付：`ej` 空串视同无错误；取消交付先跑 on_cancel 清理钩（fire 模式），再注入 `task.cancelled`。

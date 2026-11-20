@@ -53,7 +53,6 @@ const forbiddenZones = [
   path.join(ROOT, 'hosts', 'node', 'engine.js'),
   path.join(ROOT, 'hosts', 'node', 'policy.js'),
   path.join(ROOT, 'runtime', 'lua', 'core', 'bootstrap.lua'),
-  path.join(ROOT, 'runtime', 'lua', 'core', 'bslib.lua'),
 ];
 for (const f of forbiddenZones) {
   if (!existsSync(f)) continue;

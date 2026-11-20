@@ -9,6 +9,7 @@ await import('./state.test.js');
 await import('./policy.test.js');
 await import('./result.test.js');
 await import('./containers.test.js');
+await import('./nav.test.js');
 await import('./queries.test.js');
 await import('./chat.test.js');
 await import('./events.test.js');

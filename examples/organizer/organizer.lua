@@ -5,11 +5,12 @@
 -- ============================================================
 
 local routing = require "routing"      -- 本包内模块（package.searchers 已限定实例目录）
+local clib = require "container_lib"   -- 可选容器库：开箱编排 + 多趟搬运
 
 -- ---------- 生命周期 ----------
 on_start(function()
   if not caps.has("nav.pathfinder") then
-    log.warn("当前驱动无寻路器（caps.nav.pathfinder=false），goto 走直线退化路径")
+    log.warn("当前驱动无寻路器（caps.nav.pathfinder=false），nav.walk 将返回 nav.unsupported")
   end
 end)
 
@@ -92,7 +93,7 @@ end)
 -- ---------- 主任务 ----------
 task("organize", { single = true }, function()
   -- 1) 读取输入箱，按物品种类去重（每种类一轮独立转移）
-  local w = container.open(params.input)
+  local w = clib.open(params.input)
   local kinds = {}
   for _, s in ipairs(w:slots()) do
     if s.item then kinds[s.item.id] = true end
@@ -103,13 +104,13 @@ task("organize", { single = true }, function()
   for id in pairs(kinds) do
     if params.paused then break end
 
-    local ok, err = bslib.try(function()
+    local ok, err = try(function()
       local plan = routing.plan_for(id)            -- 决策在模块：缓存优先，开箱校验兜底
       if not plan then
         log.warn("无去向: %s（请补充库存箱或用 partial add 登记）", id)
         return
       end
-      local moved = bslib.move(params.input, plan.pos, { id = id }, {
+      local moved = clib.move(params.input, plan.pos, { id = id }, {
         -- 多趟复合：走-开-取-关-走-开-放-关 循环；中途箱满则停在 moved<请求
         on_open = function(dst, win, filter) routing.validate(plan.pos, win, filter) end,
       })

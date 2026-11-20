@@ -26,6 +26,7 @@ public final class HttpRoutes {
             new Route("GET", "/stream", "getStream"),
             new Route("POST", "/chat", "postChat"),
             new Route("GET", "/store", "getStore"),
+            new Route("POST", "/store", "setStore"),
             new Route("DELETE", "/store", "deleteStore"),
             new Route("GET", "/caps", "getCaps")
     );

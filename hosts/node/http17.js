@@ -187,9 +187,23 @@ export function startHttpApi(engine, { log = console.log, port, token: tokenArg 
       const stats = engine.stateStore.stats;
       return json(res, 200, { values: engine.stateStore.all(), ...stats });
     },
-    deleteStore: (req, res) => {
-      engine.stateStore.clear();
-      return json(res, 200, { ok: true });
+    setStore: async (req, res) => {
+      const body = await parseBody(req);
+      const key = String(body.key ?? '');
+      if (!key) return json(res, 400, { error: 'store.bad_request', detail: 'key required' });
+      try {
+        engine.stateStore.set(key, body.value);
+        return json(res, 200, { ok: true, key, ...engine.stateStore.stats });
+      } catch (e) {
+        if (e?.kind) return json(res, 400, { error: e.kind, detail: e.detail ?? null });
+        throw e;
+      }
+    },
+    deleteStore: (req, res, u) => {
+      const key = String(u?.searchParams.get('key') ?? '');
+      if (key) engine.stateStore.delete(key);
+      else engine.stateStore.clear();
+      return json(res, 200, { ok: true, ...(key ? { key } : { cleared: true }) });
     },
     getCaps: (req, res) => json(res, 200, {
       host: 'node',

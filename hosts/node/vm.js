@@ -7,13 +7,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CORE_DIR = path.resolve(HERE, '..', '..', 'runtime', 'lua', 'core');
+const LUA_DIR = path.resolve(HERE, '..', '..', 'runtime', 'lua');
 
+// 核心模块 + 可选库都挂进 VFS；可选库不执行、不注入全局，脚本自己 require。
 export const CORE_FILES = {
-  'json.lua': 'json.lua',
-  'bridge.lua': 'bridge.generated.lua',   // 模块名 bridge，文件名 bridge.generated.lua
-  'bslib.lua': 'bslib.lua',
-  'bootstrap.lua': 'bootstrap.lua',
+  'json.lua': 'core/json.lua',
+  'bridge.lua': 'core/bridge.generated.lua',   // 模块名 bridge，文件名 bridge.generated.lua
+  'bootstrap.lua': 'core/bootstrap.lua',
+  'bslib.lua': 'lib/bslib.lua',
+  'container_lib.lua': 'lib/container_lib.lua',
 };
 
 export class LuaVm {
@@ -47,11 +49,11 @@ export class LuaVm {
     }
 
     for (const [mountName, file] of Object.entries(CORE_FILES)) {
-      await this.mount(mountName, readFileSync(path.join(CORE_DIR, file), 'utf8'));
+      await this.mount(mountName, readFileSync(path.join(LUA_DIR, file), 'utf8'));
     }
     // 实例脚本目录进入 package.path（require 限实例目录 + 运行时模块，DESIGN §2.3）
     this.lua.doString(`package.path = ${JSON.stringify(this.scriptDir + '/?.lua;')} .. package.path`);
-    this.lua.doString('require "bootstrap"\nbslib = require "bslib"');
+    this.lua.doString('require "bootstrap"');
     // 实例目录全部 .lua 挂入 VFS（require 限实例目录）
     if (existsSync(this.scriptDir)) {
       for (const f of readdirSync(this.scriptDir).filter((x) => x.endsWith('.lua'))) {

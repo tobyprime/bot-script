@@ -99,7 +99,7 @@ function M.plan_for(id)
   return nil
 end
 
--- 开箱校验（bslib.move 的 on_open 回调）：缓存失效、插件 GUI 防护、自由度实测回写。
+-- 开箱校验（container_lib.move 的 on_open 回调）：缓存失效、插件 GUI 防护、自由度实测回写。
 -- free 以"该物品可放件数"计：空格数 × 该 stack 的 max_count（组件真值）。
 function M.validate(pos, win, filter)
   local n = get(pos)

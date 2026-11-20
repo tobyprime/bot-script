@@ -9,6 +9,19 @@
 --           on_cancel 清理钩
 -- ============================================================
 
+local bslib = require "bslib"   -- 可选通用库：look.at / ensure_holding / equip_best
+
+-- 攻击冷却：数据拿不到 attack_speed 时 combat.cooldown() 返回 nil。
+-- 这是脚本自己的策略选择：未知时用示例自定的 500ms 节奏下限，避免忙循环刷包。
+local function await_attack_window()
+  local cd = combat.cooldown()
+  if cd == nil then
+    time.sleep(500)
+  elseif cd > 0 then
+    time.sleep(cd)
+  end
+end
+
 -- 操作员校验属于脚本自己的业务规则（平台不提供 owner/op 名单）
 local function is_op(sender)
   local list = params.ops or ""
@@ -66,7 +79,7 @@ task("guard", { single = true }, function()
           -- 目标在动，walk 常常超时/被甩开——循环自然重发；朝向留给旋转任务
         else
           bslib.look.at(t)                   -- 攻击前瞄准（attack 原语不校验朝向，瞄准防反作弊误判）
-          wait_until(bslib.is_combat_ready)  -- 1.8 恒就绪；1.9+ 等攻击冷却
+          await_attack_window()               -- 数据缺失时用脚本自定的节奏下限
           combat.attack(t)
         end
       end

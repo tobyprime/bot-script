@@ -6,6 +6,9 @@
 -- 动作覆盖：move.path/rot + interact.block(开箱) + window.click —— v1 三类型
 -- ============================================================
 
+local bslib = require "bslib"              -- look.at
+local clib = require "container_lib"       -- 开箱瞄准/重试 + withdraw
+
 -- 心形图案：大箱 6 行 × 9 列，X = 放材料（27 槽）
 local PATTERN = {
   ".XX.XX.",
@@ -57,8 +60,8 @@ task("heart", { single = true }, function(pos)
 
   -- 1) 取"适量"材料：恰好图案槽位数（不足则整单放弃并告警，绝不静默摆一半）
   nav.goto_near(params.source, 3, { keep_rotation = true })   -- 寻路不碰朝向
-  local src = container.open(params.source)
-  bslib.withdraw(src, { id = params.material }, NEED)
+  local src = clib.open(params.source)
+  clib.withdraw(src, { id = params.material }, NEED)
   container.close(src)
   if inv.count{ id = params.material } < NEED then
     log.warn("材料不足：需 %d 块 %s，放弃本次摆放", NEED, params.material)
@@ -67,7 +70,7 @@ task("heart", { single = true }, function(pos)
 
   -- 2) 走到玩家放的大箱并打开
   nav.goto_near(pos, 3, { keep_rotation = true })
-  local box = container.open(pos)
+  local box = clib.open(pos)
   if box:size() ~= 54 then                          -- 双箱窗口确认
     container.close(box)
     error{ kind = "task.not_double_chest", detail = tostring(pos) }

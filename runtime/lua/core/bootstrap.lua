@@ -182,7 +182,7 @@ local function call_query(op, args)
   return nil
 end
 
--- 供 bslib 与用户脚本复用的挂起/脱离原语
+-- 供可选库与用户脚本复用的挂起/脱离原语
 function __await(tok) return await(tok) end
 function __detach(tok) bridge.token.detach(tok) end
 
@@ -1190,7 +1190,7 @@ world = {
   weather = function() return rv(bridge.world.weather(), nil) end,
 }
 
--- ---------- 容器 / 背包（协议无关的视图；编排在 bslib） ----------
+-- ---------- 容器 / 背包（协议无关的视图；开箱编排在可选库 container_lib） ----------
 
 function item_match(item, filter)
   if type(filter) == "function" then
@@ -1305,16 +1305,21 @@ local win_mt = {
 local function make_win(id) return setmetatable({ __win = id }, win_mt) end
 
 container = {
-  -- 编排（贴身/瞄准/重试/等槽）在 bslib；宿主只提供 act.window_open 原语
+  -- 裸打开：瞄准/贴身/重试/等槽属于服务器适配，放在可选库 container_lib。
   open = function(target, opts)
-    local r
-    if bslib and bslib.container_open then
-      r = bslib.container_open(target, opts)
-    else
-      local ar = call_action("act.window_open", { target = target })
-      if ar.ok then r = ar.value else bridge.events.emit("container.failed", { target = encode(target), error = ar.error }) end
+    local ar = call_action("act.window_open", { target = target })
+    if ar.ok and type(ar.value) == "table" and ar.value.id ~= nil then
+      return make_win(tostring(ar.value.id))
     end
-    return r and r.id and make_win(r.id) or nil
+    if not ar.ok then
+      bridge.events.emit("container.failed", { target = encode(target), error = ar.error })
+    else
+      bridge.events.emit("container.failed", {
+        target = encode(target),
+        error = { code = "container.missing", message = "窗口快照缺失" },
+      })
+    end
+    return nil
   end,
   close = function(w)
     return call_action("act.window_close", {
@@ -1411,22 +1416,62 @@ inv = {
   end,
 }
 
--- ---------- nav / look（编排在 bslib；宿主只提供原语） ----------
+-- ---------- nav / look（核心只做 Result 归一；编排动作由脚本/可选库决定） ----------
+
+local function round_pos(p)
+  if type(p) ~= "table" or p.x == nil then return nil end
+  return {
+    x = math.floor(p.x + 0.5),
+    y = math.floor(p.y + 0.5),
+    z = math.floor(p.z + 0.5),
+  }
+end
+
+-- 把驱动/NavResult 归一成跨平台 Result（OK/ERR/取消由 await 负责）
+local function as_nav_result(r)
+  if type(r) ~= "table" then return { ok = true, value = {} } end
+  if r.ok == true then return { ok = true, value = r } end
+  if r.ok == false and r.error ~= nil then return r end   -- ABI 确定性失败（policy/denied/…）
+  local reason = r.reason or "unreachable"
+  return { ok = false, error = { code = "nav." .. reason, message = reason } }
+end
 
 nav = {
   walk = function(target, opts)
-    if bslib and bslib.nav_walk then return bslib.nav_walk(target, opts) end
-    return call_action("act.path_to", { target = target })
+    opts = opts or {}
+    local pos = round_pos(target)
+    if pos == nil then
+      -- 实体目标：取活位置
+      local id = entity_id(target)
+      local e = rv(bridge.entities.get(tostring(id)), nil)
+      if not e then
+        return { ok = false, error = { code = "entity.gone", message = "nav.walk 目标实体不存在" } }
+      end
+      pos = round_pos(e.pos)
+      if pos == nil then
+        return { ok = false, error = { code = "entity.gone", message = "目标无坐标" } }
+      end
+    end
+
+    -- 没有寻路器就显式失败：不再用直线输入假装寻路。
+    if not rv(bridge.caps.get("nav.pathfinder"), false) then
+      local err = { code = "nav.unsupported", message = "当前宿主没有寻路能力（nav.pathfinder=false）" }
+      bridge.events.emit("nav.failed", { reason = err.code, target = pos })
+      return { ok = false, error = err }
+    end
+
+    local arrive = opts.arrive or 1.5
+    local timeout_ms = opts.timeout_ms or (opts.timeout and opts.timeout * 1000) or 30000
+    local r = as_nav_result(await(bridge.act.path_to(pos, arrive, timeout_ms)))
+    if not r.ok then
+      bridge.events.emit("nav.failed", { reason = r.error and r.error.code or "nav.unreachable", target = pos })
+    end
+    return r
   end,
   goto_near = function(pos, radius, opts)
     opts = opts or {}
     opts.arrive = radius or opts.arrive
     return nav.walk(pos, opts)
-  end,
-  follow = function(e, opts)
-    local id = type(e) == "table" and (rawget(e, "__id") or e.id) or e
-    if bslib and bslib.nav_follow then return bslib.nav_follow(id, opts) end
-    return call_action("act.path_cancel", {})
   end,
   stop = function()
     call_action("act.path_cancel", {})
@@ -1476,8 +1521,6 @@ look = {
 
 __LAST_ATTACK = 0
 __LAST_ATTACK_STACK = nil
--- 数据缺失时的最小攻击间隔（自动化节奏下限，不是物品数据；避免无冷却忙循环/刷包）
-local DEFAULT_ATTACK_INTERVAL = 500
 
 local function stack_info(item)
   if item == nil then return nil end
@@ -1499,10 +1542,12 @@ combat = {
   end,
   range = function() return 3.0 end,
   cooldown = function()
-    -- 原版冷却由 attack_speed 组件决定；宿主读不到属性时用核心的节奏下限
+    -- 原版冷却由 attack_speed 组件决定；数据缺失返回 nil，由脚本决定如何处理，
+    -- 不再用引擎发明的 500ms 固定节奏冒充物品数据。
     local st = stack_info(__LAST_ATTACK_STACK)
     local speed = st and st.attributes and st.attributes.attack_speed
-    local cd = (speed ~= nil and speed > 0) and math.ceil(600 / speed) or DEFAULT_ATTACK_INTERVAL
+    if speed == nil or speed <= 0 then return nil end
+    local cd = math.ceil(600 / speed)
     local left = __LAST_ATTACK + cd - rv(bridge.util.now(), 0)
     return left > 0 and left or 0
   end,
@@ -1531,6 +1576,7 @@ self = {
   health = function() local s = self_snapshot(); return s and s.health or nil end,
   food = function() local s = self_snapshot(); return s and s.food or nil end,
   held = function() local s = self_snapshot(); return s and s.held or nil end,
+  held_slot = function() local s = self_snapshot(); return s and (s.held_slot or s.heldSlot or 0) or 0 end,
   gamemode = function() local s = self_snapshot(); return s and s.gamemode or nil end,
   effects = function() local s = self_snapshot(); return s and s.effects or nil end,
   attributes = function() local s = self_snapshot(); return s and s.attributes or nil end,

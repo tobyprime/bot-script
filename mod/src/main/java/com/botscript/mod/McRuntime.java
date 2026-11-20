@@ -32,7 +32,7 @@ import java.util.Set;
  * MC 动作原语（宿主唯一触碰 Yarn 映射的类之一）：
  *   chat / look / input / path_to / window_open / window_click / use_* / dig / drop / select_slot
  *
- * 编排（贴身/瞄准/重试/装备点击序列/导航退化）在 runtime/lua/core/bslib.lua；
+ * 编排（贴身/瞄准/重试/装备点击序列/容器搬运）在可选库 runtime/lua/lib/container_lib.lua；
  * 这里只保证「一次协议动作」的执行与确认（点击回包、窗口出现、走到位）。
  */
 public final class McRuntime implements LuaRuntime.Tickable {

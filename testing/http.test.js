@@ -54,6 +54,20 @@ test('http17：鉴权/状态/params/pause/resume/tasks/logs/store/caps/eval 全�
   const storeBody = await (await fetch(base + '/store', { headers: hdr })).json();
   assert.deepStrictEqual(storeBody.values, { k: { v: 1 } });
   assert.strictEqual(storeBody.quota, engine.stateStore.stats.quota);
+
+  // 在线写/删单键：运维可视化编辑走这两个入口
+  const setRes = await (await fetch(base + '/store', {
+    method: 'POST', headers: hdr, body: '{"key":"k2","value":{"n":2}}',
+  })).json();
+  assert.strictEqual(setRes.ok, true);
+  assert.deepStrictEqual(engine.stateStore.get('k2'), { n: 2 });
+  const badBody = await fetch(base + '/store', { method: 'POST', headers: hdr, body: '{"value":1}' });
+  assert.strictEqual(badBody.status, 400, '缺 key 应 400');
+  const delKey = await fetch(base + '/store?key=k2', { method: 'DELETE', headers: hdr });
+  assert.strictEqual(delKey.status, 200);
+  assert.strictEqual(engine.stateStore.get('k2'), undefined, 'DELETE ?key 只删单键');
+  assert.deepStrictEqual((await (await fetch(base + '/store', { headers: hdr })).json()).values, { k: { v: 1 } });
+
   assert.strictEqual((await fetch(base + '/store', { method: 'DELETE', headers: hdr })).status, 200);
   const cleared = await (await fetch(base + '/store', { headers: hdr })).json();
   assert.deepStrictEqual(cleared.values, {}, 'DELETE /store 应清空状态');
