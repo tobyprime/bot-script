@@ -243,8 +243,7 @@ test('self 帧缓存：同帧多次 self.* 只取一次宿主快照', async () =
   await engine.stop();
 });
 
-test('world.scan：未知谓词显式报错（不得静默降级成 chest / 空结果）', async () => {
-  script('scan-bad-pred.lua', `
+test('world.scan：未知谓词显式报错（不得静默降级成 chest / 空结果）', async () => {  script('scan-bad-pred.lua', `
     task('probe', { single = true }, function()
       local ok, err = pcall(function()
         world.scan({ { x = 0, y = 0, z = 0 }, { x = 1, y = 1, z = 1 } }, { type = 'chest' })
@@ -258,5 +257,90 @@ test('world.scan：未知谓词显式报错（不得静默降级成 chest / 空�
   assert.ok(await waitFor(() => g(engine, '__R_scan_ok') != null, 3000));
   assert.strictEqual(String(g(engine, '__R_scan_ok')), 'false', '未知谓词应抛错而不是返回空列表');
   assert.strictEqual(String(g(engine, '__R_scan_kind')), 'abi.invalid_args');
+  await engine.stop();
+});
+
+test('entities.list 下推：pred/order/limit 在宿主侧选目标，core 投影不展开装备组件', async () => {
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addPlayer('Far', { x: 20, y: 64, z: 0 }, null);
+  const nearId = driver.addPlayer('Near', { x: 3, y: 64, z: 0 }, { id: 'minecraft:stone', count: 64 });
+  driver.entities.get(String(nearId)).equipment.helmet = {
+    id: 'minecraft:diamond_helmet', count: 1,
+    components: [
+      { type: 'minecraft:max_stack_size', data: 1 },
+      { type: 'minecraft:max_damage', data: 363 },
+      { type: 'minecraft:attribute_modifiers', data: [
+        { type: 'minecraft:armor', amount: 3 }, { type: 'minecraft:armor_toughness', amount: 2 },
+      ] },
+      { type: 'minecraft:enchantments', data: [{ id: 'minecraft:protection', lvl: 2 }] },
+      { type: 'minecraft:custom_name', data: '{"text":"hat"}' },
+    ],
+  };
+  const { engine } = await makeEngine({ scripts: [], driver });
+  const args = { pred: { type: 'player', alive: true, within: 10 }, order: 'distance', limit: 1 };
+  const core = JSON.parse(engine.abi.sync('entities.list', JSON.stringify({ ...args, projection: 'core' })));
+  const full = JSON.parse(engine.abi.sync('entities.list', JSON.stringify({ ...args, projection: 'full' })));
+  assert.ok(core.ok && full.ok);
+  assert.strictEqual(core.value.length, 1, 'limit/order 应在宿主侧只返回最近的一条');
+  assert.strictEqual(core.value[0].name, 'Near');
+  assert.deepStrictEqual(Object.keys(core.value[0].equipment.helmet).sort(), ['count', 'id'],
+    'core 投影的装备只保留 id/count');
+  assert.ok(full.value[0].equipment.helmet.max_count != null, 'full 投影仍展开 StackInfo');
+  assert.ok(JSON.stringify(core.value).length < JSON.stringify(full.value).length / 2,
+    'core 载荷应显著小于 full');
+  await engine.stop();
+});
+
+test('函数谓词回退全量投影：宿主不下推 Lua 函数，仍在本地筛出结果', async () => {
+  script('fn-pred.lua', `
+    task('probe', { single = true }, function()
+      local list = entity.find(function(e) return e.pos and e.pos.x >= 5 end)
+      __R_n = #list
+      __R_x = list[1] and string.format('%.0f', list[1].pos.x) or ''
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addPlayer('A', { x: 1, y: 64, z: 0 });
+  driver.addPlayer('B', { x: 7, y: 64, z: 0 });
+  const { engine } = await makeEngine({ scripts: ['fn-pred.lua'], driver });
+  assert.ok(await waitFor(() => g(engine, '__R_n') != null, 3000));
+  assert.strictEqual(g(engine, '__R_n'), 1, '函数谓词应只留下 x>=5 的玩家');
+  assert.strictEqual(String(g(engine, '__R_x')), '7');
+  await engine.stop();
+});
+
+test('entity.find/nearest 支持 opts.full 逃生门：需要装备属性时显式请求全量', async () => {
+  script('full-opt.lua', `
+    task('probe', { single = true }, function()
+      local e = entity.nearest({ type = 'player' }, { full = true })
+      __R_max = e and e.equipment and e.equipment.helmet and e.equipment.helmet.max_count or -1
+    end)
+    on_start(function() task.spawn('probe') end)
+  `);
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  const id = driver.addPlayer('Armored', { x: 2, y: 64, z: 0 });
+  driver.entities.get(String(id)).equipment.helmet = {
+    id: 'minecraft:diamond_helmet', count: 1,
+    components: [{ type: 'minecraft:max_stack_size', data: 1 }],
+  };
+  const { engine } = await makeEngine({ scripts: ['full-opt.lua'], driver });
+  assert.ok(await waitFor(() => g(engine, '__R_max') != null, 3000));
+  assert.strictEqual(g(engine, '__R_max'), 1, 'opts.full 应让装备按 StackInfo 展开');
+  await engine.stop();
+});
+
+test('perf 计数：查询 op 的调用/出站字节可在 /state.perf 观测', async () => {
+  const driver = new MockDriver({ username: 'SelfBot', start: { x: 0, y: 64, z: 0 } });
+  driver.addPlayer('A', { x: 2, y: 64, z: 0 });
+  driver.addPlayer('B', { x: 4, y: 64, z: 0 });
+  const { engine } = await makeEngine({ scripts: [], driver });
+  const raw = engine.abi.sync('entities.list', JSON.stringify({ type: 'player', projection: 'core' }));
+  assert.ok(raw.length > 0);
+  const perf = engine.abi.perf();
+  const row = perf.find((p) => p.op === 'entities.list');
+  assert.ok(row, 'perf 应记录 entities.list');
+  assert.ok(row.calls >= 1 && row.bytes_out > 0, `perf 应统计调用与出站字节（实际 ${JSON.stringify(row)}）`);
+  assert.ok(row.us_avg >= 0 && row.kb_s >= 0);
   await engine.stop();
 });

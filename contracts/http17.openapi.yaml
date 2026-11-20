@@ -39,6 +39,10 @@ components:
         tasks: { type: array, items: { type: object } }
         window: { type: string, nullable: true }
         caps: { type: object }
+        perf:
+          type: array
+          description: "查询成本观测：按出站字节/秒排序的 top-N（op/calls/hz/kb_s/us_avg）"
+          items: { type: object }
         memory: { type: object, description: "worker process.memoryUsage()（排障用）" }
     ParamsSnapshot:
       type: object

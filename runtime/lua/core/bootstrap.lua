@@ -945,9 +945,15 @@ end
 -- 同一帧内重复读多个字段只读本地表；跨帧后每个句柄至多重取一次（原先每个字段一次，
 -- 单次 entities.get ≈1ms）。需要强制新鲜时用 e:refresh()（PERF-REFACTOR §3.3）。
 
-local function snap_of(id)
+local function snap_of(id, projection)
   if id == nil then return nil end
-  return rv(bridge.entities.get(tostring(id)), nil)
+  return rv(bridge.entities.get(tostring(id), projection), nil)
+end
+
+local function exists_of(id)
+  if id == nil then return nil end
+  -- 存在性只关心「有没有这条实体」，core 投影足够（不要为一次 exists 展开整份装备）
+  return rv(bridge.entities.get(tostring(id), "core"), nil) ~= nil
 end
 
 local function shallow_copy(t)
@@ -959,10 +965,11 @@ end
 local ent_mt = {
   __index = function(e, k)
     local id = rawget(e, "__id")
+    local proj = rawget(e, "__proj")
     if k == "id" then return id end
     if k == "refresh" then
       return function()
-        local s = snap_of(id)
+        local s = snap_of(id, proj)
         rawset(e, "__s", s)
         rawset(e, "__epoch", __EPOCH)
         return e
@@ -972,17 +979,17 @@ local ent_mt = {
       return function()
         local s = rawget(e, "__s")
         if rawget(e, "__epoch") ~= __EPOCH then
-          s = snap_of(id)
+          s = snap_of(id, proj)
           rawset(e, "__s", s)
           rawset(e, "__epoch", __EPOCH)
         end
         return s and shallow_copy(s) or nil
       end
     end
-    if k == "exists" then return function() return snap_of(id) ~= nil end end
+    if k == "exists" then return function() return exists_of(id) end end
     local s = rawget(e, "__s")
     if s == nil or rawget(e, "__epoch") ~= __EPOCH then
-      s = snap_of(id)
+      s = snap_of(id, proj)
       rawset(e, "__s", s)
       rawset(e, "__epoch", __EPOCH)
     end
@@ -991,9 +998,9 @@ local ent_mt = {
   end,
 }
 
-local function make_entity(s)
+local function make_entity(s, projection)
   if type(s) ~= "table" then return nil end
-  return setmetatable({ __id = s.id, __s = s, __epoch = __EPOCH }, ent_mt)
+  return setmetatable({ __id = s.id, __s = s, __epoch = __EPOCH, __proj = projection or "full" }, ent_mt)
 end
 
 local function entity_id(e)
@@ -1001,7 +1008,7 @@ local function entity_id(e)
 end
 
 entity = {
-  exists = function(e) return snap_of(entity_id(e)) ~= nil end,
+  exists = function(e) return exists_of(entity_id(e)) end,
 }
 
 -- 自身快照按帧缓存：look.at / nearest / inv.held 在同一帧共用一次 self.get
@@ -1021,7 +1028,7 @@ local function self_pos()
 end
 
 local function within_ok(s, pred, sp)
-  if not pred or not pred.within then return true end
+  if type(pred) ~= "table" or not pred.within then return true end
   if not s.pos then return false end
   if not sp then return false end
   local dx, dy, dz = s.pos.x - sp.x, s.pos.y - sp.y, s.pos.z - sp.z
@@ -1065,20 +1072,52 @@ local function pred_match(s, pred)
   return true
 end
 
-function entity.find(pred)
-  local list = rv(bridge.entities.list(pred and pred.type, pred and pred.within), {}) or {}
-  local sp = (pred and pred.within) and self_pos() or nil
+-- 可下推的声明式谓词键；含 Lua 函数/未知键时必须回退全量投影（函数无法序列化过桥）
+local HOST_PRED_KEYS = {
+  type = true, name = true, uuid = true, alive = true,
+  region = true, within = true, holding = true, equipment = true,
+}
+
+local function entity_plan(pred, opts)
+  local plan = { projection = "core", full = false }
+  if type(pred) == "table" then
+    local host, has = {}, false
+    for k, v in pairs(pred) do
+      if HOST_PRED_KEYS[k] then
+        host[k] = v
+        has = true
+      else
+        plan.full = true   -- 未知键/嵌套函数：无法保证投影字段够用
+      end
+    end
+    if has then plan.pred = host end
+    plan.type = pred.type
+    plan.within = pred.within
+  elseif pred ~= nil then
+    plan.full = true       -- 函数谓词
+  end
+  if opts and opts.full then plan.full = true end
+  if plan.full then plan.projection = "full" end
+  return plan
+end
+
+function entity.find(pred, opts)
+  local plan = entity_plan(pred, opts)
+  local list = rv(bridge.entities.list(plan.type, plan.within, plan.pred, plan.projection), {}) or {}
+  local sp = plan.within and self_pos() or nil
   local out = {}
   for _, s in ipairs(list) do
+    -- 宿主可能未下推（Fabric）或只下推了一部分：Lua 侧仍做残余判定，保证两栈一致
     if within_ok(s, pred, sp) and pred_match(s, pred) then
-      out[#out + 1] = make_entity(s)
+      out[#out + 1] = make_entity(s, plan.projection)
     end
   end
   return out
 end
 
-function entity.nearest(pred)
-  local list = rv(bridge.entities.list(pred and pred.type, pred and pred.within), {}) or {}
+function entity.nearest(pred, opts)
+  local plan = entity_plan(pred, opts)
+  local list = rv(bridge.entities.list(plan.type, plan.within, plan.pred, plan.projection, "distance", 1), {}) or {}
   local sp = self_pos()
   local best, bd
   for _, s in ipairs(list) do
@@ -1091,7 +1130,7 @@ function entity.nearest(pred)
       if not bd or (d and d < bd) then best, bd = s, d or 0 end
     end
   end
-  return make_entity(best)
+  return make_entity(best, plan.projection)
 end
 
 -- ---------- world ----------

@@ -28,6 +28,36 @@ export class AbiDispatcher {
     this.rex = new Map();
     this.rexSeq = 0;
     this.handlers = this._buildHandlers();
+    // 查询成本观测（PERF-REFACTOR §3.7）：每 op 的调用数/进出字节/耗时，`/state.perf` 可读。
+    this.metrics = new Map();
+    this.metricsSince = Date.now();
+  }
+
+  _record(op, kind, bytesIn, bytesOut, us, addCall = true) {
+    let m = this.metrics.get(op);
+    if (!m) { m = { calls: 0, bytes_in: 0, bytes_out: 0, us: 0, max_us: 0, kind }; this.metrics.set(op, m); }
+    if (addCall) m.calls += 1;
+    m.bytes_in += bytesIn;
+    m.bytes_out += bytesOut;
+    m.us += us;
+    if (us > m.max_us) m.max_us = us;
+  }
+
+  /** /state.perf：按出站字节/秒排序的 top-N（查询 CPU 的代理指标） */
+  perf(limit = 12) {
+    const sec = Math.max(1, (Date.now() - this.metricsSince) / 1000);
+    return [...this.metrics.entries()]
+      .map(([op, m]) => ({
+        op, kind: m.kind,
+        calls: m.calls,
+        hz: +(m.calls / sec).toFixed(1),
+        bytes_out: m.bytes_out,
+        kb_s: +(m.bytes_out / sec / 1024).toFixed(1),
+        us_avg: +(m.us / (m.calls || 1)).toFixed(0),
+        us_max: m.max_us,
+      }))
+      .sort((a, b) => b.kb_s - a.kb_s)
+      .slice(0, limit);
   }
 
   /**
@@ -48,17 +78,25 @@ export class AbiDispatcher {
   sync(op, argsJson) {
     const spec = SYNC_OPS[op];
     const fn = this.handlers[op];
-    if (!spec || !fn) return JSON.stringify(errResult('abi.unknown_op', op));
+    if (!spec || !fn) {
+      this._record(op, 'sync', 0, 0, 0);
+      return JSON.stringify(errResult('abi.unknown_op', op));
+    }
     let args;
     try {
       args = validateArgs(op, spec, parseArgs(argsJson));
     } catch (e) {
+      this._record(op, 'sync', (argsJson ?? '').length, 0, 0);
       return JSON.stringify(this._resultOf(e, op));
     }
+    const t0 = performance.now();
     try {
       const out = fn(args);
-      return JSON.stringify(okResult(out === undefined ? null : out));
+      const body = JSON.stringify(okResult(out === undefined ? null : out));
+      this._record(op, 'sync', (argsJson ?? '').length, body.length, performance.now() - t0);
+      return body;
     } catch (e) {
+      this._record(op, 'sync', (argsJson ?? '').length, 0, performance.now() - t0);
       return JSON.stringify(this._resultOf(e, op));
     }
   }
@@ -68,6 +106,8 @@ export class AbiDispatcher {
     const token = hub.newToken('action');
     const spec = ASYNC_OPS[op];
     const fn = this.handlers[op];
+    const bytesIn = (argsJson ?? '').length;
+    this._record(op, 'async', bytesIn, 0, 0);
     if (!spec || !fn) {
       hub.settleErr(token, 'abi.unknown_op', op);
       return token;
@@ -103,6 +143,7 @@ export class AbiDispatcher {
       obs.publish('action', { ts: nowMs(), action: op, args: brief(args) });
     }
 
+    const t0 = performance.now();
     (async () => {
       try {
         const result = await fn(args, token);
@@ -111,7 +152,7 @@ export class AbiDispatcher {
         const r = this._resultOf(e, op);
         hub.settleErr(token, r.error.code, r.error.message);
       }
-    })();
+    })().finally(() => this._record(op, 'async', 0, 0, performance.now() - t0, false));
     return token;
   }
 
@@ -122,8 +163,10 @@ export class AbiDispatcher {
 
     // 契约 Stack：完整组件/属性（窗口槽位与实体装备都按组件真值返回）
     const stackOf = (raw) => (raw == null ? null : data.stack(raw));
-    const entityOf = (e) => {
+    const entityOf = (e, projection) => {
       if (!e) return null;
+      // core 投影由驱动直接给出紧凑装备（{id,count}），不再展开组件
+      if (String(projection ?? 'full') === 'core') return e;
       const equipment = {};
       for (const [k, v] of Object.entries(e.equipment ?? {})) equipment[k] = stackOf(v);
       return { ...e, equipment };
@@ -194,8 +237,11 @@ export class AbiDispatcher {
       }),
 
       // ---- 实体 ----
-      'entities.list': ({ type, within }) => (driver.query_entities?.({ type, within }) ?? []).map(entityOf),
-      'entities.get': ({ id }) => entityOf(driver.query_entity?.(String(id)) ?? null),
+      'entities.list': ({ type, within, pred, projection, order, limit }) =>
+        (driver.query_entities?.({ type, within, pred, projection, order, limit }) ?? [])
+          .map((e) => entityOf(e, projection)),
+      'entities.get': ({ id, projection }) =>
+        entityOf(driver.query_entity?.(String(id), projection ?? 'full') ?? null, projection),
 
       // ---- 世界 ----
       'world.block': ({ pos }) => s.world.block(pos),

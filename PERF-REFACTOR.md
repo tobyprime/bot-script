@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 状态 | **P0 已实现并随 v0.2.0 发布；P1/P2 仍为草案** |
+| 状态 | **P0 + P1 的 #9/#14 已实现（v0.2.1 待发）；其余 P1/P2 仍为草案** |
 | 日期 | 2026-11-20 |
 | 范围 | `runtime/lua/core/*`、`hosts/node/abi.js`、`hosts/node/data.js`、`hosts/node/state/*`、`hosts/node/drivers/mineflayer/*`、`contracts/host-abi.yaml`；Fabric 宿主的对应 op |
 | 关联 | `DESIGN.md`（Lua 唯一核心 + 薄宿主）、`CAPABILITIES.md` §2/§3.4/§3.5、`ARCHITECTURE-REFACTOR.md`（契约先行） |
@@ -447,6 +447,18 @@ end
 | 8 | `scanKinds` 未知谓词显式失败 | `data.js:168-172` | 契约测试：未知 pred → `abi.invalid_args` |
 
 ### P1 — 契约扩展（预计 3~5 天）
+
+**落地情况（2026-11-20，v0.2.1 待发）：#9（实体下推/投影/限量）与 #14（perf 计数）已实现；#10–#13 未开始。**
+
+- `entities.list` 新增 `pred/projection/order/limit`；`entities.get` 新增 `projection`。
+  `entity.find/nearest` 自动构造可下推的声明式谓词；含 Lua 函数/未知键时回退全量投影并在 Lua 侧判定；
+  `nearest` 由宿主按距离排序、只返回最近 1 条（Fabric 未实现时 Lua 本地兜底，结果一致）。
+- 引擎内复现（10 名满装备玩家，真实 VM/JSON，Mock 驱动）：
+  改造前 `entities.list` **19.7KB/次 ×26Hz**，greeter ≈36% 单核；改造后 **1.6KB/次**、nearest 0.6KB/次，
+  greeter ≈12–14%。剩余地板：`time.sleep(50)` 每次往返 ≈2ms（20Hz ≈4.5%）、nearest+self ≈5%。
+  真实实例仍需要用 `/state.perf` 复核（见 #14）。
+- `/state` 新增 `perf`：每 op 的 calls/hz/出站字节/kb_s/us_avg/us_max（按 kb_s 排序 top-N），
+  作为「哪条查询在吃 CPU」的第一手证据。
 
 | # | 改动 | 验收 |
 |---|---|---|
