@@ -63,7 +63,7 @@ node engine/cli.js run/bank-demo.yaml
 
 # 4) fabric 宿主（standalone，无需任何外部进程）
 cd mod && ./gradlew build
-#   产物：mod/build/libs/botscript-mod-0.2.0.jar -> 放入客户端实例 mods/ 目录
+#   产物：mod/build/libs/botscript-mod-0.2.1.jar -> 放入客户端实例 mods/ 目录
 #   构建期从 ../runtime/lua 与 ../contracts/data 拷入资源（仓内不保留第二份 Lua 拷贝）
 #   脚本包：<游戏目录>/botscript/<包名>/（整包复制，含 bot.yaml 清单）
 #   实例配置：<游戏目录>/config/botscript-mod.json:
