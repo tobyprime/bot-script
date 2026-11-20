@@ -139,3 +139,18 @@ test('events.emit：上行事件进入实时流 event 环，可按 seq 补读', 
   assert.ok(rows.every((r) => typeof r.seq === 'number' && r.type === 'event'), '应带单调 seq 与 type');
   await engine.stop();
 });
+
+test('await_chat 超时后等待者必须出账（否则 __AWAITERS 只增不减）', async () => {
+  script('await-timeout.lua', `
+    __R_n = nil
+    task("wait", function()
+      chat.await_chat(rex"never-match", 80)
+      __R_n = #__AWAITERS
+    end)
+    on_start(function() task.spawn("wait") end)
+  `);
+  const { engine } = await makeEngine({ scripts: ['await-timeout.lua'] });
+  assert.ok(await waitFor(() => g(engine, '__R_n') != null, 3000), 'await_chat 应超时返回');
+  assert.strictEqual(g(engine, '__R_n'), 0, '__AWAITERS 不应残留超时等待者');
+  await engine.stop();
+});

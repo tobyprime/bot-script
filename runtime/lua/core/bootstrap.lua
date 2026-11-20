@@ -867,8 +867,14 @@ end
 
 function chat.await_chat(rexid, timeout)
   local tok = bridge.waiter.new(timeout or 5000)
-  __AWAITERS[#__AWAITERS + 1] = { rexid = rexid, token = tok }
-  return await(tok)
+  local w = { rexid = rexid, token = tok }
+  __AWAITERS[#__AWAITERS + 1] = w
+  local r = await(tok)
+  -- 超时/取消后不会被 __chat_pipeline 清走：按对象身份移除，避免等待者表只增不减
+  for i = #__AWAITERS, 1, -1 do
+    if __AWAITERS[i] == w then table.remove(__AWAITERS, i) end
+  end
+  return r
 end
 await_chat = chat.await_chat
 
