@@ -41,7 +41,7 @@ node engine/cli.js examples/heart/demo-mineflayer.yaml
 
 1. 把本目录整包复制到 `<游戏目录>/botscript/heart/`；
 2. `<游戏目录>/config/botscript-mod.json` 配置实例（包 + 边界 + 实例参数首次可经 GUI/HTTP 设置）：
-   `{"package": "heart", "boundary": {"authority": {"owner": ["你的玩家名"]}}}`；
+   `{"package": "heart", "boundary": {}}`；
 3. 进世界自动加载；游戏内 `/bsclient` 打开管理界面，在参数页设置 `source`/`target` 后重启或手动触发。
    fabric 无方块事件流：由 heart-boot 读 params.target 在 on_start 直接触发。
 

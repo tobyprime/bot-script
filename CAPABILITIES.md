@@ -13,7 +13,7 @@
 
 ### ② 追杀 bot
 - 步骤：收到命令（鉴权）→ 查实体 → 循环{检查目标存活 → 选最强武器 → 距离远则追（目标在动！）、近则瞄准+攻击（受攻击冷却约束）} → 目标死亡报告 → 随时可中止。
-- **逼出**：实体查询与**活体句柄**语义（`e.pos` 每次读取都取最新值，非快照）；`nav.follow` 与重发路径；物品属性从 **ItemStack 组件**读（`attribute_modifiers` 的 attack_damage/attack_speed 排序 → `equip_best`；冷却按 attack_speed 计算）；聊天触发与客栈鉴权（`on_chat` + `bslib.authorized`）；战斗黑名单策略；任务取消与 `on cancel` 清理；自身死亡/重生时的任务处置。
+- **逼出**：实体查询与**活体句柄**语义（`e.pos` 每次读取都取最新值，非快照）；`nav.follow` 与重发路径；物品属性从 **ItemStack 组件**读（`attribute_modifiers` 的 attack_damage/attack_speed 排序 → `equip_best`；冷却按 attack_speed 计算）；聊天触发与脚本自管的操作员名单（`on_chat`）；战斗黑名单策略；任务取消与 `on cancel` 清理；自身死亡/重生时的任务处置。
 
 ### ③ 整理 bot
 - 步骤：定时触发 → 开输入箱 → 逐物品决策（不满盒缓存 → 开箱校验缓存 → 尽量放入；溢出 → 该物品库存箱；无缓存 → 告警/跳过）→ 回写缓存 → 关箱。
@@ -202,7 +202,7 @@ chat.say(text)                        -- 限速策略
 chat.reply(msg, text)                 -- 有 /msg 权限则私聊（msg_command 配置），否则公开（④）
 chat.msg(to, text)                    -- 定向私聊（P1）：余额等敏感回复走此通道
 chat.run_command(str)                 -- 命令白名单策略（④：仅 /pay，首词元精确匹配）
-chat.await_chat(pattern|pred, timeout) -> match|nil   -- 命名分组匹配表（④）
+chat.await_chat(pattern|pred, timeout) -> Result   -- value = 命名分组匹配表 | nil（④）
 -- 语义：一条消息可同时命中 on_chat 与多个 pending await_chat（独立广播，互不吞并）
 -- 事件：
 on_chat(rex"...", {source="player", from=名字?}, handler)  -- handler(m)：m.命名分组
@@ -274,7 +274,7 @@ P0。
 > 投递地址与凭据完全由宿主持有，脚本不接触任何网络细节。
 
 ```lua
-local ev = events.next(30000)         -- 阻塞到下一条宿主事件；超时返回 nil
+local r = events.next(30000)          -- Result；超时 value = nil，r.value 为 {type,data,ts}
 -- ev = { type, data, ts }
 
 events.emit("pay", { payer = "Steve", amount = 12.5 })   -- 上抛一条事件（非阻塞）
@@ -356,17 +356,17 @@ events.emit("pay", { payer = "Steve", amount = 12.5 })   -- 上抛一条事件�
 | 类别 | 归属 | 内容 | 场景例 |
 |---|---|---|---|
 | **params**（统一参数） | 脚本声明 schema（type/default/help/**visible**/**perm**）；初值两层：包默认 < 运行期持久化值（部署配置不携带业务参数）；控制总线热改（visible 定渠道、perm 定权限） | 坐标、过滤器、区域、不满盒列表、追杀半径、开关 | ①from/to ③input/partial_chests ②range |
-| **policy**（策略/边界） | **实例部署配置所有**（每服务器/每世界一份，默认全拒、未授即禁），宿主强制，脚本不可绕过 | 见下 | — |
+| **policy**（策略/边界） | **实例部署配置所有**（每服务器/每世界一份，全部可选；缺省不限制），宿主强制，脚本不可绕过 | 见下 | — |
 | **runtime knobs** | 引擎调优 | dry_run、看门狗阈值、重试默认、日志级别 | — |
 | **driver flags** | 驱动协商上报 | feature flags + 降级矩阵 | 跨后端 |
 
-**policy 细项**：
-- movement：活动围栏（越界 → 引擎自动 pause + 告警，可恢复）、离锚点最大距离 —— ①③
-- blocks：dig/place 白名单，默认全禁 —— ①③
-- combat：目标黑/白名单、类型过滤、最大接战距离 —— ②
-- chat：say 限速、**命令白名单**（首词元精确匹配：`/pay` 不放行 `/payday`；命名空间别名如 `/minecraft:pay` 需显式列出）、msg_command 配置 —— ④
-- authority：命令发送者分级（console > owner > 白名单玩家）；内建 pause/resume/status——急停 = pause（冻结全部任务、停走、告警，resume 可恢复），无 panic 关键词 —— 全部
+**policy 细项**（全部可选；未配置 = 不限制）：
+- movement：活动围栏（越界 → 引擎自动 pause + 告警，可恢复）、`allow_move=false` 禁止移动 —— ①③
+- blocks：dig/place 门控（缺省允许；显式 false/deny 才禁） —— ①③
+- combat：配置 targets 后才做类型过滤；max_engage 可选 —— ②
+- chat：say 限速（缺省不限）、**命令白名单**（非空时按首词元精确匹配：`/pay` 不放行 `/payday`；命名空间别名如 `/minecraft:pay` 需显式列出）、msg_command 配置 —— ④
 - budget：每小时动作数、任务墙钟上限、world.scan 预算；耗尽 → 自动 pause + 告警 —— 全部
+- 操作员判定不在平台：聊天控制的权限模型由脚本自行实现（参数/KV/代码常量）
 
 ---
 
@@ -403,14 +403,14 @@ params schema 校验（包默认合并持久化值）→ persist 打开/迁移 �
 | ①搬运 | goto_near | open/close/withdraw/deposit/move | count | — | block | — | log | — | 围栏、禁挖、abort |
 | ②追杀 | follow/goto | — | equip_best | nearest/alive/pos | — | attack/cooldown | reply | — | 命令鉴权、黑名单、内建 pause |
 | ③整理 | goto_near | free_space/deposit/count | — | — | scan/block | — | log | 表+校验回写 | params、看门狗 |
-| ④银行 | — | — | — | — | — | — | on_chat/await/run_command/seen | txn+意图日志 | 命令白名单、authority、限速 |
+| ④银行 | — | — | — | — | — | — | on_chat/await/run_command/seen | txn+意图日志 | 命令白名单、脚本自管 ops、限速 |
 
 结论：四列并集无缺口；②③共同逼出的"ItemStack 组件读取"、①③共同逼出的"容器复合语义"、④独有的"事务+回执"均为公共能力，无场景需要目录之外的机制。
 （§13/§3.2 定稿后注：矩阵中的 withdraw/deposit/free_space/move/equip_best 由 bslib 提供，脚本层名称不变；HAL 对应面为点击协议全集。）
 
 ## 10. 优先级汇总
 
-- **P0（M1，mineflayer，验收=①④）**：nav 基础、container 全部、inv 基础、chat 全部、宿主控制（HTTP `/pause` `/resume`）、self 基础、time/task/log、persist 全部、params、策略（围栏/禁挖/命令白名单/authority/容器门控）、HTTP 控制通道（§17）、dry_run、动作日志。
+- **P0（M1，mineflayer，验收=①④）**：nav 基础、container 全部、inv 基础、chat 全部、宿主控制（HTTP `/pause` `/resume`）、self 基础、time/task/log、persist 全部、params、策略（围栏/禁挖/命令白名单/容器门控；缺省不限制）、HTTP 控制通道（§17）、dry_run、动作日志。
 - **P1（M2，验收=②③）**：entity、follow、combat 四件套、equip_best（按 ItemStack 组件排序）、world.scan、caps、seen 之外的生命周期事件（death/suspend/resume）、看门狗、`item.stack` 组件全量。
 - **P2**：raycast、webhook 告警、metrics 导出。
 
@@ -613,7 +613,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 - **mod standalone**：内嵌 Luaj 运行时直接执行脚本包，无外部进程、无连接层。脚本装载：
   `<游戏目录>/botscript/<包名>/`（含 bot.yaml 能力自述）；实例配置 =
-  `<游戏目录>/config/botscript-mod.json`（`package` + `boundary`——实例边界，未配置即观察模式 §5.1）。
+  `<游戏目录>/config/botscript-mod.json`（`package` + `boundary`——实例限制，缺省不限制 §5.1）。
 - **游戏会话由客户端自身管理**（登录、断线重连、被踢界面都是玩家可见的原版流程），进世界自动
   boot、退世界自动停止，mod 不代做登录重连。
 - 部署形态约束：一个客户端实例 = 一个 bot（JVM 1–2GB）；无头部署走 Linux + 虚拟显示或专用小服客户端。
@@ -663,7 +663,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 | 状态 | session 状态、pos、health/food、当前窗口、server brand、caps flags | /state |
 | 任务 | 任务列表（名称/状态/时长/进度）、pause/resume（内建急停）、取消单个任务 | /tasks + 内建命令 |
 | 参数 | `visible=true` 的 params 表单：bool 勾选 / number 滑条 / blockpos 选择器 / list 编辑器，带 help 文案；`visible=false` 不出现 | /params + 包 schema |
-| 边界（只读） | 当前实例授权视图：fence、dig/place、combat、命令白名单、authority——"我是谁、我被授权做什么" | 部署配置只读呈现 |
+| 边界（只读） | 当前实例限制视图：fence、dig/place、combat、命令白名单——"我被限制做什么" | 部署配置只读呈现 |
 | 日志 | 动作/事件尾部（任务、动作、错误码），可按任务过滤 | /logs |
 | 脚本 | 当前包、botscript/ 包列表（★当前）、[切换]（写回 config + 热重载）、[热重载当前包]、拖拽导入提示 | /packages + /reload |
 
@@ -701,7 +701,8 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 > 归属：HTTP API 是**宿主常开能力**，不是可配置项，更不是脚本包的一部分——只绑 127.0.0.1，
 > 默认端口（冲突自动顺延）、token 启动时自动生成并打印到控制台/日志；绑定覆盖属宿主启动参数（env），
 > 不存在于任何通用配置。包清单（bot.yaml）只描述自身能力，不含凭据、边界或控制面声明。
-> 所有写操作进同一命令总线，受 `policy.authority` 约束。与平台原生控制方案（游戏内命令 / 宿主 CLI / mcc 控制台）同总线、同鉴权。
+> 所有写操作受实例 `policy` 门控（fence / blocks / combat / chat / budget；缺省不限制）。
+> 与平台原生控制方案（游戏内命令 / 宿主 CLI / mcc 控制台）同一边界。
 > **`/eval`（2026-09-10 改拍板，原为"无 /eval"沙箱纪律）**：控制面提供 one-shot Lua——提交的代码
 > 编译为具名任务进入运行时，与包脚本**同环境、同边界**（每个动作仍过 Policy，脚本不可借 eval 绕过
 > 授权）；Bearer token 即 console 级操作者身份。适合探索、临时驱动与无命令面覆盖的场景；
@@ -720,7 +721,7 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 | `/logs?since=<ts>` | GET | 结构化动作/事件日志尾部（任务、动作、错误码），支持增量拉取 |
 | `/persist?table=Account` | GET | 只读查询持久化表（测试对账）；kv 同理 |
 | `/caps` | GET | 宿主类型/版本、feature flags、脚本包清单 |
-| `/reload` | POST | **fabric 宿主**：热重载脚本包 `{"package":"<名>"}`（可选切换包并写回 config；客户端线程 stop+boot，连接不断；不在世界内则只落配置） |
+| `/reload` | POST | 原地热重载脚本：Node 宿主重读实例 package 目录（`{"reason":"..."}`），Fabric 宿主可选 `{"package":"<名>"}` 切换并写回 config；新脚本编译失败时保持旧脚本运行，连接不断 |
 | `/packages` | GET | **fabric 宿主**：`{"current":"tour","packages":["hello","smoke2","tour"]}`（botscript/ 下可选包） |
 
 约定：全部 JSON；异步动作返回受理 id；三宿主的端点与载荷 schema 完全一致（MCP 工具不感知宿主差异）。

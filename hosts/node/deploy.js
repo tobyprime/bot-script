@@ -59,7 +59,7 @@ export function loadInstance(absYaml) {
 export function engineOptions(inst, { dryRun = false } = {}) {
   return {
     scriptDir: inst.pkgDir,
-    boundary: inst.deploy.boundary ?? null,   // 无 boundary = 观察模式（§5.1 默认全拒）
+    boundary: inst.deploy.boundary ?? null,   // 无 boundary = 不限制（显式字段才收紧）
     runtime: inst.deploy.runtime ?? {},
     instanceParams: inst.deploy.params ?? {},
     dryRun,

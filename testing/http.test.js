@@ -15,7 +15,7 @@ test('http17：鉴权/状态/params/pause/resume/tasks/logs/persist/caps/eval �
   const { engine } = await makeEngine({
     scripts: [],
     driver,
-    boundary: { authority: { op: ['Steve'] }, chat: { commands: ['/pay'] } },
+    boundary: { chat: { commands: ['/pay'] } },
     yaml: { params: { num_opt: { type: 'number', default: 7 } } },
   });
   const { port, token } = await startApi(engine);

@@ -348,15 +348,13 @@ public final class BotGuiScreen extends Screen {
                 ? "本实例已配置边界（只读视图；未授的动作脚本不可绕过）"
                 : "本实例未配置边界 = 观察模式（一切动作被拒，DESIGN §5.1）"});
         lines.add(new String[]{"0", "移动围栏: " + (b.has("fence") ? b.get("fence").toString() : "（无围栏）")});
-        lines.add(new String[]{"0", "挖掘授权: " + str(b, "blocks_dig", "未授权")
-                + "    放置授权: " + str(b, "blocks_place", "未授权")});
-        lines.add(new String[]{"0", "战斗对象: " + str(b, "combat_targets", "未授权")
+        lines.add(new String[]{"0", "挖掘: " + str(b, "blocks_dig", "允许")
+                + "    放置: " + str(b, "blocks_place", "允许")});
+        lines.add(new String[]{"0", "战斗目标: " + str(b, "combat_targets", "不限")
                 + (b.has("combat_max_engage") ? "    接战上限: " + b.get("combat_max_engage").getAsString() : "")});
-        lines.add(new String[]{"0", "聊天限速: " + str(b, "say_rate", "-")
+        lines.add(new String[]{"0", "聊天限速: " + str(b, "say_rate", "不限")
                 + "    命令白名单: " + orDash(b, "chat_commands")});
-        lines.add(new String[]{"0", "authority  owner: " + orDash(b, "authority_owner")
-                + "    op: " + orDash(b, "authority_op")});
-        lines.add(new String[]{"1", "边界由实例部署配置（config/botscript-mod.json 的 boundary）授予，随环境走、不在脚本包里。"});
+        lines.add(new String[]{"1", "边界由实例部署配置（config/botscript-mod.json 的 boundary）授予；缺省 = 不限制。"});
         return lines;
     }
 

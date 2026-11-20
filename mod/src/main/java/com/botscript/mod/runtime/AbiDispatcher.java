@@ -311,9 +311,8 @@ public final class AbiDispatcher {
         sync.put("item.stack", (t, a) -> DataRegistry.stack(
                 a.has("stack") && a.get("stack").isJsonObject() ? a.getAsJsonObject("stack") : new JsonObject()).toString());
 
-        // ---- 聊天/授权只读 ----
+        // ---- 聊天策略（只读） ----
         sync.put("chat.config", (t, a) -> policy.chatConfig().toString());
-        sync.put("policy.authority", (t, a) -> policy.authorityConfig().toString());
 
         // ---- persist ----
         sync.put("persist.table", (t, a) -> { persist.declareTable(a.get("name").getAsString(), a.get("schema").toString()); return ""; });

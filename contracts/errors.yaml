@@ -1,7 +1,9 @@
-# contracts/errors.yaml — 类型化错误清单（唯一真源）
+# contracts/errors.yaml — 稳定错误码清单（唯一真源）
 #
-# Lua 侧错误一律是 table：{ kind = "<本表之一>", detail = "<可读文案>"? }
-# 宿主侧错误经 token 的 errJson 交付；HTTP 面按 category 映射状态码。
+# ABI v2.1：确定性失败以 Result 返回，`error.code` 必须是本表之一（跨宿主稳定）：
+#   { ok=false, error={ code="<本表之一>", message="<可读文案>" } }
+# 取消（task.cancelled）是独立控制通道，不作为 Result error.code 使用。
+# Lua 原生 error()（脚本编程错误）仍是任务级失败，不是 ABI Result。
 #
 # category 语义（复用退出分类口径，ARCHITECTURE-REFACTOR §2.5）：
 #   user       用户可自解（改配置 / 改脚本 / 补权限）
@@ -16,7 +18,7 @@ errors:
   abi.reentrant_core_call: { category: internal,    http: 500, description: 核心→宿主帧内反向调核心（已排队，此为诊断） }
 
   # ---- 策略 / 授权 ----
-  permission.denied:       { category: user,        http: 403, description: 未授权（观察模式 / 白名单 / 限速 / 预算） }
+  permission.denied:       { category: user,        http: 403, description: 被策略拒绝（白名单 / 黑名单 / 限速 / 预算 / 围栏） }
   policy.blocklist:        { category: user,        http: 403, description: 命中禁止项（dig/place/combat/移动开关） }
 
   # ---- 会话 ----
@@ -37,7 +39,10 @@ errors:
   data.unknown:            { category: foreseeable, description: 宿主注册表没有该物品/方块 }
 
   # ---- 调度 / 运行期 ----
-  runtime.paused:          { category: foreseeable, description: 暂停期间动作中止（resume 后在冻结点重抛） }
+  runtime.paused:          { category: foreseeable, description: 暂停期间动作中止（以 Result 交付） }
+  runtime.reloading:       { category: foreseeable, description: 脚本热重载窗口内动作暂不可用 }
+  policy.config:           { category: user,        description: 边界配置格式错误（如 say_rate） }
+  internal:                { category: internal,    description: 宿主意外异常（细节只进日志，不进入 Lua） }
   timeout:                 { category: foreseeable, description: 组合子/动作超时 }
   task.cancelled:          { category: foreseeable, description: 任务被取消（协作式） }
   task.unknown:            { category: user,        description: 未声明的任务名 }

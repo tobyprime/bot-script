@@ -86,6 +86,17 @@ export function startHttpApi(engine, { log = console.log, port, token: tokenArg 
       engine.resume();
       return json(res, 200, { ok: true, paused: engine.paused });
     },
+    postReload: async (req, res) => {
+      try {
+        const body = await parseBody(req);
+        const r = await engine.reloadScripts({ reason: String(body.reason ?? 'operator') });
+        return json(res, 200, r);
+      } catch (e) {
+        if (e?.kind === 'runtime.busy') return json(res, 409, { error: e.kind, detail: e.detail ?? e.message });
+        if (e?.kind === 'runtime.error') return json(res, 409, { error: e.kind, detail: e.detail ?? e.message });
+        return json(res, 400, { error: e?.kind ?? 'lua.compile', detail: String(e?.detail ?? e?.message ?? e) });
+      }
+    },
     postEval: async (req, res) => {
       const body = await parseBody(req);
       const code = String(body.code ?? '');

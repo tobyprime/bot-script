@@ -6,6 +6,7 @@ export const ROUTES = [
   { method: "POST", path: "/params", operationId: "postParams" },
   { method: "POST", path: "/pause", operationId: "postPause" },
   { method: "POST", path: "/resume", operationId: "postResume" },
+  { method: "POST", path: "/reload", operationId: "postReload" },
   { method: "POST", path: "/eval", operationId: "postEval" },
   { method: "POST", path: "/event", operationId: "postEvent" },
   { method: "POST", path: "/session", operationId: "postSession" },

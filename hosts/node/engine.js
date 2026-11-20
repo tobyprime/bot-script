@@ -4,6 +4,7 @@
 // 策略在 policy.js，持久化在 persist.js。组装层不讲业务。
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { parse as parseYaml } from 'yaml';
 
 import { LuaVm } from './vm.js';
 import { TokenHub, TimerBank, TYPE_ERR } from './tokens.js';
@@ -69,6 +70,8 @@ export class BotEngine {
     this.handledSpawn = false;
     this.readyPending = false;
     this._mounted = new Set();
+    this._loading = false;      // 新脚本声明期：timer.after 先入队，swap 后统一生效
+    this._reloading = false;    // 热重载窗口：动作拒绝（runtime.reloading），查询照常
 
     this.abi = new AbiDispatcher({
       name: this.name,
@@ -83,7 +86,7 @@ export class BotEngine {
       windows: this.windows,
       session: this.session,
       connectCfg: this.connectCfg,
-      runtime: { dryRun: !!this.runtimeCfg.dry_run },
+      runtime: { dryRun: !!this.runtimeCfg.dry_run, reloading: () => this._reloading },
       timerArm: (fn, ms) => this.timers.arm(fn, ms),
       scriptTimer: {
         after: (delay) => this._registerTimer({ once: true, delay }),
@@ -146,22 +149,7 @@ export class BotEngine {
     await this.createLua();
 
     // 4) 脚本加载（声明期）
-    const scripts = this.cfg.scripts || [];
-    for (const s of scripts) {
-      const file = path.isAbsolute(s) ? s : path.join(this.opts.scriptDir ?? process.cwd(), s);
-      const dir = path.dirname(file);
-      if (existsSync(dir)) {
-        for (const f of readdirSync(dir).filter((f2) => f2.endsWith('.lua') && f2 !== path.basename(file))) {
-          if (this._mounted.has(f)) continue;
-          this._mounted.add(f);
-          await this.lua.mount(f, readFileSync(path.join(dir, f), 'utf8'));
-        }
-      }
-      const src = readFileSync(file, 'utf8');
-      this._mounted.add(path.basename(file));
-      this.driver.mountFile?.(path.basename(file), src);
-      await this.lua.doString(src);
-    }
+    await this._loadScripts(this.lua, this.cfg);
 
     // 5) 参数绑定（核心持有 schema/values；宿主 HTTP 经 __core_call 读取）
     this.paramsSnapshotCache = this.coreCall('params.bind', {
@@ -175,6 +163,7 @@ export class BotEngine {
     // 7) 定时器生效
     for (const t of this.scriptTimers) this._activateScriptTimer(t);
     this.scriptTimers = [];
+    if (this.hub.paused) this.timers.freeze();
 
     this.started = true;
     if (this.readyPending) {
@@ -182,6 +171,28 @@ export class BotEngine {
       this.fireReady();
     }
     this.obs.log('info', `引擎启动完成 driver=${d.constructor.name} paused=${this.hub.paused}`);
+  }
+
+  /** 把清单里的脚本（连同同目录 .lua）载入指定 VM；返回本次挂载的文件名集合。 */
+  async _loadScripts(lua, cfg) {
+    const mounted = new Set();
+    const scriptDir = this.opts.scriptDir ?? process.cwd();
+    for (const s of cfg?.scripts ?? []) {
+      const file = path.isAbsolute(s) ? s : path.join(scriptDir, s);
+      const dir = path.dirname(file);
+      if (existsSync(dir)) {
+        for (const f of readdirSync(dir).filter((f2) => f2.endsWith('.lua') && f2 !== path.basename(file))) {
+          if (mounted.has(f)) continue;
+          mounted.add(f);
+          await lua.mount(f, readFileSync(path.join(dir, f), 'utf8'));
+        }
+      }
+      const src = readFileSync(file, 'utf8');
+      mounted.add(path.basename(file));
+      this.driver.mountFile?.(path.basename(file), src);
+      await lua.doString(src);
+    }
+    return mounted;
   }
 
   async stop() {
@@ -198,12 +209,13 @@ export class BotEngine {
       scriptDir: this.opts.scriptDir ?? process.cwd(),
       log: (level, msg) => this.obs.log(level, msg),
     }).start();
-    this._registerBridges();
+    this._registerBridges(this.lua);
+    this._mounted = new Set();
   }
 
-  _registerBridges() {
-    this.lua.setGlobal('__host_q', (op, argsJson) => this.abi.sync(op, argsJson));
-    this.lua.setGlobal('__host_a', (op, argsJson) => this.abi.asyncOp(op, argsJson));
+  _registerBridges(lua = this.lua) {
+    lua.setGlobal('__host_q', (op, argsJson) => this.abi.sync(op, argsJson));
+    lua.setGlobal('__host_a', (op, argsJson) => this.abi.asyncOp(op, argsJson));
   }
 
   _resume(taskId, okj, ej) {
@@ -212,8 +224,12 @@ export class BotEngine {
 
   /** 宿主 → 核心同步（显式反向契约；返回信封解包后的结果，失败抛类型化错误） */
   coreCall(op, args = {}) {
-    if (!this.lua) throw TYPE_ERR('runtime.error', 'Lua 未就绪');
-    const raw = this.lua.fn('__core_call')(op, JSON.stringify(args ?? {}));
+    return this._coreCallOn(this.lua, op, args);
+  }
+
+  _coreCallOn(lua, op, args = {}) {
+    if (!lua) throw TYPE_ERR('runtime.error', 'Lua 未就绪');
+    const raw = lua.fn('__core_call')(op, JSON.stringify(args ?? {}));
     let env;
     try { env = JSON.parse(raw || '{}'); } catch { env = { ok: false, error: { kind: 'runtime.error', detail: String(raw) } }; }
     if (!env.ok) {
@@ -224,6 +240,94 @@ export class BotEngine {
       throw err;
     }
     return env.result;
+  }
+
+  // ================= 脚本热重载 =================
+  //
+  // 语义：重读 scriptDir/bot.yaml 与脚本文件，在**新 VM** 里完整跑一遍声明期；
+  // 全部成功后才取消旧任务、换 VM（编译/声明失败则旧脚本继续跑，连接不断）。
+  // 保持：MC 会话、driver、persist、日志/聊天环、HTTP 控制通道、暂停状态、参数持久化值。
+  // 不保持：旧任务、旧脚本定时器、旧闭包状态（脚本需从 persist/KV 恢复自己的状态）。
+  async reloadScripts({ reason = 'hot-reload' } = {}) {
+    if (this.stopped || !this.started) throw TYPE_ERR('runtime.error', '引擎未启动，无法热重载');
+    if (this._reloading) throw TYPE_ERR('runtime.busy', '已有热重载在进行中');
+    this._reloading = true;
+
+    let next = null;
+    let committed = false;
+    const scriptDir = this.opts.scriptDir ?? process.cwd();
+    try {
+      const nextCfg = readManifest(scriptDir, this.cfg);
+      next = await new LuaVm({
+        scriptDir,
+        log: (level, msg) => this.obs.log(level, msg),
+      }).start();
+      this._registerBridges(next);
+
+      // 声明期：timer.after/interval 先入队，不落到旧 TimerBank
+      const prevLoading = this._loading;
+      this._loading = true;
+      this.scriptTimers = [];
+      const mounted = await this._loadScripts(next, nextCfg);
+      this._loading = prevLoading;
+
+      const snapshot = this._coreCallOn(next, 'params.bind', {
+        manifest: nextCfg.params ?? {},
+        instance: this.opts.instanceParams ?? {},
+      });
+
+      // ---- commit：以下不再可失败的 Lua 编译；旧脚本此时才停止 ----
+      const old = this.lua;
+      try { old?.doString('task.cancel_all("hot-reload")'); } catch { /* 旧 VM 收尾失败不阻断换轨 */ }
+      // 旧任务的移动/寻路不会随 VM 关闭自动停止：显式停走，避免换轨后继续移动
+      try { Promise.resolve(this.driver.path_cancel?.()).catch(() => {}); } catch { /* ignore */ }
+      try { Promise.resolve(this.driver.dig_stop?.()).catch(() => {}); } catch { /* ignore */ }
+      try { Promise.resolve(this.driver.input?.({ forward: 0, right: 0, up: 0, sprint: false, sneak: false })).catch(() => {}); } catch { /* ignore */ }
+      try { old?.close(); } catch { /* ignore */ }
+      this.timers.clearAll();
+      this.hub.tokens.clear();
+      this.hub.settled.clear();
+      this.hub.pendingResume.length = 0;
+      this.hub.frozen.length = 0;
+      this.eventQueue.length = 0;    // 旧脚本的 events.next 等待者/排队属于旧 VM
+      this.eventWaiters.length = 0;
+
+      this.lua = next;
+      this.cfg = nextCfg;
+      this._mounted = mounted;
+      this.paramsSnapshotCache = snapshot;
+      committed = true;
+      this._reloading = false;   // 换轨完成：新脚本从现在起可以发包
+
+      this.obs.log('info', `脚本热重载完成（${reason}）：${(nextCfg.scripts ?? []).join(', ') || '无脚本'}`);
+      this.event('lifecycle', { kind: 'on_start' });
+      // 新脚本的 on_event("session.ready") 不应等到下次重连：当前已进服就重放一次
+      if (this.session.state === 'playing') {
+        this.event('session.ready', { dimension: this.session.info?.dimension ?? null });
+      }
+      for (const t of this.scriptTimers) this._activateScriptTimer(t);
+      this.scriptTimers = [];
+      if (this.hub.paused) this.timers.freeze();
+      return { ok: true, scripts: nextCfg.scripts ?? [], manifest: nextCfg.name ?? null };
+    } catch (e) {
+      this._loading = false;
+      if (!committed) {
+        this.scriptTimers = [];   // 声明期登记的 timer 属于未换轨的新脚本，丢弃
+        try { next?.close(); } catch { /* ignore */ }
+      }
+      const err = e?.kind ? e : Object.assign(new Error(String(e?.message ?? e)), {
+        kind: 'lua.compile',
+        detail: String(e?.message ?? e),
+      });
+      if (committed) {
+        this.obs.log('error', `脚本热重载已换轨，但新脚本启动序报错：${err.detail ?? err.message}`);
+      } else {
+        this.obs.log('error', `脚本热重载失败，保持旧脚本运行：${err.detail ?? err.message}`);
+      }
+      throw err;
+    } finally {
+      this._reloading = false;
+    }
   }
 
   // ================= 状态 / 事件 =================
@@ -371,7 +475,7 @@ export class BotEngine {
     if (rec) rec.kind = 'event';   // 不参与 pause 的动作结算域
     const ev = this.eventQueue.shift();
     if (ev) {
-      this.hub.settle(token, JSON.stringify(ev), '');
+      this.hub.settleOk(token, ev);
       return;
     }
     const w = { token };
@@ -379,7 +483,7 @@ export class BotEngine {
       const i = this.eventWaiters.indexOf(w);
       if (i >= 0) this.eventWaiters.splice(i, 1);
       const t = this.hub.tokens.get(token);
-      if (t && !t.settled) this.hub.settle(token, '', '');   // 超时交付 ""（events.next 返回 nil）
+      if (t && !t.settled) this.hub.settleOk(token, null);   // 超时交付 nil（events.next 返回 {ok=true,value=nil}）
     }, Math.max(0, Number(timeout) || 30000));
     this.eventWaiters.push(w);
   }
@@ -389,7 +493,7 @@ export class BotEngine {
     const w = this.eventWaiters.shift();
     if (w) {
       this.timers.clear(w.timer);
-      this.hub.settle(w.token, JSON.stringify(ev), '');
+      this.hub.settleOk(w.token, ev);
       return;
     }
     if (this.eventQueue.length >= 64) this.eventQueue.shift();
@@ -401,7 +505,7 @@ export class BotEngine {
   _registerTimer(t) {
     const id = ++this.scriptTimerSeq;
     const spec = { id, ...t };
-    if (this.started) this._activateScriptTimer(spec);
+    if (this.started && !this._loading) this._activateScriptTimer(spec);
     else this.scriptTimers.push(spec);
     return id;
   }
@@ -510,4 +614,17 @@ export class BotEngine {
   get paramValues() { const p = this.paramsSnapshotCache ?? { values: {} }; return new Map(Object.entries(p.values ?? {})); }
   get paramPersist() { return this.paramValues; }
   luaFn(name) { return this.lua.fn(name); }
+}
+
+/** 热重载：重读包清单；文件缺失/解析失败沿用启动时的清单。persist 始终沿用已打开的数据源。 */
+function readManifest(dir, fallback) {
+  const p = path.join(dir, 'bot.yaml');
+  if (!existsSync(p)) return fallback;
+  try {
+    const m = parseYaml(readFileSync(p, 'utf8')) ?? {};
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return fallback;
+    return { ...m, persist: fallback.persist };
+  } catch {
+    return fallback;
+  }
 }

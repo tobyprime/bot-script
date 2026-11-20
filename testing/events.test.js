@@ -10,11 +10,13 @@ test('events：pushEvent 直付等待者、FIFO 排队、空队超时 nil', asyn
     __R_order = nil
     task("evt_loop", { single = true }, function()
       local order = {}
-      local ev = events.next(2000)
+      local r = events.next(2000)
+      local ev = r and r.value
       order[#order + 1] = ev and ev.type or "nil"
       time.sleep(50)
       for i = 1, 4 do
-        local e = events.next(120)
+        local rr = events.next(120)
+        local e = rr and rr.value
         order[#order + 1] = e and e.type or "timeout"
       end
       __R_order = table.concat(order, ",")
@@ -50,7 +52,8 @@ test('断线缓存失效：world/windows 旧会话数据清空，重连 playing 
   driver.emit('window', { id: '42', type: 'chest', title: '旧箱', size: 27, slots: [{ index: 0, item: { id: 'minecraft:dirt', count: 1 } }] });
   assert.ok(engine.world.cache.size > 0 && engine.windows.windows.size > 0, '前置：旧会话缓存已灌入');
   assert.ok(await waitFor(() => {
-    const list = JSON.parse(engine.abi.sync('entities.list', '{}') || '[]');
+    const r = JSON.parse(engine.abi.sync('entities.list', '{}') || '{}');
+    const list = (r.ok && r.value) || [];
     return list.some((e) => e.name === 'Ghost');
   }, 3000), '前置：旧会话实体可查');
 
@@ -69,7 +72,8 @@ test('断线缓存失效：world/windows 旧会话数据清空，重连 playing 
   assert.strictEqual(engine.reconAttempts, 0, 'playing 后 attempts 应清零');
   assert.strictEqual(engine.paused, false, '重连成功应自动 resume');
   assert.ok(await waitFor(() => {
-    const list = JSON.parse(engine.abi.sync('entities.list', '{}') || '[]');
+    const r = JSON.parse(engine.abi.sync('entities.list', '{}') || '{}');
+    const list = (r.ok && r.value) || [];
     return list.length === 1 && list[0].name === 'Fresh';
   }, 3000), '新会话实体面只含新会话数据');
   await engine.stop();
@@ -96,6 +100,9 @@ test('重连退避：jitter ±20% 散布、attempts 递增、/state 暴露 recon
   engine.reconnectTimer = null;
   engine.scheduleReconnect();
   assert.strictEqual(engine.reconAttempts, 2, '连续断线 attempts 应递增');
+  // 冻结重连计时器：否则测试机负载高时 80ms 后重连成功会把 session 回 playing，/state 断言失真
+  clearTimeout(engine.reconnectTimer);
+  engine.reconnectTimer = null;
 
   process.env.BOTSCRIPT_HTTP_PORT = '0';
   const { startHttpApi } = await import('../hosts/node/http17.js');

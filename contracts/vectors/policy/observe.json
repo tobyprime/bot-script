@@ -1,5 +1,5 @@
 {
-  "name": "观察模式：任何动作都是 permission.denied",
+  "name": "未配置 boundary：默认不限制（动作允许）",
   "boundary": null,
   "op": "act.chat_send",
   "args": {
@@ -7,7 +7,7 @@
     "kind": "chat"
   },
   "expect": {
-    "allow": false,
-    "error": "permission.denied"
+    "allow": true,
+    "error": null
   }
 }

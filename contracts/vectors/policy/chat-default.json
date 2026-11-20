@@ -1,0 +1,1 @@
+{ "name": "未配置 chat.commands：出站命令默认允许", "boundary": {}, "op": "act.chat_send", "args": { "text": "/msg Steve hi", "kind": "command" }, "expect": { "allow": true, "error": null } }

@@ -34,7 +34,7 @@ function on_event(...) end
 function on_cancel(...) end
 --- on_chat(rex, [opts], fn) — opts: source=player|system, from=name
 function on_chat(...) end
---- await_chat(rex, timeout_ms) → 命名分组 table | nil
+--- await_chat(rex, timeout_ms) → Result（value = 命名分组 table | nil）
 function await_chat(...) end
 ---@class chat
 chat = {}
@@ -94,7 +94,7 @@ function world.time_of_day(...) end
 function world.weather(...) end
 ---@class nav
 nav = {}
---- nav.walk(pos|[entity], {arrive, timeout}) → {ok, reason?}
+--- nav.walk(pos|[entity], {arrive, timeout}) → Result（失败 error.code = policy.* / nav.*）
 function nav.walk(...) end
 --- nav.goto_near(pos, radius, opts?)
 function nav.goto_near(...) end
@@ -212,7 +212,7 @@ data = {}
 function data.stack(...) end
 ---@class events
 events = {}
---- events.next(timeout_ms) → {type,data,ts}|nil
+--- events.next(timeout_ms) → Result（value = {type,data,ts} | nil）
 function events.next(...) end
 --- events.emit(type, data)
 function events.emit(...) end
@@ -274,7 +274,3 @@ function bslib.parallel(...) end
 function bslib.with_timeout(...) end
 --- 同 wait_until
 function bslib.wait_until(...) end
---- bslib.authority_level(name) → 10/20/60/80
-function bslib.authority_level(...) end
---- bslib.authorized(name, perm) — 操作员判定（boundary.authority 只读）
-function bslib.authorized(...) end

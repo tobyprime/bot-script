@@ -1,34 +1,9 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://bot-script/contracts/policy.schema.json",
-  "title": "boundary（实例授权边界；缺省 = 观察模式，动作全拒）",
+  "title": "boundary（实例授权边界；缺省 = 不限制，显式字段才收紧）",
   "type": "object",
   "properties": {
-    "authority": {
-      "type": "object",
-      "properties": {
-        "owner": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "op": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "whitelist": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "additionalProperties": false,
-      "description": "（兼容保留）命令体系已移除，本字段不再参与策略判定"
-    },
     "chat": {
       "type": "object",
       "properties": {
@@ -138,7 +113,7 @@
         "boolean",
         "string"
       ],
-      "description": "容器访问授权（window_open/click/close）；缺省=未授权"
+      "description": "容器访问门控（window_open/click/close）；缺省=允许，显式 false/deny 才拒"
     }
   },
   "additionalProperties": false

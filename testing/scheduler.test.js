@@ -59,7 +59,7 @@ test('single 防重入：重复触发被丢弃', async () => {
   await engine.stop();
 });
 
-test('pause/resume：动作以 runtime.paused 失败（恢复时于冻结点重抛），钩子执行', async () => {
+test('pause/resume：动作以 Result 失败（runtime.paused），恢复后交付，钩子执行', async () => {
   script('t7.lua', `
     __R_paused = false
     __R_resumed = false
@@ -68,13 +68,11 @@ test('pause/resume：动作以 runtime.paused 失败（恢复时于冻结点重�
     on_pause(function() __R_paused = true end)
     on_resume(function() __R_resumed = true end)
     task("walker", function()
-      local ok, err = pcall(function()
-        nav.walk({ x = 50, y = 64, z = 50 }, { timeout = 30 })
-      end)
-      if not ok and type(err) == "table" and err.kind == "runtime.paused" then
+      local r = nav.walk({ x = 50, y = 64, z = 50 }, { timeout = 30 })
+      if not r.ok and r.error and r.error.code == "runtime.paused" then
         __R_paused_err = true
       else
-        __R_wrong_err = (not ok) and tostring((type(err) == "table" and err.kind) or err) or "no_err"
+        __R_wrong_err = r.ok and "no_err" or tostring(r.error and r.error.code or "?")
       end
     end)
     on_start(function() task.spawn("walker") end)
@@ -89,7 +87,7 @@ test('pause/resume：动作以 runtime.paused 失败（恢复时于冻结点重�
   assert.strictEqual(g(engine, '__R_paused'), true, 'on_pause 应执行');
   assert.strictEqual(g(engine, '__R_paused_err'), false, '暂停期间错误应冻结于门');
   engine.resume();
-  assert.ok(await waitFor(() => g(engine, '__R_paused_err') === true), '恢复后应在冻结点重抛 runtime.paused');
+  assert.ok(await waitFor(() => g(engine, '__R_paused_err') === true), '恢复后应交付 runtime.paused Result');
   assert.strictEqual(g(engine, '__R_resumed'), true, 'on_resume 应执行');
   assert.ok(g(engine, '__R_wrong_err') == null, `不应是其它错误（实际 ${g(engine, '__R_wrong_err')}）`);
   await engine.stop();

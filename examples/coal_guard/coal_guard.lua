@@ -12,7 +12,19 @@
 params {
   range = { type = "number", default = 24, visible = true, help = "警戒半径（格）" },
   spin  = { type = "number", default = 120, visible = true, help = "旋转速度（度/秒）" },
+  ops   = { type = "string", default = "", visible = true,
+            help = "可停止警戒的玩家名（逗号分隔；留空 = 不校验，示例用）" },
 }
+
+-- 操作员校验属于脚本自己的业务规则（平台不提供 owner/op 名单）
+local function is_op(sender)
+  local list = params.ops or ""
+  if list == "" then return true end
+  for name in string.gmatch(list, "[^, ]+") do
+    if name == sender then return true end
+  end
+  return false
+end
 
 local function is_coal_holder(e)
   local h = e.equipment.hand                 -- 活读：每次循环取最新主手
@@ -31,7 +43,7 @@ on_start(function()
 end)
 
 on_chat(rex[[^guard stop$]], { source = "player" }, function(m)
-  if not bslib.authorized(m.sender, "op") then return end
+  if not is_op(m.sender) then return end
   task.cancel("guard")
   chat.reply("警戒已停止")
 end)

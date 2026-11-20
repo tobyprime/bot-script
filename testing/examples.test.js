@@ -13,7 +13,7 @@ test('bank：入账/去重/转账/取款挂账/回执核销/私聊余额 全链�
     scripts: [path.join(EXAMPLES, 'bank', 'bank.lua')],
   }, driver, {
     scriptDir: path.join(EXAMPLES, 'bank'),
-    boundary: { authority: { op: ['Steve'] }, chat: { commands: ['/pay'], msg_command: '/msg' } },
+    boundary: { chat: { commands: ['/pay'], msg_command: '/msg' } },
     connect: { version: '1.21.8' },
     log: () => {},
   });
@@ -67,7 +67,7 @@ test('organizer：冷启动扫描 + organize once + 输入箱分流', async () =
     },
   }, driver, {
     scriptDir: path.join(EXAMPLES, 'organizer'),
-    boundary: { authority: { op: ['Steve'] }, blocks: { dig: 'deny', place: 'deny' } },
+    boundary: { blocks: { dig: 'deny', place: 'deny' } },
     connect: { version: '1.21.8' },
     log: () => {},
   });
@@ -91,7 +91,7 @@ test('coal_guard：举煤触发追击、放下即停、guard stop 取消', async
     scripts: [path.join(EXAMPLES, 'coal_guard', 'coal_guard.lua')],
   }, driver, {
     scriptDir: path.join(EXAMPLES, 'coal_guard'),
-    boundary: { authority: { op: ['Steve'] }, combat: { targets: 'player', max_engage: 24 } },
+    boundary: { combat: { targets: 'player', max_engage: 24 } },
     connect: { version: '1.21.8' },
     log: () => {},
   });

@@ -84,7 +84,16 @@ local function dec(j)
 end
 
 local function q(op, args)
-  return dec(__host_q(op, json.encode(args or {})))
+  local r = dec(__host_q(op, json.encode(args or {})))
+  if type(r) == "table" and r.ok ~= nil then return r end
+  -- 兼容尚未迁移到 Result 的宿主（Fabric 旧实现）：成功值按 Ok 包装
+  return { ok = true, value = r }
+end
+
+-- Result 解包（核心/bslib 内部取纯数据用；失败 -> default，不抛错）
+local function value(r, default)
+  if type(r) == "table" and r.ok == true then return r.value end
+  return default
 end
 
 local function a(op, args)
@@ -94,6 +103,7 @@ end
 local bridge = {}
 bridge.abi = ${abi.abi}
 bridge.q = q
+bridge.value = value
 bridge.a = a
 
 -- 命名空间（bridge.self / bridge.act / bridge.persist …）

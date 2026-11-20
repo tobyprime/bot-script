@@ -124,7 +124,8 @@ end)
 -- 宿主下发事件：{type='actions', data={actions=…}}；其余类型留日志观察
 task('relay_events', { single = true }, function()
   while true do
-    local ev = events.next(30000)
+    local r = events.next(30000)
+    local ev = r and r.value
     if ev then
       if ev.type == 'actions' then
         local ok, err = pcall(apply, ev.data and ev.data.actions)

@@ -10,4 +10,3 @@ boundary:
   fence: [[-80, -480], [260, 240]]
   blocks: { dig: deny, place: deny }
   chat: { say_rate: "2/min", commands: [] }
-  authority: { op: ["MixTobyInjTick"] }

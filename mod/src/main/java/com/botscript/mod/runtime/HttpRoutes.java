@@ -16,6 +16,7 @@ public final class HttpRoutes {
             new Route("POST", "/params", "postParams"),
             new Route("POST", "/pause", "postPause"),
             new Route("POST", "/resume", "postResume"),
+            new Route("POST", "/reload", "postReload"),
             new Route("POST", "/eval", "postEval"),
             new Route("POST", "/event", "postEvent"),
             new Route("POST", "/session", "postSession"),

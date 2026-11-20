@@ -6,7 +6,13 @@
 //   * 一次性 timer 到点即出账：freeze/unfreeze 不得重放已触发的 after/sleep。
 
 export const TYPE_ERR = (kind, detail) => ({ kind, detail: detail === undefined ? null : detail });
-export const errJson = (kind, detail) => JSON.stringify(TYPE_ERR(kind, detail));
+
+/** 跨平台稳定 Result：{ok:true,value} | {ok:false,error:{code,message}} */
+export const okResult = (value) => ({ ok: true, value: value === undefined ? null : value });
+export const errResult = (code, message) => ({
+  ok: false,
+  error: { code: String(code), message: message === undefined || message === null ? '' : String(message) },
+});
 
 export class TokenHub {
   constructor({ resume, log = () => {} }) {
@@ -48,6 +54,20 @@ export class TokenHub {
     rec.settled = true;
     this.settled.set(token, [okj ?? '', ej ?? '']);
     if (rec.waiterRegistered) this.deliverToken(token);
+  }
+
+  /** 交付 Result（ABI 的唯一成功/失败通道；失败不是 Lua 异常） */
+  settleResult(token, result) {
+    this.settle(token, JSON.stringify(result ?? okResult(null)), '');
+  }
+
+  settleOk(token, value) { this.settleResult(token, okResult(value)); }
+
+  settleErr(token, code, message) { this.settleResult(token, errResult(code, message)); }
+
+  /** 取消是独立通道（不进 Result、不进 on_error）：核心看到后展开当前任务并跑 on_cancel */
+  settleCancel(token, source) {
+    this.settle(token, '', JSON.stringify({ cancel: String(source ?? 'external') }));
   }
 
   deliverToken(token) {
@@ -93,11 +113,11 @@ export class TokenHub {
     }
   }
 
-  /** 暂停：进行中的动作以 runtime.paused 结算（脚本在冻结点重抛） */
+  /** 暂停：进行中的动作以 Result 失败（runtime.paused），脚本自行决定退避/退出 */
   settleActionsOnPause(reason) {
     for (const [tok, rec] of this.tokens) {
       if (rec.kind === 'action' && rec.taskId != null && !rec.settled) {
-        this.settle(tok, '', errJson('runtime.paused', `pause(${reason}) 期间动作中止`));
+        this.settleErr(tok, 'runtime.paused', `pause(${reason}) 期间动作中止`);
       }
     }
   }

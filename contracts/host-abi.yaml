@@ -1,10 +1,16 @@
 # contracts/host-abi.yaml — 宿主 ABI v2（唯一真源）
 #
 # 四个入口：
-#   核心→宿主 同步   __host_q(op, argsJson)                   → resultJson
+#   核心→宿主 同步   __host_q(op, argsJson)                   → ResultJson
 #   核心→宿主 异步   __host_a(op, argsJson)                   → token
 #   宿主→核心 同步   __core_call(op, argsJson)                → {ok,result}|{ok:false,error}
-#   宿主→核心 异步   __core_resume(id, okJson, errJson) · __core_event(kind, payloadJson)
+#   宿主→核心 异步   __core_resume(id, resultJson, ctlJson) · __core_event(kind, payloadJson)
+#
+# 结果协议（v2.1）：
+#   ResultJson = {"ok":true,"value":<any>} | {"ok":false,"error":{"code":"...","message":"..."}}
+#   ctlJson    = {"cancel":"<source>"} | {"fail":{"kind":"...","detail":"..."}}
+#   宿主绝不把 JS/运行时异常传入 Lua：确定性失败一律 Result；意外异常只记宿主日志，
+#   Lua 侧最多看到稳定码 internal。取消是独立的控制通道，不是 error.code。
 #
 # v2 变更（破坏性）：
 #   * 删除命令体系（command.declare / command.dispatch / on_command / 权威解析 / HTTP /cmd）
@@ -25,13 +31,14 @@ capabilities:
   world.block_entity:  { description: 宿主能读出方块实体（方块 NBT/数据） }
 
 # gate 类别 → 策略字段（policy.schema.json 以此为准）
+# 策略默认开放：没有配置 = 不限制。只有显式写入的 boundary 字段才会收紧对应动作。
 gates:
-  chat:      { description: 发言（boundary.chat：say 限速/命令白名单/正则黑白名单） }
-  move:      { description: 移动（boundary.allow_move；fence 对移动目标生效） }
-  combat:    { description: 攻击实体（boundary.combat.targets / max_engage） }
-  dig:       { description: 开始挖掘（boundary.blocks.dig）；停止挖掘不受门控 }
-  place:     { description: 放置（boundary.blocks.place），由 act.use_block.intent=place 触发 }
-  container: { description: 容器访问（boundary.containers），作用于 window_open/click/close }
+  chat:      { description: 发言（boundary.chat：say 限速/命令白名单/正则黑白名单；缺省不限） }
+  move:      { description: 移动（boundary.allow_move=false 才禁止；fence 对移动目标生效） }
+  combat:    { description: 攻击实体（boundary.combat.targets 设置后才限制目标 / max_engage） }
+  dig:       { description: 开始挖掘（boundary.blocks.dig 显式拒绝才禁止）；停止挖掘不受门控 }
+  place:     { description: 放置（boundary.blocks.place 显式拒绝才禁止），由 act.use_block.intent=place 触发 }
+  container: { description: 容器访问（boundary.containers=false 才拒绝），作用于 window_open/click/close }
 
 sync_ops:
   # ---------------- 基础设施 ----------------
@@ -132,9 +139,6 @@ sync_ops:
   - name: chat.config
     args: {}
     result: object                 # {msg_command: string|null}
-  - name: policy.authority
-    args: {}
-    result: object                 # {owner:[], op:[], whitelist:[]}（只读；命令体系已移除）
 
   # ---------------- persist（语义由 vectors/persist 锁定） ----------------
   - name: persist.table

@@ -6,12 +6,12 @@ export const CAPABILITIES = [
   "world.block_entity"
 ];
 export const GATES = {
-  "chat": "发言（boundary.chat：say 限速/命令白名单/正则黑白名单）",
-  "move": "移动（boundary.allow_move；fence 对移动目标生效）",
-  "combat": "攻击实体（boundary.combat.targets / max_engage）",
-  "dig": "开始挖掘（boundary.blocks.dig）；停止挖掘不受门控",
-  "place": "放置（boundary.blocks.place），由 act.use_block.intent=place 触发",
-  "container": "容器访问（boundary.containers），作用于 window_open/click/close"
+  "chat": "发言（boundary.chat：say 限速/命令白名单/正则黑白名单；缺省不限）",
+  "move": "移动（boundary.allow_move=false 才禁止；fence 对移动目标生效）",
+  "combat": "攻击实体（boundary.combat.targets 设置后才限制目标 / max_engage）",
+  "dig": "开始挖掘（boundary.blocks.dig 显式拒绝才禁止）；停止挖掘不受门控",
+  "place": "放置（boundary.blocks.place 显式拒绝才禁止），由 act.use_block.intent=place 触发",
+  "container": "容器访问（boundary.containers=false 才拒绝），作用于 window_open/click/close"
 };
 
 export const SYNC_OPS = {
@@ -83,7 +83,6 @@ export const SYNC_OPS = {
     "stack": {"type":"object","required":true},
   }, result: "StackInfo" },
   "chat.config": { args: {}, result: "object" },
-  "policy.authority": { args: {}, result: "object" },
   "persist.table": { args: {
     "name": {"type":"string","required":true},
     "schema": {"type":"object","required":true},

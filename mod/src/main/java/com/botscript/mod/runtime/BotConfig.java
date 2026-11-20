@@ -26,17 +26,14 @@ public class BotConfig {
     public List<String> chatCommandsWhitelist = new ArrayList<>();
     public List<String> chatCommandsDeny = new ArrayList<>();
     public List<String> chatCommandsAllow = new ArrayList<>();
-    public String chatSayRate = "10/min";                     // "N/min" | "N/s"
-    public List<String> authorityOwner = new ArrayList<>();
-    public List<String> authorityOp = new ArrayList<>();
-    public List<String> authorityWhitelist = new ArrayList<>();
-    public String blocksDig = null;                           // null/未授权 = 禁止；"allow" = 授权
-    public String blocksPlace = null;
-    public String containers = null;                          // 容器访问授权；未配置=沿用旧行为
+    public String chatSayRate = null;                         // "N/min" | "N/s"；null = 不限
+    public String blocksDig = null;                           // null = 允许；"deny" 才禁止
+    public String blocksPlace = null;                          // null = 允许；"deny" 才禁止
+    public String containers = null;                          // null = 允许；"deny" 才拒绝
     public boolean containersConfigured = false;
-    public String combatTargets = null;                       // 子串匹配实体 type；null = combat 未授权
+    public String combatTargets = null;                       // 子串匹配实体 type；null = 不限制目标
     public Double combatMaxEngage = null;
-    /** 实例是否配置了 boundary（DESIGN §5.1：false = 观察模式，动作默认全拒） */
+    /** 实例是否配置了 boundary（只用于诊断展示；缺省 = 不限制） */
     public boolean boundaryConfigured = false;
 
     public static BotConfig fromJson(JsonObject o) {
@@ -54,8 +51,8 @@ public class BotConfig {
     }
 
     /**
-     * 实例边界（boundary，DESIGN §5.1/§6）：来自实例部署配置（fabric = 游戏目录 config），
-     * 不来自脚本包清单。调用即视为"已配置 boundary"（否则观察模式：动作全拒）。
+     * 实例边界（boundary）：来自实例部署配置（fabric = 游戏目录 config），
+     * 不来自脚本包清单。缺省 = 不限制；显式字段才收紧动作。
      */
     public void applyBoundary(JsonObject p) {
         boundaryConfigured = true;
@@ -94,18 +91,6 @@ public class BotConfig {
             }
             if (ch.has("say_rate")) chatSayRate = ch.get("say_rate").getAsString();
             if (ch.has("msg_command")) msgCommand = ch.get("msg_command").getAsString();
-        }
-        if (p.has("authority")) {
-            JsonObject a = p.getAsJsonObject("authority");
-            for (var e : a.entrySet()) {
-                for (var v : e.getValue().getAsJsonArray()) {
-                    switch (e.getKey()) {
-                        case "owner" -> authorityOwner.add(v.getAsString());
-                        case "op" -> authorityOp.add(v.getAsString());
-                        case "whitelist" -> authorityWhitelist.add(v.getAsString());
-                    }
-                }
-            }
         }
         if (p.has("blocks")) {
             JsonObject b = p.getAsJsonObject("blocks");

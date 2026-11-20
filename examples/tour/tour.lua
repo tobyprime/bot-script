@@ -47,14 +47,18 @@ end
 
 -- 期望被策略/权限拒绝的动作：kind_want 为空则接受任意 permission/policy 类错误
 local function expect_deny(name, fn, kind_want)
-  local ok, e = try(fn)
-  local kind = type(e) == "table" and e.kind or nil
+  local ok, r = try(fn)
+  local kind
+  if ok then
+    kind = (type(r) == "table" and r.ok == false and r.error) and r.error.code or nil
+  else
+    kind = type(r) == "table" and r.kind or nil
+  end
   local acceptable = kind == "permission.denied" or kind == "policy.blocklist"
-  if not ok and (kind == kind_want or (kind_want == nil and acceptable)) then
+  if kind ~= nil and (kind == kind_want or (kind_want == nil and acceptable)) then
     check(name, true)
   else
-    check(name, false, "期望拒绝(" .. tostring(kind_want or "permission/policy") .. ") 实际 ok="
-      .. tostring(ok) .. " kind=" .. tostring(kind))
+    check(name, false, "期望拒绝(" .. tostring(kind_want or "permission/policy") .. ") 实际 kind=" .. tostring(kind))
   end
 end
 
@@ -444,16 +448,17 @@ local function suite_chat()
 
   -- say 发送成功（限速内不抛错）；
   -- 自身回环不可测：宿主 onGameMessage 故意过滤 "<自己>" 回显（防脚本自激），事件域以他人/系统消息为准
-  local okS = pcall(function() chat.say("tour-probe " .. tag) end)
+  local okS = chat.say("tour-probe " .. tag).ok
   check("chat.say 发送", okS)
   warnskip("自身回环", "宿主过滤自身回显（防自激），属设计行为")
 
   expect_deny("命令白名单外被拒", function() chat.run_command("/gamemode creative") end,
     "permission.denied")
 
-  local okL = pcall(function() chat.run_command("/list") end)
+  local okL = chat.run_command("/list").ok
   check("白名单内 /list 放行", okL)
-  local m2 = chat.await_chat(rex("online|玩家"), 6000)
+  local rr = chat.await_chat(rex("online|玩家"), 6000)
+  local m2 = rr and rr.value
   if m2 then check("/list 输出回环", true) else warnskip("/list 输出回环", "服务器未回显系统消息") end
 end
 

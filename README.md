@@ -67,7 +67,7 @@ cd mod && ./gradlew build
 #   构建期从 ../runtime/lua 与 ../contracts/data 拷入资源（仓内不保留第二份 Lua 拷贝）
 #   脚本包：<游戏目录>/botscript/<包名>/（整包复制，含 bot.yaml 清单）
 #   实例配置：<游戏目录>/config/botscript-mod.json:
-#     {"package": "bank", "boundary": {"authority": {"owner": ["你的玩家名"]}}}
+#     {"package": "bank", "boundary": {}}
 #   进世界自动加载；游戏内 /bsclient 打开管理界面（§16.5 五页）。
 ```
 
@@ -142,7 +142,7 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
 - 版本适配即数据：`hosts/node/drivers/mineflayer/patches/`（tick-end-26x / teleport-packets），
   `/caps` 与启动日志列出已应用补丁 id。
 - **没有命令体系**（ABI v2）：删除了 `on_command` / 命令声明 / 命令参数注入 / 权威解析 / `/cmd`；
-  脚本用 `on_chat` + `bslib.authorized(sender, "op")`（只读 boundary.authority）做控制。
+  脚本用 `on_chat` 自己处理聊天控制（操作员名单也由脚本自行维护，平台不内置 owner/op）。
   参数仍归核心：`/params` 经 `params.get/set`，校验钩在 Lua 侧执行；暂停/恢复走 `/pause`、`/resume`。
 - 动作按**原版发包**建模：`act.look`（rotation）、`act.input`（player_input 状态位，有符号轴）、
   `act.dig`/`act.dig_stop`（player_action）、`act.use_block`（interact，带 face/cursor/intent）、
@@ -152,8 +152,12 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
   `world.block_entity`、`world.reach`（raycast）、`world.env`（真实 time_of_day/weather）、实体全状态。
 - 账号三态：`account: 用户名`（offline）| `{username, password}`（微软 OAuth）
   | `{auth: session, username, uuid, accessToken}`（平台注入）。
-- nav 超时单位 = 秒；walk 失败返回 `{ok=false, reason}` 而非抛错（循环重试语义），
-  同时经 `events.emit('nav.failed')` 上抛观测面。
+- nav 超时单位 = 秒；walk 返回跨平台 Result（`{ok=true,value}` / `{ok=false,error={code,message}}`），
+  失败不抛异常（循环重试语义），同时经 `events.emit('nav.failed')` 上抛观测面。
+- **Result 协议（ABI v2.1）**：所有可能失败的 ABI/动作返回 `{ok,value}` / `{ok=false,error={code,message}}`；
+  纯查询（self/world/entity/inv/persist）仍返回原值。取消是独立控制通道（展开任务 + `on_cancel`），
+  不进 Result、不进 `on_error`；Lua 原生 `error()` 仍按任务级失败处理；宿主意外异常只记日志，
+  脚本最多看到稳定码 `internal`。
 - 任务取消全路径留痕：显式取消/父完成级联/race 败者/超时统一记一条
   `任务 [名] 取消（来源）` 日志。
 
@@ -163,8 +167,9 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
 - 挖掘由宿主状态机驱动 `player_action`（START + 进度 + STOP），完成以方块变空为准。
 - Node 侧 ItemStack 组件来自网络组件（prismarine-item）；`attribute_modifiers` 只做通用属性提取，
   缺失时 `data.stack.attributes` 为 null（不造假）；Fabric 侧读客户端组件，字段更完整。
-- 容器访问新增 `boundary.containers` 门控；**未配置 = 沿用旧行为允许**，显式 `false/deny` 才拒。
+- 容器访问可用 `boundary.containers` 收紧；**未配置 = 允许**，显式 `false/deny` 才拒。
 - 命令体系已移除：没有 `on_command`、没有命令参数注入、没有 `/cmd`；控制逻辑写在 `on_chat` 里，
-  操作员判定用 `bslib.authorized(sender, "op")`（只读 `boundary.authority`）。
+  操作员名单由脚本自己维护（例如参数 `ops` 或 KV），平台/引擎不提供 owner/op 判定。
+- **边界默认开放**：所有权限/限速/白名单未配置即不限制；只有显式写入的字段才收紧动作。
 - **运行时 `_ENV` 限制未默认开启**：包闸门用静态 API lint 判死（`__*` 内部桥、io/os/debug/load 等
   一律拒绝入库）；运行期脚本仍以全局环境执行，存量包兼容后再切受限环境。

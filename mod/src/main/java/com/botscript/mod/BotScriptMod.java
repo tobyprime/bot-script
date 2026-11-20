@@ -112,7 +112,7 @@ public class BotScriptMod implements ClientModInitializer {
             } else {
                 Files.createDirectories(cfgFile.getParent());
                 Files.writeString(cfgFile, "{\n  \"package\": \"" + activePackage
-                        + "\",\n  \"boundary\": {\"authority\": {\"owner\": [\"你的玩家名\"]}}\n}\n");
+                        + "\",\n  \"boundary\": {}\n}\n");
             }
         } catch (Exception e) {
             LOG.error("配置读取失败: {}", e.getMessage());

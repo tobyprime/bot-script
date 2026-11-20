@@ -1,11 +1,11 @@
 // hosts/node/policy.js — 策略规则引擎（ABI v2：没有命令体系；gate 覆盖协议动作）
 //
+// 默认开放：boundary 缺省 / 字段缺省 = 不限制；只有显式配置的字段才收紧动作。
 // 唯一入口在 hosts/node/abi.js 的 dispatch；本文件只回答「允许/拒绝 + 错误 kind」。
 // 同判由 contracts/vectors/policy/*.json 锁定（Fabric Policy.java 跑同一份）。
 import { TYPE_ERR } from './tokens.js';
 
 const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
-const GATED_ACTIONS = /^act\./;
 
 export class Policy {
   constructor(boundary, { now = Date.now, entityLookup, selfPos, isContainerOpen } = {}) {
@@ -19,17 +19,9 @@ export class Policy {
     this.budgetCount = 0;
   }
 
-  get configured() { return this.boundary !== null; }
-
   /** 核心只读事实：私聊命令前缀 */
   chatConfig() {
     return { msg_command: this.boundary?.chat?.msg_command ?? null };
-  }
-
-  /** 只读授权名单（脚本自行做操作员判定；命令总线已移除） */
-  authorityConfig() {
-    const a = this.boundary?.authority ?? {};
-    return { owner: a.owner ?? [], op: a.op ?? [], whitelist: a.whitelist ?? [] };
   }
 
   inFence(pos) {
@@ -40,14 +32,9 @@ export class Policy {
         && pos.z >= Math.min(a[1], b[1]) && pos.z <= Math.max(a[1], b[1]);
   }
 
-  /** 动作门控：允许返回 null；拒绝返回类型化错误 */
+  /** 动作门控：允许返回 null；拒绝返回类型化错误。缺省（boundary 或字段未配置）= 允许。 */
   check(op, args = {}) {
-    // 观察模式：外部动作全拒；调度/查询类 op（util.sleep/events.next/waiter.new 等）不受影响
-    if (!this.configured) {
-      if (!GATED_ACTIONS.test(op)) return null;
-      return TYPE_ERR('permission.denied', '实例未配置 boundary（观察模式）：查询与 params 可用，动作全拒');
-    }
-    const b = this.boundary;
+    const b = this.boundary ?? {};
 
     if (op === 'act.chat_send') return this.checkChat(String(args.kind ?? 'chat'), String(args.text ?? ''));
 
@@ -66,17 +53,18 @@ export class Policy {
       return null;
     }
     if (op === 'act.dig') {
-      return granted(b.blocks?.dig) ? null : TYPE_ERR('policy.blocklist', 'dig 未授权（boundary.blocks.dig）');
+      return denied(b.blocks?.dig) ? TYPE_ERR('policy.blocklist', 'dig 未授权（boundary.blocks.dig）') : null;
     }
     if (op === 'act.use_block') {
-      if (String(args.intent ?? 'use') === 'place' && !granted(b.blocks?.place)) {
+      if (String(args.intent ?? 'use') === 'place' && denied(b.blocks?.place)) {
         return TYPE_ERR('policy.blocklist', 'place 未授权（boundary.blocks.place）');
       }
       return null;
     }
     if (op === 'act.use_entity' && String(args.kind ?? 'attack') === 'attack') {
       const cp = b.combat;
-      if (!cp || !cp.targets) return TYPE_ERR('policy.blocklist', 'combat 未授权（boundary.combat.targets）');
+      // 未配置 targets = 不限制目标；配置后才按类型/接战距离收紧
+      if (!cp?.targets) return null;
       const e = this.entityLookup(String(args.id ?? ''));
       if (!e) return TYPE_ERR('entity.gone', String(args.id ?? ''));
       if (!String(e.type).includes(String(cp.targets))) {
@@ -96,9 +84,8 @@ export class Policy {
       const touchContainer = op === 'act.window_open'
         || String(args.window ?? '0') !== '0'
         || this.isContainerOpen();
-      // 兼容：未配置 containers = 沿用旧行为（允许）；显式 false/deny 才拒
-      const cv = b.containers;
-      if (touchContainer && cv !== undefined && cv !== null && !granted(cv)) {
+      // 未配置 = 允许；显式 false/deny 才拒
+      if (touchContainer && denied(b.containers)) {
         return TYPE_ERR('policy.blocklist', '容器访问未授权（boundary.containers）');
       }
       return null;
@@ -125,24 +112,28 @@ export class Policy {
     return !!(limit && this.budgetCount === limit);
   }
 
-  /** chat 策略：command 走白名单/正则；chat 走 say 限速。通过返回 null。 */
+  /** chat 策略：command 走白名单/正则；chat 走 say 限速。缺省 = 不限；通过返回 null。 */
   checkChat(kind, text) {
     const chatCfg = this.boundary?.chat ?? {};
     if (kind === 'command') {
       const full = text.startsWith('/') ? text : `/${text}`;
       const whitelist = chatCfg.commands ?? [];
-      const first = full.slice(1).split(/\s+/)[0];
-      const ns = first.includes(':') ? first.split(':').slice(1).join(':') : first;
-      const ok = whitelist.includes(first) || whitelist.includes('/' + ns);
-      if (!ok) return TYPE_ERR('permission.denied', `命令白名单不含 /${ns}`);
+      if (whitelist.length) {
+        const first = full.slice(1).split(/\s+/)[0];
+        const ns = first.includes(':') ? first.split(':').slice(1).join(':') : first;
+        const ok = whitelist.includes(first) || whitelist.includes('/' + ns);
+        if (!ok) return TYPE_ERR('permission.denied', `命令白名单不含 /${ns}`);
+      }
       return this._checkRegex(full, chatCfg);
     }
-    const rate = String(chatCfg.say_rate ?? '10/min');
-    const m = rate.match(/^(\d+)\/(\w+)$/);
-    const windowMs = m && m[2] === 'min' ? 60000 : 1000;
+    const rate = chatCfg.say_rate;
+    if (rate === undefined || rate === null || rate === '') return null;   // 未配置 = 不限
+    const m = String(rate).match(/^(\d+)\/(\w+)$/);
+    if (!m) return TYPE_ERR('policy.config', `say_rate 格式无效（${rate}），应为 N/min 或 N/sec`);
+    const windowMs = m[2] === 'min' ? 60000 : 1000;
     const now = this.now();
     const hits = this.chatTokens.filter((t) => now - t < windowMs);
-    if (hits.length >= Number(m?.[1] ?? 10)) {
+    if (hits.length >= Number(m[1])) {
       return TYPE_ERR('permission.denied', `say 限速（${rate}）`);
     }
     this.chatTokens = hits.concat([now]);
@@ -174,6 +165,6 @@ export class Policy {
   }
 }
 
-function granted(v) {
-  return v !== undefined && v !== null && v !== 'deny' && v !== false && v !== 'false';
+function denied(v) {
+  return v === false || v === 'false' || v === 'deny';
 }

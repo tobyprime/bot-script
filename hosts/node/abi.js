@@ -1,6 +1,6 @@
 // hosts/node/abi.js — 宿主 ABI v2 唯一 dispatch（策略 / 速率 / 预算 / 审计 / 结算）
 import { ASYNC_OPS, SYNC_OPS, ABI_VERSION, validateArgs } from './abi.generated.js';
-import { TYPE_ERR } from './tokens.js';
+import { okResult, errResult, TYPE_ERR } from './tokens.js';
 
 const nowMs = () => Date.now();
 
@@ -30,14 +30,37 @@ export class AbiDispatcher {
     this.handlers = this._buildHandlers();
   }
 
+  /**
+   * 确定性失败 -> Result；宿主意外异常只进宿主日志，Lua 只看到稳定的 internal 码。
+   * 绝不把 JS 异常/栈带进 Lua。
+   */
+  _resultOf(e, op) {
+    const kind = e && typeof e === 'object' ? (e.kind ?? e.botscriptKind) : null;
+    if (kind) return errResult(kind, e.detail ?? e.message ?? '');
+    const trace = `abi-${nowMs()}`;
+    try {
+      this.s.obs.log('error', `[${trace}] ${op} 宿主异常: ${e?.stack ?? e?.message ?? e}`);
+    } catch { /* 日志失败不影响结算 */ }
+    return errResult('internal', `内部错误（追踪 ${trace}）`);
+  }
+
+  /** 同步 op：永远返回 JSON Result，不向 Lua 抛异常 */
   sync(op, argsJson) {
     const spec = SYNC_OPS[op];
-    if (!spec) throw withKind(new Error(`abi.unknown_op: ${op}`), 'abi.unknown_op');
-    const args = validateArgs(op, spec, parseArgs(argsJson));
     const fn = this.handlers[op];
-    if (!fn) throw withKind(new Error(`abi.unknown_op: ${op}`), 'abi.unknown_op');
-    const out = fn(args);
-    return out === undefined || out === null ? '' : JSON.stringify(out);
+    if (!spec || !fn) return JSON.stringify(errResult('abi.unknown_op', op));
+    let args;
+    try {
+      args = validateArgs(op, spec, parseArgs(argsJson));
+    } catch (e) {
+      return JSON.stringify(this._resultOf(e, op));
+    }
+    try {
+      const out = fn(args);
+      return JSON.stringify(okResult(out === undefined ? null : out));
+    } catch (e) {
+      return JSON.stringify(this._resultOf(e, op));
+    }
   }
 
   asyncOp(op, argsJson) {
@@ -46,21 +69,28 @@ export class AbiDispatcher {
     const spec = ASYNC_OPS[op];
     const fn = this.handlers[op];
     if (!spec || !fn) {
-      hub.settle(token, '', JSON.stringify(TYPE_ERR('abi.unknown_op', op)));
+      hub.settleErr(token, 'abi.unknown_op', op);
       return token;
     }
     let args;
     try {
       args = validateArgs(op, spec, parseArgs(argsJson));
     } catch (e) {
-      hub.settle(token, '', JSON.stringify(TYPE_ERR(e.kind ?? 'abi.invalid_args', e.message)));
+      const r = this._resultOf(e, op);
+      hub.settleErr(token, r.error.code, r.error.message);
+      return token;
+    }
+    // 热重载窗口：新脚本声明期可能调用动作；与旧脚本换轨前一律拒绝，避免双份脚本同时发包。
+    // 只拦 act.*：sleep/events.next 等调度原语不受影响。
+    if (op.startsWith('act.') && runtime.reloading?.()) {
+      hub.settleErr(token, 'runtime.reloading', '脚本热重载中：动作暂不可用');
       return token;
     }
     const polErr = policy.check(op, args);
-    if (polErr) { hub.settle(token, '', JSON.stringify(polErr)); return token; }
+    if (polErr) { hub.settleErr(token, polErr.kind, polErr.detail); return token; }
     if (runtime.dryRun) {
       obs.log('info', `${op} ${JSON.stringify(args).slice(0, 120)} [dry]`);
-      hub.settle(token, '{}', '');
+      hub.settleOk(token, {});
       return token;
     }
     // 只有协议动作（act.*）计入速率/预算并写动作审计。
@@ -68,7 +98,7 @@ export class AbiDispatcher {
     // 不得占预算、不得刷动作日志。
     if (op.startsWith('act.')) {
       const rateErr = policy.rateCheck();
-      if (rateErr) { hub.settle(token, '', JSON.stringify(rateErr)); return token; }
+      if (rateErr) { hub.settleErr(token, rateErr.kind, rateErr.detail); return token; }
       if (policy.countAction()) this.s.control.pause('budget');
       obs.publish('action', { ts: nowMs(), action: op, args: brief(args) });
     }
@@ -76,10 +106,10 @@ export class AbiDispatcher {
     (async () => {
       try {
         const result = await fn(args, token);
-        if (result !== null) hub.settle(token, JSON.stringify(result ?? {}), '');
+        if (result !== null) hub.settleOk(token, result ?? {});
       } catch (e) {
-        const err = e && e.kind ? e : { kind: e?.botscriptKind ?? 'driver.error', detail: String(e?.message ?? e) };
-        hub.settle(token, '', JSON.stringify(err));
+        const r = this._resultOf(e, op);
+        hub.settleErr(token, r.error.code, r.error.message);
       }
     })();
     return token;
@@ -121,7 +151,11 @@ export class AbiDispatcher {
       'timer.after': ({ delay }) => s.scriptTimer.after(Math.max(0, Number(delay) || 0)),
       'timer.interval': ({ interval }) => s.scriptTimer.interval(Math.max(50, Number(interval) || 1000)),
       'events.emit': ({ type, data }) => s.events.emit(String(type ?? '').slice(0, 64), data ?? {}),
-      'waiter.resolve': ({ token, match }) => { hub.settle(Number(token), match ?? '', ''); },
+      'waiter.resolve': ({ token, match }) => {
+        let value = null;
+        try { value = match ? JSON.parse(match) : null; } catch { value = match ?? null; }
+        hub.settleOk(Number(token), value);
+      },
 
       // ---- 自身 / 会话 ----
       'self.get': () => {
@@ -207,7 +241,6 @@ export class AbiDispatcher {
 
       // ---- 聊天策略（只读） ----
       'chat.config': () => policy.chatConfig(),
-      'policy.authority': () => policy.authorityConfig(),
 
       // ---- persist ----
       'persist.table': ({ name, schema }) => { persist.declareTable(String(name), schema ?? {}); },
@@ -230,7 +263,7 @@ export class AbiDispatcher {
       // ---- 调度原语 ----
       'util.sleep': ({ ms }, token) => {
         setKind(hub, token, 'sleep');
-        s.timerArm(() => hub.settle(token, '', ''), Math.max(0, Number(ms) || 0));
+        s.timerArm(() => hub.settleOk(token, null), Math.max(0, Number(ms) || 0));
         return null;
       },
       'events.next': ({ timeout }, token) => {
@@ -241,7 +274,7 @@ export class AbiDispatcher {
         setKind(hub, token, 'waiter');
         s.timerArm(() => {
           const rec = hub.tokens.get(token);
-          if (rec && !rec.settled) hub.settle(token, '', '');
+          if (rec && !rec.settled) hub.settleOk(token, null);   // 超时 = 成功交付 nil
         }, Math.max(0, Number(timeout) || 5000));
         return null;
       },

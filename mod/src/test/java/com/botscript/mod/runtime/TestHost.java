@@ -1,6 +1,5 @@
 package com.botscript.mod.runtime;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
@@ -27,7 +26,6 @@ public final class TestHost implements LuaRuntime.HostBridge {
     private final Map<String, JsonObject> tables = new LinkedHashMap<>();
     private final Map<String, JsonObject> kv = new LinkedHashMap<>();
     private final Map<String, Long> seen = new LinkedHashMap<>();
-    private final JsonObject authority = new JsonObject();
     private PersistStore persist;
 
     public TestHost(LuaRuntime rt) {
@@ -45,11 +43,6 @@ public final class TestHost implements LuaRuntime.HostBridge {
     /** info 级别日志（去掉 level 前缀），供断言直接比较 */
     public List<String> infos() {
         return logs.stream().filter((l) -> l.startsWith("info|")).map((l) -> l.substring(5)).toList();
-    }
-    public void setAuthority(String kind, String user) {
-        JsonArray arr = authority.has(kind) ? authority.getAsJsonArray(kind) : new JsonArray();
-        arr.add(user);
-        authority.add(kind, arr);
     }
 
     /** 推进虚拟时钟并结算到期的 sleep/waiter token */
@@ -115,7 +108,6 @@ public final class TestHost implements LuaRuntime.HostBridge {
             case "caps.get": return "false";
             case "item.stack": return "{\"id\":\"minecraft:dirt\",\"count\":1,\"max_count\":64,\"damage\":null,\"max_damage\":null}";
             case "chat.config": return "{\"msg_command\":null}";
-            case "policy.authority": return authority.toString();
             case "self.get": return "{\"username\":\"VecBot\",\"pos\":{\"x\":0,\"y\":64,\"z\":0},\"yaw\":0,\"pitch\":0,\"held_slot\":0}";
             case "entities.list": return "[]";
             case "entities.get": return "";

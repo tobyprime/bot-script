@@ -530,10 +530,14 @@ NODE_PATH=$PWD/node_modules node /tmp/stack-compare.cjs
   改为 `item.stack(stack)` 直接读 `max_stack_size` / `max_damage` / `attribute_modifiers` 等组件。
   选装策略（原 weapon_score）回 bslib，按 attack_damage × attack_speed 计算；宿主读不到属性时用核心节奏下限。
 - **移除命令能力**：删除 `command.declare` / `command.dispatch` / `on_command` / 权威解析 / HTTP `/cmd`；
-  新增 `/pause`、`/resume`；脚本控制改 `on_chat` + `bslib.authorized`（boundary.authority 只读）。
+  新增 `/pause`、`/resume`；脚本控制改 `on_chat` 自行判定操作员（平台不内置 owner/op/白名单）。
   平台侧原 `POST /cmd`（pause/resume）需改为 `POST /pause` / `POST /resume`。
 - **动作按原版发包**：删除 hop / move_input / use_item.duration / chat_reply / respawn；
   改为 look / input / player_action / interact / use_item(start|release) / select_slot / drop / window_*。
+- **ABI Result 化（2026-11-20）**：核心→宿主同步/异步全部返回
+  `{ok:true,value}` / `{ok:false,error:{code,message}}`；确定性失败不再以异常进入 Lua。
+  取消是独立控制通道（`__core_resume` 的 ctlJson + 任务取消），不进 Result/`on_error`；
+  Lua 原生 `error()` 仍为任务级失败；宿主意外异常只记日志，Lua 最多看到稳定码 `internal`。
 - **tick_end 不是能力**：从 capabilities 删除；版本适配只登记在 `drivers/mineflayer/patches`，`/caps.patches` 可见。
   **补丁必须常装**（26.x 必须、1.21.8 无害）：线上回归——1.21.8 配置 + Velocity/26.3 后端，
   按 `major>=26` 收窄补丁后实例加入约 15s 被静默断开；旧驱动一直是无条件安装。

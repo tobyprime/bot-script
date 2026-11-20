@@ -48,14 +48,16 @@ local function awaited(tok) return __await(tok) end
 local function aimed(tok) __detach(tok) end
 
 -- 等窗口快照的 revision 前进（宿主负责协议，核心负责节奏）
+local function now_ms() return bridge.value(bridge.util.now(), 0) end
+
 function bslib.wait_revision(win_id, prev, timeout_ms)
-  local deadline = bridge.util.now() + timeout_ms
-  while bridge.util.now() < deadline do
-    local w = bridge.window.get(tostring(win_id))
+  local deadline = now_ms() + timeout_ms
+  while now_ms() < deadline do
+    local w = bridge.value(bridge.window.get(tostring(win_id)), nil)
     if w and (w.revision or 0) > prev then return w end
     time.sleep(40)
   end
-  return bridge.window.get(tostring(win_id))
+  return bridge.value(bridge.window.get(tostring(win_id)), nil)
 end
 
 -- ---------- 瞄准（atan2 角度数学 + look 原语写入，无状态 last-writer-wins） ----------
@@ -96,9 +98,9 @@ function bslib.straight_goto(pos, opts)
   opts = opts or {}
   local arrive = opts.arrive or 1.5
   local timeout_ms = (opts.timeout ~= nil and opts.timeout * 1000 or 30000)
-  local deadline = bridge.util.now() + timeout_ms
+  local deadline = now_ms() + timeout_ms
   local last = self.pos() or pos
-  local last_progress = bridge.util.now()
+  local last_progress = now_ms()
   local jumping = false
 
   local function stop_move()
@@ -113,12 +115,12 @@ function bslib.straight_goto(pos, opts)
       stop_move()
       return { ok = true }
     end
-    if bridge.util.now() > deadline then
+    if now_ms() > deadline then
       stop_move()
       return { ok = false, reason = "timeout" }
     end
     if dist3(p, last) < 0.15 then
-      if bridge.util.now() - last_progress > 6000 then
+      if now_ms() - last_progress > 6000 then
         stop_move()
         return { ok = false, reason = "stuck" }
       end
@@ -126,7 +128,7 @@ function bslib.straight_goto(pos, opts)
       time.sleep(250)
     else
       last = p
-      last_progress = bridge.util.now()
+      last_progress = now_ms()
     end
     -- 直线退化必须朝向目标才走得到
     local yaw = norm_yaw(math.deg(atan2(-(pos.x - p.x), pos.z - p.z)))
@@ -136,27 +138,36 @@ function bslib.straight_goto(pos, opts)
   end
 end
 
+-- 把驱动/NavResult 归一成跨平台 Result（OK/ERR/取消由 await 负责）
+local function as_nav_result(r)
+  if type(r) ~= "table" then return { ok = true, value = {} } end
+  if r.ok == true then return { ok = true, value = r } end
+  if r.ok == false and r.error ~= nil then return r end   -- ABI 确定性失败（policy/denied/…）
+  local reason = r.reason or "unreachable"
+  return { ok = false, error = { code = "nav." .. reason, message = reason } }
+end
+
 function bslib.nav_walk(target, opts)
   opts = opts or {}
   local pos = round_pos(target)
   if pos == nil then
     -- 实体目标：取活位置
     local id = type(target) == "table" and (rawget(target, "__id") or target.id) or target
-    local e = bridge.entities.get(tostring(id))
-    if not e then error({ kind = "entity.gone", detail = "nav.walk 目标实体不存在" }, 0) end
+    local e = bridge.value(bridge.entities.get(tostring(id)), nil)
+    if not e then return { ok = false, error = { code = "entity.gone", message = "nav.walk 目标实体不存在" } } end
     pos = round_pos(e.pos)
-    if pos == nil then return { ok = false, reason = "entity.gone" } end
+    if pos == nil then return { ok = false, error = { code = "entity.gone", message = "目标无坐标" } } end
   end
   local r
-  if bridge.caps.get("nav.pathfinder") then
+  if bridge.value(bridge.caps.get("nav.pathfinder"), false) then
     local arrive = opts.arrive or 1.5
     local timeout_ms = opts.timeout_ms or (opts.timeout and opts.timeout * 1000) or 30000
-    r = awaited(bridge.act.path_to(pos, arrive, timeout_ms)) or { ok = true }
+    r = as_nav_result(awaited(bridge.act.path_to(pos, arrive, timeout_ms)))
   else
-    r = bslib.straight_goto(pos, opts)
+    r = as_nav_result(bslib.straight_goto(pos, opts))
   end
   if not r.ok then
-    bridge.events.emit("nav.failed", { reason = r.reason or "unreachable", target = pos })
+    bridge.events.emit("nav.failed", { reason = r.error and r.error.code or "nav.unreachable", target = pos })
   end
   return r
 end
@@ -164,16 +175,17 @@ end
 function bslib.nav_follow(entity_id, opts)
   opts = opts or {}
   local want = opts.distance or 2
-  local e = bridge.entities.get(tostring(entity_id))
-  if not e then return { ok = false, reason = "entity.gone" } end
+  local e = bridge.value(bridge.entities.get(tostring(entity_id)), nil)
+  if not e then return { ok = false, error = { code = "entity.gone", message = "目标实体不存在" } } end
   while true do
-    local cur = bridge.entities.get(tostring(entity_id))
-    if not cur or cur.alive == false then return {} end
-    local sp = bridge.self.get()
+    local cur = bridge.value(bridge.entities.get(tostring(entity_id)), nil)
+    if not cur or cur.alive == false then return { ok = true, value = { gone = true } } end
+    local sp = bridge.value(bridge.self.get(), nil)
     local d = (sp and sp.pos and cur.pos) and dist3(sp.pos, cur.pos) or math.huge
     if d > want + 1 then
-      if bridge.caps.get("nav.pathfinder") then
-        pcall(function() awaited(bridge.act.path_to(round_pos(cur.pos), want, 5000)) end)
+      if bridge.value(bridge.caps.get("nav.pathfinder"), false) then
+        local r = awaited(bridge.act.path_to(round_pos(cur.pos), want, 5000))
+        if not r.ok then return r end   -- 确定性失败（例如被策略拒绝）直接上报
       else
         -- 无寻路器：朝向目标做短步进，由循环持续修正
         local yaw = norm_yaw(math.deg(atan2(-(cur.pos.x - sp.pos.x), cur.pos.z - sp.pos.z)))
@@ -206,13 +218,13 @@ function bslib.container_open(target, opts)
   end
 
   -- 窗口互斥：先关再开（宿主保证不变量，核心负责流程）
-  if bridge.window.current() ~= nil then
-    pcall(function() awaited(bridge.act.window_close(nil)) end)
+  if bridge.value(bridge.window.current(), nil) ~= nil then
+    awaited(bridge.act.window_close(nil))
   end
 
   local function aim(t)
     -- 服务器校验交互视线：开箱前先看向方块中心（fabric 客户端不会自动瞄准）
-    local sp = bridge.self.get()
+    local sp = bridge.value(bridge.self.get(), nil)
     if not sp or not sp.pos then return end
     local p = sp.pos
     local dx = t.x + 0.5 - p.x
@@ -226,61 +238,76 @@ function bslib.container_open(target, opts)
 
   local function try_open() return awaited(bridge.act.window_open(open_target)) end
   local function approach(t, arrive, timeout_s)
-    pcall(function()
-      if bridge.caps.get("nav.pathfinder") then
-        awaited(bridge.act.path_to(t, arrive, timeout_s * 1000))
-      else
-        bslib.straight_goto(t, { arrive = arrive, timeout = timeout_s })
-      end
-    end)
+    if bridge.value(bridge.caps.get("nav.pathfinder"), false) then
+      awaited(bridge.act.path_to(t, arrive, timeout_s * 1000))
+    else
+      bslib.straight_goto(t, { arrive = arrive, timeout = timeout_s })
+    end
   end
 
-  local first_err, res
+  local res
   -- 先贴脸：survival reach 有限，走到 1.2 格内再交互最稳
   if pos ~= nil then
-    local sp = bridge.self.get()
+    local sp = bridge.value(bridge.self.get(), nil)
     if sp and sp.pos and dist3(sp.pos, pos) > 2.5 then approach(pos, 1.2, 10) end
     aim(pos)
   end
-  if not pcall(function() res = try_open() end) or res == nil then
+  local open_r = try_open()
+  local function denied(r)
+    local code = r.error and r.error.code or ""
+    return code == "permission.denied" or code == "policy.blocklist" or code == "policy.config"
+  end
+  if not open_r.ok and denied(open_r) then
+    bridge.events.emit("container.failed", { target = enc(target), error = open_r.error })
+    return nil
+  end
+  if not open_r.ok then
     -- 重试：先走近（服务器对超出交互距离的交互静默拒绝），再开
     if pos ~= nil then
-      local sp = bridge.self.get()
+      local sp = bridge.value(bridge.self.get(), nil)
       if sp and sp.pos and dist3(sp.pos, pos) > 4 then approach(pos, 2, 8) end
     end
-    pcall(function() awaited(bridge.act.window_close(nil)) end)
+    awaited(bridge.act.window_close(nil))
     time.sleep(600)
     if pos ~= nil then aim(pos) end
-    local ok2, err2 = pcall(function() res = try_open() end)
-    if not ok2 then
-      first_err = err2
+    open_r = try_open()
+    if not open_r.ok then
       -- 换方位：服务器要求「视线命中的块」与交互块一致，贴邻半箱会挡视线；
       -- 从对角偏移点重新接近，让视线直接命中目标块。
-      if pos == nil then error(first_err, 0) end
       for _, off in ipairs({ { 2, 2 }, { -2, -2 } }) do
         local alt = { x = pos.x + off[1], y = pos.y, z = pos.z + off[2] }
         approach(alt, 1.2, 8)
         aim(pos)
-        if pcall(function() res = try_open() end) and res ~= nil then break end
+        open_r = try_open()
+        if open_r.ok then break end
       end
-      if res == nil then error(first_err, 0) end
     end
   end
-
-  if res == nil or res.id == nil then error({ kind = "container.missing", detail = enc(target) }, 0) end
+  if not open_r.ok then
+    bridge.events.emit("container.failed", { target = enc(target), error = open_r.error })
+    return nil
+  end
+  res = open_r.value
+  if res == nil or res.id == nil then
+    bridge.events.emit("container.failed", { target = enc(target), error = { code = "container.missing", message = "窗口快照缺失" } })
+    return nil
+  end
   -- 等首个窗口快照（若已先到则跳过等待）
   local w = bslib.wait_revision(res.id, 0, 4000)
-  if not w then error({ kind = "container.missing", detail = enc(target) }, 0) end
+  if not w then
+    bridge.events.emit("container.failed", { target = enc(target), error = { code = "container.missing", message = "窗口快照超时" } })
+    return nil
+  end
   -- 等 slot 数据灌入（open 事件先到、window items 后到）
   bslib.wait_revision(res.id, 1, 1500)
-  local last = bridge.window.get(tostring(res.id)) or w
+  local last = bridge.value(bridge.window.get(tostring(res.id)), nil) or w
   return { id = tostring(last.id or res.id), type = last.type, size = last.size }
 end
 
 -- ---------- 背包 / 窗口槽位助手 ----------
 
 local function held_slot()
-  local s = bridge.self.get()
+  local s = bridge.value(bridge.self.get(), nil)
   return (s and (s.held_slot or s.heldSlot)) or 0
 end
 
@@ -459,10 +486,14 @@ function bslib.move(from, to, filter, opts)
     rounds = rounds + 1
     local rf = nav.goto_near(from, 3)
     if not (rf and rf.ok) then
-      log.warn("move: 无法到达来源箱 %s（%s）", tostring(from), rf and rf.reason or "?")
+      log.warn("move: 无法到达来源箱 %s（%s）", tostring(from), rf and rf.error and rf.error.code or "?")
       return total   -- 不可达：停（错误经 nav.failed 事件）
     end
     local w = container.open(from)
+    if not w then
+      log.warn("move: 无法打开来源箱 %s", tostring(from))
+      return total
+    end
     local cap = inv_free_capacity(filter)
     if cap <= 0 then
       container.close(w)
@@ -473,10 +504,14 @@ function bslib.move(from, to, filter, opts)
     if got == 0 then break end                     -- 来源已空
     local rt = nav.goto_near(to, 3)
     if not (rt and rt.ok) then
-      log.warn("move: 无法到达目标箱 %s（%s）", tostring(to), rt and rt.reason or "?")
+      log.warn("move: 无法到达目标箱 %s（%s）", tostring(to), rt and rt.error and rt.error.code or "?")
       return total
     end
     local w2 = container.open(to)
+    if not w2 then
+      log.warn("move: 无法打开目标箱 %s", tostring(to))
+      return total
+    end
     if opts.on_open then opts.on_open(to, w2, filter) end
     local put = bslib.deposit(w2, filter, got)
     container.close(w2)
@@ -485,23 +520,6 @@ function bslib.move(from, to, filter, opts)
     if put < got then break end                    -- 本轮没送完（目标已满）
   end
   return total
-end
-
--- ---------- 授权名单（只读；命令体系已移除，脚本自行判定操作员） ----------
-
-function bslib.authority_level(name)
-  if name == nil or name == '' then return 0 end
-  local a = bridge.policy.authority() or {}
-  local owner, op, whitelist = a.owner or {}, a.op or {}, a.whitelist or {}
-  if contains(owner, name) then return 80 end
-  if contains(op, name) then return (#owner > 0) and 60 or 80 end
-  if contains(whitelist, name) then return 20 end
-  return 10
-end
-
-function bslib.authorized(name, perm)
-  local need = ({ console = 100, owner = 80, op = 60, whitelist = 20, player = 10 })[perm or 'player'] or 10
-  return bslib.authority_level(name) >= need
 end
 
 -- ----------

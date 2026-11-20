@@ -205,6 +205,7 @@ public final class HttpApi {
             case "/params" -> params(method, body);
             case "/pause" -> pause(method, body);
             case "/resume" -> resume(method, body);
+            case "/reload" -> reload(method, body);
             case "/eval" -> eval(method, body);
             case "/event" -> event(method, body);
             case "/session" -> session(method, body);
@@ -564,14 +565,12 @@ public final class HttpApi {
             fence.add(a); fence.add(c);
             b.add("fence", fence);
         }
-        b.addProperty("blocks_dig", cfg.blocksDig != null ? cfg.blocksDig : "未授权");
-        b.addProperty("blocks_place", cfg.blocksPlace != null ? cfg.blocksPlace : "未授权");
-        b.addProperty("combat_targets", cfg.combatTargets != null ? cfg.combatTargets : "未授权");
+        b.addProperty("blocks_dig", cfg.blocksDig != null ? cfg.blocksDig : "允许");
+        b.addProperty("blocks_place", cfg.blocksPlace != null ? cfg.blocksPlace : "允许");
+        b.addProperty("combat_targets", cfg.combatTargets != null ? cfg.combatTargets : "不限");
         if (cfg.combatMaxEngage != null) b.addProperty("combat_max_engage", cfg.combatMaxEngage);
-        b.addProperty("say_rate", cfg.chatSayRate);
+        b.addProperty("say_rate", cfg.chatSayRate != null ? cfg.chatSayRate : "不限");
         b.addProperty("chat_commands", String.join(" ", cfg.chatCommandsWhitelist));
-        b.addProperty("authority_owner", String.join(" ", cfg.authorityOwner));
-        b.addProperty("authority_op", String.join(" ", cfg.authorityOp));
         return b;
     }
 

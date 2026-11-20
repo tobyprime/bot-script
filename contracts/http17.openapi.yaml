@@ -87,6 +87,23 @@ paths:
       summary: 恢复实例
       responses:
         "200": { description: OK }
+  /reload:
+    post:
+      operationId: postReload
+      summary: 原地热重载脚本包（不重启连接；新脚本编译失败时保持旧脚本运行）
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+                package: { type: string, description: 包切换（Fabric 宿主）；Node 宿主按实例目录重读 }
+      responses:
+        "200": { description: OK }
+        "400": { description: 脚本编译/声明失败, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: 引擎未启动或重载进行中 }
   /eval:
     post:
       operationId: postEval

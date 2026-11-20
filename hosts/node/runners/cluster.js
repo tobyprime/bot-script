@@ -133,10 +133,12 @@ async function proxyToWorker(instanceId, method, enginePath, body, resIn, resOut
   const w = workers.get(instanceId);
   if (!w) throw Object.assign(new Error(`实例 ${instanceId} 未在本 host 运行`), { status: 409 });
   const isStream = enginePath.split('?')[0].endsWith('/stream');
+  // /reload 要新建 Lua VM 并跑全部脚本，堆/磁盘慢时 8s 不够（与 agent 侧 30s 对齐）
+  const isReload = enginePath.split('?')[0].endsWith('/reload');
   const r = await fetch(`http://127.0.0.1:${w.port}${enginePath}`, {
     method, headers: { Authorization: `Bearer ${w.token}`, 'Content-Type': 'application/json' },
     body: method === 'POST' ? body : undefined,
-    signal: isStream ? undefined : AbortSignal.timeout(8000),   // SSE 不设总超时
+    signal: isStream ? undefined : AbortSignal.timeout(isReload ? 30_000 : 8000),   // SSE 不设总超时
   }).catch((e) => { throw Object.assign(new Error(`worker 不可达: ${e.message}`), { status: 502 }); });
   if (isStream && resOut) {
     // 逐块转发到调用方的 res（保持 SSE 头）

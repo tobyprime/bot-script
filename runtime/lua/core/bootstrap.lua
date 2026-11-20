@@ -3,7 +3,10 @@
 --
 -- yield 协议：任务体在挂起点 yield "<token>, <txnflag>"
 --   宿主对每个挂起点调用 bridge.token.bind(task_id, token, kind) 登记；
---   结算经 __core_resume(id, okj, ej) 交付（ej 非空 => await 处抛错）。
+--   结算经 __core_resume(id, resultJson, ctlJson) 交付：
+--     resultJson = {ok:true,value:...} | {ok:false,error:{code,message}}——所有确定性结果；
+--     ctlJson    = {cancel:"<source>"} | {fail:{kind,detail}}——取消/内部任务失败，独立于 Result。
+--   宿主绝不把 JS 异常/栈传进 Lua；意外异常只记宿主日志，Lua 侧只会看到稳定的 internal 码。
 -- 宿主入口（由宿主实现，见 contracts/host-abi.yaml）：
 --   __host_q(op, argsJson)      核心→宿主同步查询
 --   __host_a(op, argsJson)      核心→宿主异步动作（返回 token）
@@ -36,7 +39,9 @@ local TASK_ERR_BYPASS = __COMPAT_TASK_ERR == true   -- LuaJ 由 compat/luaj.lua 
 local function encode(v) return json.encode(v) end
 local function decode(j) return json.decode(j) end
 
-local function is_cancel(e) return type(e) == "table" and e.kind == "task.cancelled" end
+local function is_cancel(e)
+  return type(e) == "table" and (e.__cancel == true or e.kind == "task.cancelled")
+end
 local function errstr(e)
   if type(e) == "table" and e.kind then
     return e.kind .. (e.detail ~= nil and (": " .. raw_tostring(e.detail)) or "")
@@ -69,16 +74,24 @@ local function current_id()
   return nil
 end
 
--- 动作 await：交付值解码返回；交付错误在挂起点抛类型化错误（table）
+-- 动作 await：始终返回 Result（{ok,value} | {ok=false,error={code,message}}），不向脚本抛错。
+-- 取消/内部任务失败走独立控制通道：取消 => 展开当前任务；内部失败 => 按任务级失败处理。
 local function await(token)
-  local okj, ej = coroutine.yield(token, __TXN_FLAG and 1 or 0)
-  if ej ~= nil and ej ~= "" then
-    local e = decode(ej)
-    if type(e) ~= "table" then error(raw_tostring(e), 0) end
-    error(e, 0)
+  local resultj, ctlj = coroutine.yield(token, __TXN_FLAG and 1 or 0)
+  if ctlj ~= nil and ctlj ~= "" then
+    local c = decode(ctlj)
+    if type(c) ~= "table" then error({ kind = "runtime.error", detail = raw_tostring(c) }, 0) end
+    if c.cancel ~= nil or c.kind == "task.cancelled" then
+      error({ __cancel = true, kind = "task.cancelled", source = c.cancel or c.source }, 0)
+    end
+    local f = c.fail
+    if type(f) == "table" and f.kind then error(f, 0) end
+    if c.kind ~= nil then error(c, 0) end   -- 兼容尚未迁移的宿主错误帧
+    error({ kind = "runtime.error", detail = raw_tostring(f) }, 0)
   end
-  if okj == nil or okj == "" then return nil end
-  return decode(okj)
+  local r = (resultj ~= nil and resultj ~= "") and decode(resultj) or nil
+  if type(r) ~= "table" or r.ok == nil then return { ok = true, value = r } end
+  return r
 end
 
 -- 兼容壳（旧测试/旧包经 _G 直接调用）：真实动作一律走 bridge.a（同一 dispatch：
@@ -88,17 +101,23 @@ function _G.call_action(op, args)
   local tok = bridge.a(op, args)
   if __IN_CLEANUP or __CLEANUP_FLAG[id] then
     bridge.token.detach(tok)   -- 清理钩中的动作：fire-and-forget（钩子运行在 pump 上下文，不可挂起）
-    return nil
+    return { ok = true, value = nil, detached = true }
   end
   return await(tok)
 end
 
 local function call_action(op, args) return _G.call_action(op, args) end
+
+-- 同步 ABI 也返回 Result；核心内部取纯数据用该 helper 解包（失败 -> default，不抛错）
+local function rv(r, default)
+  if type(r) == "table" and r.ok == true then return r.value end
+  return default
+end
 local function call_query(op, args)
-  local v = bridge.q(op, args)
-  if v == nil then return nil end
-  if type(v) == "number" or type(v) == "boolean" then return v end
-  return v
+  local r = bridge.q(op, args)
+  if type(r) ~= "table" or r.ok == nil then return r end
+  if r.ok then return r.value end
+  return nil
 end
 
 -- 供 bslib 与用户脚本复用的挂起/脱离原语
@@ -456,12 +475,12 @@ function on_resume(fn) __LIFE.on_resume = __LIFE.on_resume or {}; table.insert(_
 function on_error(fn) __LIFE.on_error = __LIFE.on_error or {}; table.insert(__LIFE.on_error, fn) end
 
 function on_timer(interval, fn)
-  local id = bridge.timer.interval(interval)
+  local id = rv(bridge.timer.interval(interval), 0)
   __DECL.timers[id] = { fn = fn, interval = interval }
 end
 
 function after(d, fn)
-  local id = bridge.timer.after(d)
+  local id = rv(bridge.timer.after(d), 0)
   __DECL.afters[id] = fn
 end
 
@@ -497,9 +516,9 @@ function __join_report(jt, idx, status, resultj, errj)
     if j.settled[idx] == "ok" or j.settled[idx] == "error" then
       j.done = true
       if j.settled[idx] == "error" then
-        j.out_okj, j.out_ej = "", j.err
+        j.out_okj, j.out_ej = "", '{"fail":' .. (j.err ~= "" and j.err or '{"kind":"runtime.error"}') .. '}'
       else
-        j.out_okj = '{"index":' .. idx .. ',"val":' .. j.results[idx] .. '}'
+        j.out_okj = '{"ok":true,"value":{"index":' .. idx .. ',"val":' .. j.results[idx] .. '}}'
         j.out_ej = ""
       end
       join_wake(jt)
@@ -508,7 +527,8 @@ function __join_report(jt, idx, status, resultj, errj)
   else
     if j.settled[idx] == "error" then
       j.done = true
-      j.out_okj, j.out_ej = "", j.err      -- parallel：任一真实错误 => 重抛首错（其余由父级联取消）
+      -- parallel：任一真实任务失败 => 控制通道 fail（Lua 原生错误，任务级失败；其余由父级联取消）
+      j.out_okj, j.out_ej = "", '{"fail":' .. (j.err ~= "" and j.err or '{"kind":"runtime.error"}') .. '}'
       join_wake(jt)
       return
     end
@@ -520,7 +540,7 @@ function __join_report(jt, idx, status, resultj, errj)
       j.done = true
       local parts = {}
       for i = 1, j.total do parts[i] = j.results[i] or "null" end
-      j.out_okj = '{"results":[' .. table.concat(parts, ",") .. ']}'
+      j.out_okj = '{"ok":true,"value":{"results":[' .. table.concat(parts, ",") .. ']}}'
       j.out_ej = ""
       join_wake(jt)
     end
@@ -537,8 +557,8 @@ function race(fns)
     t.join = { token = jt, idx = i }
   end
   pump()
-  local r = await(jt)              -- {index, val} 或在挂起点抛错
-  return r and r.val
+  local r = await(jt)              -- {ok:true,value={index,val}}；真实任务失败走控制通道
+  return r and r.value and r.value.val
 end
 
 function parallel(fns)
@@ -551,8 +571,8 @@ function parallel(fns)
     t.join = { token = jt, idx = i }
   end
   pump()
-  local r = await(jt)              -- {results=[...]} 或抛首错
-  return r and r.results
+  local r = await(jt)              -- {ok:true,value={results=[...]}}
+  return r and r.value and r.value.results
 end
 
 function with_timeout(d, fn)
@@ -581,11 +601,11 @@ end
 function wait_until(pred, opts)
   opts = opts or {}
   local poll = opts.poll or 100
-  local deadline = opts.timeout and (bridge.util.now() + opts.timeout) or nil
+  local deadline = opts.timeout and (rv(bridge.util.now(), 0) + opts.timeout) or nil
   while true do
     local ok, r = pcall(pred)
     if ok and r then return true end
-    if deadline and bridge.util.now() > deadline then
+    if deadline and rv(bridge.util.now(), 0) > deadline then
       error{ kind = "timeout", detail = "wait_until 超时" }
     end
     time.sleep(poll)
@@ -673,7 +693,7 @@ local function params_bind(manifest, instance)
     local v = values[k]
     if v == nil then v = schema.default end
     if v == nil then
-      -- v2 流程（DESIGN §5.3）：required 未设不阻塞启动（观察模式也要能 boot）
+      -- v2 流程（DESIGN §5.3）：required 未设不阻塞启动（默认开放，先 boot 再补参数）
       if schema.required then
         bridge.log("warn", "参数 " .. k .. " 必填：暂未设置（运行期经控制渠道设置后持久化）")
       end
@@ -682,7 +702,7 @@ local function params_bind(manifest, instance)
     end
   end
   -- 持久化值优先于清单初值（DESIGN §5.3）
-  local saved = bridge.kv.get("bot", "params")
+  local saved = rv(bridge.kv.get("bot", "params"), nil)
   if saved ~= nil and saved ~= "" then
     local ok, obj = pcall(decode, saved)
     if ok and type(obj) == "table" then
@@ -735,7 +755,7 @@ function txn(fn)
 end
 
 function persist.seen(key, window_ms)
-  return bridge.persist.seen(key, math.floor(window_ms or 5000)) == 1
+  return rv(bridge.persist.seen(key, math.floor(window_ms or 5000)), 0) == 1
 end
 
 -- persist.table "Name" { schema } 语法 = 柯里化调用
@@ -748,9 +768,9 @@ function persist.table(name)
     if tostring(t):gsub("%?", "") == "number" and not num_field then num_field = f end
   end
   local T = {}
-  T.find = function(where) return bridge.persist.find(name, where or {}) end
+  T.find = function(where) return rv(bridge.persist.find(name, where or {}), nil) end
   T.all = function()
-    local rows = bridge.persist.all(name) or {}
+    local rows = rv(bridge.persist.all(name), {}) or {}
     local i = 0
     return function() i = i + 1; return rows[i] end
   end
@@ -758,7 +778,7 @@ function persist.table(name)
   T.del = function(where) bridge.persist.del(name, where or {}) end
   T.adjust = function(key, delta)
     -- 主键/数值字段由宿主按 persist.table 的 schema 推导
-    return bridge.persist.adjust(name, key, delta)
+    return rv(bridge.persist.adjust(name, key, delta), nil)
   end
   -- 条件原子加减：协程单线程 + 同步原语（无挂起点）=> 读-判-写天然串行，双花不可能
   T.adjust_if = function(key, pred, delta)
@@ -783,7 +803,7 @@ end
 function persist.kv(name)
   local K = {
     get = function(k)
-      local j = bridge.kv.get(name, k)
+      local j = rv(bridge.kv.get(name, k), nil)
       if j == nil or j == "" then return nil end
       return decode(j)
     end,
@@ -795,8 +815,8 @@ end
 function persist.log(name)
   bridge.persist.log_declare(name)
   local L = {
-    append = function(fields) return bridge.persist.log_append(name, fields) end,
-    find = function(where) return bridge.persist.log_find(name, where or {}) or {} end,
+    append = function(fields) return rv(bridge.persist.log_append(name, fields), nil) end,
+    find = function(where) return rv(bridge.persist.log_find(name, where or {}), nil) or {} end,
     mark = function(id, state) bridge.persist.log_mark(name, id, state) end,
   }
   _G[name] = L
@@ -804,7 +824,7 @@ end
 
 -- ---------- chat / rex（命令体系已移除：没有命令声明、没有命令参数注入） ----------
 
-rex = setmetatable({}, { __call = function(_, pat) return bridge.util.regex_new(pat) end })
+rex = setmetatable({}, { __call = function(_, pat) return rv(bridge.util.regex_new(pat), nil) end })
 
 local function say(text, kind)
   return call_action("act.chat_send", { text = text, kind = kind or "chat" })
@@ -819,7 +839,8 @@ function chat.run_command(str)
 end
 function chat.msg(to, text)
   if to == nil then return say(text, "chat") end
-  local msg_cmd = bridge.chat.config().msg_command
+  local cfg = rv(bridge.chat.config(), {})
+  local msg_cmd = cfg and cfg.msg_command
   local out
   if msg_cmd ~= nil and msg_cmd ~= "" then out = msg_cmd .. " " .. tostring(to) .. " " .. tostring(text)
   else out = tostring(to) .. " " .. tostring(text) end
@@ -832,9 +853,9 @@ function chat.reply(m, text)
 end
 
 local function rex_search(rid, msg)
-  local m = bridge.util.regex_match(rid, msg.text or "")
+  local m = rv(bridge.util.regex_match(rid, msg.text or ""), nil)
   if m ~= nil then return m end
-  return bridge.util.regex_match(rid, msg.raw or "")
+  return rv(bridge.util.regex_match(rid, msg.raw or ""), nil)
 end
 
 function on_chat(rexid, opts, fn)
@@ -882,7 +903,7 @@ end
 
 time = {
   sleep = function(d) await(bridge.util.sleep(d)) end,
-  now = function() return bridge.util.now() end,
+  now = function() return rv(bridge.util.now(), 0) end,
 }
 
 log = {
@@ -900,14 +921,14 @@ end
 -- 上行：脚本 → 宿主（进入实时流 event 通道，宿主决定转发/丢弃/落库）。
 function events.emit(type, data)
   if type == nil then error({ kind = "event.bad_request", detail = "type 必填" }, 0) end
-  return bridge.events.emit(tostring(type), data or {})
+  return rv(bridge.events.emit(tostring(type), data or {}), nil)
 end
 
 -- ---------- 实体句柄（活读：动态字段每次访问穿透到最新缓存） ----------
 
 local function snap_of(id)
   if id == nil then return nil end
-  return bridge.entities.get(tostring(id))
+  return rv(bridge.entities.get(tostring(id)), nil)
 end
 
 local ent_mt = {
@@ -937,7 +958,7 @@ entity = {
 }
 
 local function self_pos()
-  local sp = bridge.self.get()
+  local sp = rv(bridge.self.get(), nil)
   return sp and sp.pos or nil
 end
 
@@ -988,7 +1009,7 @@ local function pred_match(s, pred)
 end
 
 function entity.find(pred)
-  local list = bridge.entities.list() or {}
+  local list = rv(bridge.entities.list(), {}) or {}
   local out = {}
   for _, s in ipairs(list) do
     if within_ok(s, pred) and pred_match(s, pred) then
@@ -999,7 +1020,7 @@ function entity.find(pred)
 end
 
 function entity.nearest(pred)
-  local list = bridge.entities.list() or {}
+  local list = rv(bridge.entities.list(), {}) or {}
   local sp = self_pos()
   local best, bd
   for _, s in ipairs(list) do
@@ -1018,17 +1039,17 @@ end
 -- ---------- world ----------
 
 world = {
-  block = function(pos) return bridge.world.block(pos) or {} end,
-  block_entity = function(pos) return bridge.world.block_entity(pos) end,
+  block = function(pos) return rv(bridge.world.block(pos), nil) or {} end,
+  block_entity = function(pos) return rv(bridge.world.block_entity(pos), nil) end,
   scan = function(region, pred, opts)
-    return bridge.world.scan(region, pred, (opts or {}).limit) or {}
+    return rv(bridge.world.scan(region, pred, (opts or {}).limit), nil) or {}
   end,
   reach = function(pos, max_distance)
-    return bridge.world.reach(pos, max_distance) or { reachable = false, distance = nil, hit_block = nil }
+    return rv(bridge.world.reach(pos, max_distance), nil) or { reachable = false, distance = nil, hit_block = nil }
   end,
-  dimension = function() return (bridge.world.env() or {}).dimension end,
-  time_of_day = function() return bridge.world.time_of_day() end,
-  weather = function() return bridge.world.weather() end,
+  dimension = function() return (rv(bridge.world.env(), {}) or {}).dimension end,
+  time_of_day = function() return rv(bridge.world.time_of_day(), nil) end,
+  weather = function() return rv(bridge.world.weather(), nil) end,
 }
 
 -- ---------- 容器 / 背包（协议无关的视图；编排在 bslib） ----------
@@ -1044,7 +1065,7 @@ function item_match(item, filter)
   return true
 end
 
-local function win_snap(id) return bridge.window.get(tostring(id)) end
+local function win_snap(id) return rv(bridge.window.get(tostring(id)), nil) end
 
 local win_mt = {
   __index = function(w, k)
@@ -1150,9 +1171,10 @@ container = {
     if bslib and bslib.container_open then
       r = bslib.container_open(target, opts)
     else
-      r = call_action("act.window_open", { target = target })
+      local ar = call_action("act.window_open", { target = target })
+      if ar.ok then r = ar.value else bridge.events.emit("container.failed", { target = encode(target), error = ar.error }) end
     end
-    return r and make_win(r.id) or nil
+    return r and r.id and make_win(r.id) or nil
   end,
   close = function(w)
     return call_action("act.window_close", {
@@ -1160,7 +1182,7 @@ container = {
     })
   end,
   current = function()
-    local id = bridge.window.current()
+    local id = rv(bridge.window.current(), nil)
     return id and make_win(tostring(id)) or nil
   end,
 }
@@ -1191,7 +1213,7 @@ inv = {
     return (s and s.slots) or {}
   end,
   held = function()
-    local s = bridge.self.get()
+    local s = rv(bridge.self.get(), nil)
     return s and s.held or nil
   end,
   click = function(slot, opts)
@@ -1211,7 +1233,7 @@ inv = {
     local slot = slot_or_filter
     if type(slot) ~= "number" then slot = inv.find(slot_or_filter) end
     if slot == nil then return nil end
-    local s = bridge.self.get() or {}
+    local s = rv(bridge.self.get(), nil) or {}
     local held_slot = s.held_slot or s.heldSlot or 0
     if slot ~= held_slot then
       if slot >= 0 and slot <= 8 then
@@ -1283,9 +1305,10 @@ nav = {
     return world.reach(pos).reachable == true
   end,
   hop = function()
-    call_action("act.input", { forward = 0, right = 0, up = 1, sprint = false, sneak = false })
+    local r = call_action("act.input", { forward = 0, right = 0, up = 1, sprint = false, sneak = false })
     time.sleep(100)
     call_action("act.input", { forward = 0, right = 0, up = 0, sprint = false, sneak = false })
+    return r
   end,
 }
 
@@ -1304,7 +1327,7 @@ look = {
     bridge.token.detach(tok)
   end,
   current = function()
-    local s = bridge.self.get() or {}
+    local s = rv(bridge.self.get(), {}) or {}
     return { yaw = ((((s.yaw or 0) % 360) + 360) % 360), pitch = s.pitch or 0 }
   end,
 }
@@ -1318,13 +1341,13 @@ local DEFAULT_ATTACK_INTERVAL = 500
 
 local function stack_info(item)
   if item == nil then return nil end
-  return bridge.item.stack(item)
+  return rv(bridge.item.stack(item), nil)
 end
 
 combat = {
   attack = function(e)
     local id = type(e) == "table" and (rawget(e, "__id") or e.id) or e
-    __LAST_ATTACK = bridge.util.now()
+    __LAST_ATTACK = rv(bridge.util.now(), 0)
     local held = inv.held()
     __LAST_ATTACK_STACK = held
     call_action("act.swing", { hand = "main" })
@@ -1340,7 +1363,7 @@ combat = {
     local st = stack_info(__LAST_ATTACK_STACK)
     local speed = st and st.attributes and st.attributes.attack_speed
     local cd = (speed ~= nil and speed > 0) and math.ceil(600 / speed) or DEFAULT_ATTACK_INTERVAL
-    local left = __LAST_ATTACK + cd - bridge.util.now()
+    local left = __LAST_ATTACK + cd - rv(bridge.util.now(), 0)
     return left > 0 and left or 0
   end,
   use_block = function(pos, opts)
@@ -1362,32 +1385,32 @@ combat = {
 }
 
 self = {
-  username = function() local s = bridge.self.get(); return s and s.username or nil end,
-  pos = function() local s = bridge.self.get(); return s and s.pos or nil end,
-  velocity = function() local s = bridge.self.get(); return s and s.velocity or nil end,
-  health = function() local s = bridge.self.get(); return s and s.health or nil end,
-  food = function() local s = bridge.self.get(); return s and s.food or nil end,
-  held = function() local s = bridge.self.get(); return s and s.held or nil end,
-  gamemode = function() local s = bridge.self.get(); return s and s.gamemode or nil end,
-  effects = function() local s = bridge.self.get(); return s and s.effects or nil end,
-  attributes = function() local s = bridge.self.get(); return s and s.attributes or nil end,
-  pose = function() local s = bridge.self.get(); return s and s.pose or nil end,
+  username = function() local s = rv(bridge.self.get(), nil); return s and s.username or nil end,
+  pos = function() local s = rv(bridge.self.get(), nil); return s and s.pos or nil end,
+  velocity = function() local s = rv(bridge.self.get(), nil); return s and s.velocity or nil end,
+  health = function() local s = rv(bridge.self.get(), nil); return s and s.health or nil end,
+  food = function() local s = rv(bridge.self.get(), nil); return s and s.food or nil end,
+  held = function() local s = rv(bridge.self.get(), nil); return s and s.held or nil end,
+  gamemode = function() local s = rv(bridge.self.get(), nil); return s and s.gamemode or nil end,
+  effects = function() local s = rv(bridge.self.get(), nil); return s and s.effects or nil end,
+  attributes = function() local s = rv(bridge.self.get(), nil); return s and s.attributes or nil end,
+  pose = function() local s = rv(bridge.self.get(), nil); return s and s.pose or nil end,
 }
 
 session = {
-  state = function() return (bridge.session.get() or {}).state end,
-  info = function() return (bridge.session.get() or {}).info end,
-  paused = function() return (bridge.session.get() or {}).paused == true end,
+  state = function() return (rv(bridge.session.get(), {}) or {}).state end,
+  info = function() return (rv(bridge.session.get(), {}) or {}).info end,
+  paused = function() return (rv(bridge.session.get(), {}) or {}).paused == true end,
 }
 
 caps = {
-  has = function(flag) return bridge.caps.get(flag) == true end,
-  server_version = function() return ((bridge.session.get() or {}).info or {}).version end,
+  has = function(flag) return rv(bridge.caps.get(flag), false) == true end,
+  server_version = function() return ((rv(bridge.session.get(), {}) or {}).info or {}).version end,
 }
 
 data = {
   -- 组件真值：传完整/部分 stack（id 也可），宿主按 stack 组件解析
-  stack = function(item) return bridge.item.stack(item) end,
+  stack = function(item) return rv(bridge.item.stack(item), nil) end,
 }
 
 -- ---------- 宿主 → 核心（__core_call，显式反向契约） ----------

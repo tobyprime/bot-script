@@ -24,8 +24,8 @@ export async function makeEngine({ yaml = {}, scripts = [], driver, boundary, ru
     scripts,
   }, d, {
     scriptDir: TEST_DIR,
-    // v2：边界经 opts.boundary（实例部署层）；缺省给空 boundary（已授权实例），
-    // 观察模式（默认全拒）由用例显式传 boundary: null 验证
+    // v2：边界经 opts.boundary（实例部署层）；缺省给空 boundary（= 不限制），
+    // boundary: null 同样表示不限制（用于验证默认开放）
     boundary: boundary !== undefined ? boundary : (yaml.boundary ?? yaml.policy ?? {}),
     connect: yaml.connect ?? yaml.driver ?? { version: '1.21.8' },
     runtime,

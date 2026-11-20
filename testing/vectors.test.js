@@ -147,7 +147,6 @@ test('abi-conformance：清单里的每个 op 都有 dispatch 实现（不得 ab
     'window.get': { window: '0' },
     'item.stack': { stack: { id: 'minecraft:dirt' } },
     'chat.config': {},
-    'policy.authority': {},
     'persist.table': { name: 'VT', schema: { k: 'string:key', v: 'number' } },
     'persist.find': { name: 'VT', where: {} },
     'persist.all': { name: 'VT' },
@@ -185,9 +184,8 @@ test('abi-conformance：清单里的每个 op 都有 dispatch 实现（不得 ab
     'act.window_close': {},
   };
   for (const op of Object.keys(SYNC_OPS)) {
-    try { engine.abi.sync(op, JSON.stringify(minimal[op] ?? {})); } catch (e) {
-      if (e.kind === 'abi.unknown_op') bad.push(`sync:${op}`);
-    }
+    const r = JSON.parse(engine.abi.sync(op, JSON.stringify(minimal[op] ?? {})) || '{}');
+    if (r.ok === false && r.error?.code === 'abi.unknown_op') bad.push(`sync:${op}`);
   }
   for (const op of Object.keys(ASYNC_OPS)) {
     const token = engine.abi.asyncOp(op, JSON.stringify(minimal[op] ?? {}));

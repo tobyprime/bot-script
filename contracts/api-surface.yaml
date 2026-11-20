@@ -5,6 +5,11 @@
 #
 # v2：命令体系整体移除（没有 on_command / 命令声明 / 命令参数注入）；
 #     物品数据改为 data.stack（读 ItemStack 组件），不再有 data.stack_size / data.weapon_score。
+#
+# Result 约定（ABI v2.1）：可能失败的 ABI/动作方法返回
+#   {ok=true, value=<结果>} | {ok=false, error={code=<稳定码>, message=<文案>}}
+# 纯查询（self.pos/world.block/entity.*/inv.*/persist.*…）仍返回原值。
+# 任务取消不是 Result 错误：取消会展开当前任务并运行 on_cancel，不会进入 on_error。
 abi: 2
 
 stdlib_allow:
@@ -36,7 +41,7 @@ globals:
   on_event: { kind: function, doc: "on_event(name, fn) — 平台/宿主事件" }
   on_cancel: { kind: function, doc: "on_cancel(fn) — 任务取消钩" }
   on_chat: { kind: function, doc: "on_chat(rex, [opts], fn) — opts: source=player|system, from=name" }
-  await_chat: { kind: function, doc: "await_chat(rex, timeout_ms) → 命名分组 table | nil" }
+  await_chat: { kind: function, doc: "await_chat(rex, timeout_ms) → Result（value = 命名分组 table | nil）" }
   chat:
     kind: namespace
     doc: 发言（策略由宿主 gate 执行）
@@ -81,7 +86,7 @@ globals:
   nav:
     kind: namespace
     members:
-      walk: "nav.walk(pos|[entity], {arrive, timeout}) → {ok, reason?}"
+      walk: "nav.walk(pos|[entity], {arrive, timeout}) → Result（失败 error.code = policy.* / nav.*）"
       goto_near: "nav.goto_near(pos, radius, opts?)"
       follow: "nav.follow(entity, {distance})"
       stop: "nav.stop()"
@@ -159,7 +164,7 @@ globals:
   events:
     kind: namespace
     members:
-      next: "events.next(timeout_ms) → {type,data,ts}|nil"
+      next: "events.next(timeout_ms) → Result（value = {type,data,ts} | nil）"
       emit: "events.emit(type, data)"
   time:
     kind: namespace
@@ -197,5 +202,3 @@ globals:
       parallel: "同 parallel"
       with_timeout: "同 with_timeout"
       wait_until: "同 wait_until"
-      authority_level: "bslib.authority_level(name) → 10/20/60/80"
-      authorized: "bslib.authorized(name, perm) — 操作员判定（boundary.authority 只读）"

@@ -1,6 +1,5 @@
 package com.botscript.mod.runtime;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
@@ -10,6 +9,7 @@ import java.util.List;
 
 /**
  * 策略层（ABI v2）：没有命令体系；gate 覆盖协议动作；容器/聊天/战斗/挖掘/放置/移动。
+ * 默认开放：boundary / 字段缺省 = 不限制；显式配置才收紧。
  * 与 Node 宿主（hosts/node/policy.js）同规则，由 contracts/vectors/policy/*.json 保证同判。
  */
 public final class Policy {
@@ -41,30 +41,6 @@ public final class Policy {
         return o;
     }
 
-    public JsonObject authorityConfig() {
-        JsonObject o = new JsonObject();
-        JsonArray owner = new JsonArray();
-        cfg.authorityOwner.forEach(owner::add);
-        JsonArray op = new JsonArray();
-        cfg.authorityOp.forEach(op::add);
-        JsonArray wl = new JsonArray();
-        cfg.authorityWhitelist.forEach(wl::add);
-        o.add("owner", owner);
-        o.add("op", op);
-        o.add("whitelist", wl);
-        return o;
-    }
-
-    // ---- 权限（供测试/GUI） ----
-    public int authorityLevel(String sender) {
-        if (sender == null) return 100;
-        if (sender.isEmpty()) return 0;
-        if (cfg.authorityOwner.contains(sender)) return 80;
-        if (cfg.authorityOp.contains(sender)) return cfg.authorityOwner.isEmpty() ? 80 : 60;
-        if (cfg.authorityWhitelist.contains(sender)) return 20;
-        return 10;
-    }
-
     // ---- 预算 / 速率 ----
     public boolean countAction() {
         budgetCount++;
@@ -82,13 +58,8 @@ public final class Policy {
         return null;
     }
 
-    // ---- 动作门控 ----
+    // ---- 动作门控（缺省 = 允许） ----
     public String check(String op, JsonObject args) {
-        if (!cfg.boundaryConfigured) {
-            if (!op.startsWith("act.")) return null;   // 调度类原语不受观察模式影响
-            return LuaRuntime.errJson("permission.denied",
-                    "实例未配置 boundary（观察模式）：查询与 params 可用，动作全拒");
-        }
         if ("act.chat_send".equals(op)) {
             String kind = args.has("kind") && !args.get("kind").isJsonNull() ? args.get("kind").getAsString() : "chat";
             return checkChat(kind, args.has("text") ? args.get("text").getAsString() : "");
@@ -117,11 +88,11 @@ public final class Policy {
             return null;
         }
         if ("act.dig".equals(op)) {
-            return granted(cfg.blocksDig) ? null : LuaRuntime.errJson("policy.blocklist", "dig 未授权（boundary.blocks.dig）");
+            return denied(cfg.blocksDig) ? LuaRuntime.errJson("policy.blocklist", "dig 未授权（boundary.blocks.dig）") : null;
         }
         if ("act.use_block".equals(op)) {
             String intent = args.has("intent") && !args.get("intent").isJsonNull() ? args.get("intent").getAsString() : "use";
-            if ("place".equals(intent) && !granted(cfg.blocksPlace)) {
+            if ("place".equals(intent) && denied(cfg.blocksPlace)) {
                 return LuaRuntime.errJson("policy.blocklist", "place 未授权（boundary.blocks.place）");
             }
             return null;
@@ -129,9 +100,7 @@ public final class Policy {
         if ("act.use_entity".equals(op)) {
             String kind = args.has("kind") && !args.get("kind").isJsonNull() ? args.get("kind").getAsString() : "attack";
             if (!"attack".equals(kind)) return null;
-            if (cfg.combatTargets == null) {
-                return LuaRuntime.errJson("policy.blocklist", "combat 未授权（boundary.combat.targets）");
-            }
+            if (cfg.combatTargets == null) return null;   // 未配置 targets = 不限制目标
             String id = args.has("id") ? args.get("id").getAsString() : "";
             JsonObject e = entities.get(id);
             if (e == null) return LuaRuntime.errJson("entity.gone", id);
@@ -157,7 +126,7 @@ public final class Policy {
             boolean touch = "act.window_open".equals(op)
                     || (args.has("window") && !"0".equals(args.get("window").getAsString()))
                     || containerOpen.get();
-            if (touch && cfg.containersConfigured && !granted(cfg.containers)) {
+            if (touch && denied(cfg.containers)) {
                 return LuaRuntime.errJson("policy.blocklist", "容器访问未授权（boundary.containers）");
             }
             return null;
@@ -165,23 +134,28 @@ public final class Policy {
         return null;
     }
 
-    // ---- chat 策略：command 走白名单/正则；chat/reply 走 say 限速 ----
+    // ---- chat 策略：command 走白名单/正则；chat/reply 走 say 限速（缺省不限） ----
     public String checkChat(String kind, String text) {
         if ("command".equals(kind)) {
             String full = text.startsWith("/") ? text : "/" + text;
-            String first = full.substring(1).split("\\s+")[0];
-            String ns = first.contains(":") ? first.substring(first.indexOf(':') + 1) : first;
-            boolean ok = cfg.chatCommandsWhitelist.contains(first) || cfg.chatCommandsWhitelist.contains("/" + ns);
-            if (!ok) return LuaRuntime.errJson("permission.denied", "命令白名单不含 /" + ns);
+            if (!cfg.chatCommandsWhitelist.isEmpty()) {
+                String first = full.substring(1).split("\\s+")[0];
+                String ns = first.contains(":") ? first.substring(first.indexOf(':') + 1) : first;
+                boolean ok = cfg.chatCommandsWhitelist.contains(first) || cfg.chatCommandsWhitelist.contains("/" + ns);
+                if (!ok) return LuaRuntime.errJson("permission.denied", "命令白名单不含 /" + ns);
+            }
             return checkRegex(full);
         }
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("^(\\d+)/(\\w+)$").matcher(cfg.chatSayRate);
-        int limit = m.matches() ? Integer.parseInt(m.group(1)) : 10;
-        long windowMs = m.matches() && m.group(2).equals("min") ? 60_000 : 1000;
+        String rate = cfg.chatSayRate;
+        if (rate == null || rate.isBlank()) return null;   // 未配置 = 不限
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("^(\\d+)/(\\w+)$").matcher(rate);
+        if (!m.matches()) return LuaRuntime.errJson("policy.config", "say_rate 格式无效（" + rate + "），应为 N/min 或 N/sec");
+        int limit = Integer.parseInt(m.group(1));
+        long windowMs = m.group(2).equals("min") ? 60_000 : 1000;
         long now = System.currentTimeMillis();
         chatTokens.removeIf((t) -> now - t >= windowMs);
         if (chatTokens.size() >= limit) {
-            return LuaRuntime.errJson("permission.denied", "say 限速（" + cfg.chatSayRate + "）");
+            return LuaRuntime.errJson("permission.denied", "say 限速（" + rate + "）");
         }
         chatTokens.add(now);
         return null;
@@ -215,8 +189,8 @@ public final class Policy {
         return Boolean.FALSE;
     }
 
-    private static boolean granted(String v) {
-        return v != null && !"deny".equals(v) && !"false".equalsIgnoreCase(v);
+    private static boolean denied(String v) {
+        return v != null && ("deny".equals(v) || "false".equalsIgnoreCase(v));
     }
 
     private static String fmt(double d) {
