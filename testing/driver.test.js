@@ -416,3 +416,17 @@ test('重连 teardown：对端不关连接时主动 destroy socket（不得等 m
   assert.ok(order.includes('plugin-cleanup'), 'destroy 触发的 close→end 必须让插件 cleanup 执行');
   assert.ok(ms < 2000, `teardown 不应拖到 2s 兜底（实际 ${ms}ms）`);
 });
+
+test('驱动连接选项：view_distance 必须走顶层 viewDistance（嵌套 settings 会被 mineflayer 忽略）', async () => {
+  const { botOptions } = await import('../hosts/node/drivers/mineflayer/index.js');
+  const o = botOptions({ viewDistance: 2, account: { username: 'Bot' }, host: 'h', port: 1, version: '1.21.8' });
+  // mineflayer settings 插件只读 options.viewDistance；这里是唯一能被它采用的键
+  assert.strictEqual(o.viewDistance, 2, '顶层 viewDistance 缺失时实例的 view_distance 会被静默忽略（服务端按 far=12 推送）');
+  assert.strictEqual(o.settings.viewDistance, 2);
+  assert.strictEqual(o.clientSettings.viewDistance, 2);
+  assert.strictEqual(botOptions({}).viewDistance, 6, '未设置时默认 6');
+  assert.strictEqual(botOptions({ viewDistance: 1 }).viewDistance, 2, '下限夹到 2');
+  assert.strictEqual(botOptions({ viewDistance: 99 }).viewDistance, 12, '上限夹到 12');
+  assert.strictEqual(botOptions({ account: {} }).auth, 'offline');
+  assert.strictEqual(typeof botOptions({ account: { username: 'u', auth: 'session', uuid: 'i', accessToken: 't' } }).auth, 'function');
+});

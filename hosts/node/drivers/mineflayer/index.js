@@ -76,6 +76,53 @@ function rawPredMatch(e, pred, selfPos) {
   return true;
 }
 
+/**
+ * 组装 mineflayer createBot 选项（连接层契约 {host, port, version, account, viewDistance}）。
+ *
+ * ⚠️ view_distance 必须放在顶层 `viewDistance`：mineflayer 的 settings 插件只读
+ * `options.viewDistance`（缺省 'far' = 12），嵌套的 `settings`/`clientSettings` 根本不会
+ * 被它采用。只给嵌套键的后果是实例里设的 view_distance 被静默忽略，服务端按 12 区块
+ * 推送世界数据 —— 单 bot 就能把 agent 的 0.6 CPU 配额打满（区块解析 + 物理），而 Lua
+ * 脚本本身并不忙。`clientSettings` 仍保留：minecraft-protocol 建连时的初始 settings 包用它。
+ */
+export function botOptions(cfg = {}) {
+  const acct = cfg.account ?? {};
+  const vd = Math.max(2, Math.min(12, Number(cfg.viewDistance) || 6));
+  const opts = {
+    host: cfg.host ?? '127.0.0.1',
+    port: cfg.port ?? 25565,
+    username: acct.username ?? 'bot',
+    version: cfg.version ?? undefined,
+    hideErrors: false,
+    viewDistance: vd,
+    settings: { viewDistance: vd },
+    clientSettings: { viewDistance: vd },
+  };
+  if (acct.auth === 'session') {
+    opts.auth = (client, options) => {
+      const profile = { id: acct.uuid, name: acct.username };
+      options.haveCredentials = true;
+      options.accessToken = acct.accessToken;
+      client.session = { accessToken: acct.accessToken, selectedProfile: profile, availableProfiles: [profile] };
+      client.username = acct.username;
+      client.emit('session', client.session);
+      options.connect(client);
+    };
+  } else if (acct.password) {
+    opts.password = acct.password;
+    opts.auth = 'microsoft';
+  } else if (acct.uuid) {
+    opts.auth = (client, options) => {
+      client.session = { selectedProfile: { id: acct.uuid, name: acct.username } };
+      client.username = acct.username;
+      options.connect(client);
+    };
+  } else {
+    opts.auth = 'offline';
+  }
+  return opts;
+}
+
 export class MineflayerDriver {
   constructor({ log = console.log } = {}) {
     this.log = log;
@@ -127,39 +174,7 @@ export class MineflayerDriver {
     const pf = pfMod.default ?? pfMod;
     this.pf = typeof pf === 'function' ? pf : pf.pathfinder;
     this.pfMod = pf;
-    const acct = cfg.account ?? {};
-    const vd = Math.max(2, Math.min(12, Number(cfg.viewDistance) || 6));
-    const botOpts = {
-      host: cfg.host ?? '127.0.0.1',
-      port: cfg.port ?? 25565,
-      username: acct.username ?? 'bot',
-      version: cfg.version ?? undefined,
-      hideErrors: false,
-      settings: { viewDistance: vd },
-      clientSettings: { viewDistance: vd },
-    };
-    if (acct.auth === 'session') {
-      botOpts.auth = (client, options) => {
-        const profile = { id: acct.uuid, name: acct.username };
-        options.haveCredentials = true;
-        options.accessToken = acct.accessToken;
-        client.session = { accessToken: acct.accessToken, selectedProfile: profile, availableProfiles: [profile] };
-        client.username = acct.username;
-        client.emit('session', client.session);
-        options.connect(client);
-      };
-    } else if (acct.password) {
-      botOpts.password = acct.password;
-      botOpts.auth = 'microsoft';
-    } else if (acct.uuid) {
-      botOpts.auth = (client, options) => {
-        client.session = { selectedProfile: { id: acct.uuid, name: acct.username } };
-        client.username = acct.username;
-        options.connect(client);
-      };
-    } else {
-      botOpts.auth = 'offline';
-    }
+    const botOpts = botOptions(cfg);
     const bot = mineflayer.createBot(botOpts);
     this.bot = bot;
 
