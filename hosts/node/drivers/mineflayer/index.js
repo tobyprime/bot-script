@@ -89,6 +89,9 @@ export class MineflayerDriver {
     this.pathWait = null;
     this.alive = false;
     this.transportErrLogged = false;
+    // 主动拆旧 bot 期间为 true：此时 bot 的 kicked/end/error 不得再向外发 session 事件
+    // （否则引擎会把「我们自己拆掉的连接」当成一次断线，安排重复重连）
+    this.tearingDown = false;
   }
 
   on(evt, cb) {
@@ -118,6 +121,7 @@ export class MineflayerDriver {
     this.cfg = cfg;
     this.alive = false;
     this.transportErrLogged = false;
+    this.tearingDown = false;
     const mineflayer = (await import('mineflayer')).default;
     const pfMod = await import('mineflayer-pathfinder');
     const pf = pfMod.default ?? pfMod;
@@ -186,6 +190,7 @@ export class MineflayerDriver {
     });
     bot.on('kicked', (reason) => {
       this.alive = false;
+      if (this.tearingDown) return;
       const text = reasonText(reason).slice(0, 500);
       this.trace?.flush(`kicked: ${text}`);
       this.emit('session', { state: 'kicked', reason: text });
@@ -193,12 +198,14 @@ export class MineflayerDriver {
     bot.on('end', (reason) => {
       this.alive = false;
       this.stopSampling();
+      if (this.tearingDown) return;
       const text = reasonText(reason).slice(0, 500);
       this.trace?.flush(`disconnected: ${text}`);
       this.emit('session', { state: 'disconnected', reason: text });
     });
     bot.on('error', (e) => {
       this.alive = false;
+      if (this.tearingDown) return;
       const code = e?.code ?? '';
       if (code === 'EPIPE' || code === 'ECONNRESET') {
         if (!this.transportErrLogged) {
@@ -232,28 +239,61 @@ export class MineflayerDriver {
 
   async stop() {
     this.stopSampling();
-    this.teardownBot();
-    try { this.bot?.quit(); } catch { /* ignore */ }
+    await this.teardownBot();
   }
 
   async reconnect(cfg) {
     this.stopSampling();
-    this.teardownBot();
-    this.bot = null;
+    await this.teardownBot();
     await this.connect(cfg);
   }
 
-  teardownBot() {
+  /**
+   * 拆掉当前 bot。顺序很关键：**必须让 mineflayer 自己的 'end' 路径先跑完**再摘监听器。
+   *
+   * mineflayer 的插件（physics 每 50ms 的 setInterval、keepalive 等）把清理函数挂在
+   * bot.on('end') 上，而 bot 'end' 由 loader 的 client.on('end') 转发。若先
+   * removeAllListeners() 再 end()，两侧的 'end' 清理都被摘掉 → physics interval 永久
+   * 存活并拖住整个 bot 图（world/chunks/registry/实体）；每次重连泄漏一个 bot，
+   * 长跑后共享 host 进程内存持续上涨，最终被容器 cgroup OOM 杀掉（实例侧表现为
+   * 「worker 消失但 host 无退出记录」）。
+   *
+   * 另外 minecraft-protocol 的 Client.end() 只挂 30s 的 closeTimer；对端不主动关连接时
+   * 'end' 可能迟迟不来，所以这里主动 destroy socket 把 close→end 提前。
+   */
+  async teardownBot() {
     const b = this.bot;
+    this.bot = null;
     if (!b) return;
+    this.tearingDown = true;   // 抑制本驱动在拆机期间外发 session 事件
     try { this.trace?.off(); } catch { /* ignore */ }
     this.trace = null;
     try { this._patchRuntime?.uninstall(); } catch { /* ignore */ }
     this._patchRuntime = null;
+    const c = b._client;
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(hard);
+        clearTimeout(force);
+        resolve();
+      };
+      const hard = setTimeout(finish, 2000);   // 兜底：2s 内 end 不到也不能卡住重连
+      const force = setTimeout(() => { try { c?.socket?.destroy?.(); } catch { /* ignore */ } }, 250);
+      try { b.once('end', finish); } catch { /* ignore */ }
+      try {
+        if (typeof b.quit === 'function') b.quit('driver teardown');
+        else b.end();
+      } catch {
+        try { b.end(); } catch { /* ignore */ }
+      }
+    });
+    this.alive = false;
     try { b.removeAllListeners(); } catch { /* ignore */ }
-    try { b._client?.removeAllListeners?.(); } catch { /* ignore */ }
-    try { b._client?.end?.(); } catch { /* ignore */ }
-    try { b.end(); } catch { /* ignore */ }
+    try { c?.removeAllListeners?.(); } catch { /* ignore */ }
+    this.tearingDown = false;
   }
 
   // ================= L1 数据面 =================

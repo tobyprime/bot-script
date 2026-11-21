@@ -363,3 +363,56 @@ test('pushSelf：背包列表按脏标记重建（空闲采样不再遍历背包
   driver.pushSelf();
   assert.strictEqual(itemsCalls, 2, '背包变更后应重建一次');
 });
+
+test('重连 teardown：必须等 bot end（插件 cleanup）跑完再摘监听器', async () => {
+  const { MineflayerDriver } = await import('../hosts/node/drivers/mineflayer/index.js');
+  const { EventEmitter } = await import('node:events');
+  const driver = new MineflayerDriver({ log: () => {} });
+  const bot = new EventEmitter();
+  const order = [];
+  // mineflayer physics / keepalive 等插件把清理函数挂在 bot 'end' 上
+  bot.on('end', () => order.push('plugin-cleanup'));
+  let ended = false;
+  const doEnd = () => { setTimeout(() => { if (ended) return; ended = true; bot.emit('end'); }, 20); };
+  bot.end = doEnd;
+  bot.quit = doEnd;
+  bot._client = {
+    socket: { destroy: () => order.push('socket-destroy') },
+    removeAllListeners: () => order.push('client-removeAll'),
+  };
+  bot.removeAllListeners = () => { order.push('bot-removeAll'); EventEmitter.prototype.removeAllListeners.call(bot); };
+  driver.bot = bot;
+  await driver.teardownBot();
+  assert.ok(order.includes('plugin-cleanup'), '插件的 end cleanup 必须执行（否则 interval 泄漏并拖住整个 bot 图）');
+  assert.ok(order.indexOf('plugin-cleanup') < order.indexOf('bot-removeAll'),
+    `先 cleanup 再 removeAllListeners；实际顺序 ${order.join(' -> ')}`);
+  assert.strictEqual(driver.bot, null, 'teardown 后不得再持有旧 bot');
+  assert.strictEqual(driver.tearingDown, false, 'teardown 结束后 tearingDown 必须复位');
+});
+
+test('重连 teardown：对端不关连接时主动 destroy socket（不得等 minecraft-protocol 的 30s）', async () => {
+  const { MineflayerDriver } = await import('../hosts/node/drivers/mineflayer/index.js');
+  const { EventEmitter } = await import('node:events');
+  const driver = new MineflayerDriver({ log: () => {} });
+  const bot = new EventEmitter();
+  const order = [];
+  bot.on('end', () => order.push('plugin-cleanup'));
+  let ended = false;
+  const fireEnd = () => { if (ended) return; ended = true; bot.emit('end'); };
+  bot.end = () => { order.push('bot-end-called'); };   // 模拟：只挂 30s closeTimer，不主动关
+  bot.quit = bot.end;
+  bot._client = {
+    socket: {
+      destroy: () => { order.push('socket-destroy'); setTimeout(fireEnd, 10); },
+    },
+    removeAllListeners: () => order.push('client-removeAll'),
+  };
+  bot.removeAllListeners = () => { order.push('bot-removeAll'); EventEmitter.prototype.removeAllListeners.call(bot); };
+  driver.bot = bot;
+  const t0 = Date.now();
+  await driver.teardownBot();
+  const ms = Date.now() - t0;
+  assert.ok(order.includes('socket-destroy'), '必须主动 destroy socket，否则 end 可能拖到 30s');
+  assert.ok(order.includes('plugin-cleanup'), 'destroy 触发的 close→end 必须让插件 cleanup 执行');
+  assert.ok(ms < 2000, `teardown 不应拖到 2s 兜底（实际 ${ms}ms）`);
+});
