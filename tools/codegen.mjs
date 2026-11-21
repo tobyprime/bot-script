@@ -1,11 +1,11 @@
 // tools/codegen.mjs — 契约 → 代码（唯一生成入口）
 //
 //   contracts/host-abi.yaml ─┬─▶ runtime/lua/core/bridge.generated.lua
-//                            ├─▶ hosts/node/abi.generated.js
-//                            └─▶ mod/src/main/java/com/botscript/mod/runtime/AbiOps.generated.java
+//                            └─▶ hosts/node/abi.generated.js
 //   contracts/api-surface.yaml ─▶ engine/lua/bot-api.d.lua（编辑器补全 + api-lint 依据）
 //   contracts/http17.openapi.yaml ─▶ hosts/node/http17.routes.generated.js
-//                                   mod/src/main/java/com/botscript/mod/runtime/HttpRoutes.generated.java
+//
+// Fabric mod 已归档（archive/fabric-mod），不再生成 Java 产物。
 //
 // 用法：node tools/codegen.mjs [--check]
 //   --check：只比对磁盘产物与生成结果，不一致即退出 1（CI 的 contract-lint 用它）。
@@ -305,10 +305,8 @@ ${routes.map((r) => `            new Route("${r.method}", "${r.path}", "${r.oper
 const ARTIFACTS = [
   ['runtime/lua/core/bridge.generated.lua', luaBridge],
   ['hosts/node/abi.generated.js', jsAbi],
-  ['mod/src/main/java/com/botscript/mod/runtime/AbiOps.java', javaAbi],
   ['engine/lua/bot-api.d.lua', luaApi],
   ['hosts/node/http17.routes.generated.js', jsRoutes],
-  ['mod/src/main/java/com/botscript/mod/runtime/HttpRoutes.java', javaRoutes],
 ];
 
 const checkMode = process.argv.includes('--check');

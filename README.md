@@ -27,7 +27,7 @@ hosts/node/                Node 宿主（薄适配器）
   http17.js                        §17 控制通道（路由表由 openapi 生成）
   runners/{cli,worker,cluster}.js  进程模型与退出分类
   drivers/mineflayer/              协议驱动 + patches/（版本适配登记表）
-hosts/fabric（mod/）        Fabric 宿主：AbiDispatcher / McState / LuaRuntime / DataRegistry / HttpApi
+archive/fabric-mod/        已归档的 Fabric 宿主（不构建、不发布；日后重启用，见目录 README）
 engine/                    兼容入口：cli.js（含 validate 子命令）与 host.js 只做转发
 tools/                     codegen · contract-lint · lua-sync · api-lint · validate · gen-data-vectors
 testing/                   按域拆分的测试 + harness + 向量执行器（node testing/run.js）
@@ -36,7 +36,7 @@ examples/                  验收场景（bank / organizer / coal_guard / heart 
 
 ## 快速开始
 
-环境：Node >= 24（需 node:sqlite）、Java 21+、可访问互联网（首次 npm install）。
+环境：Node >= 24（需 node:sqlite）、可访问互联网（首次 npm install）。引擎当前只维护 mineflayer 宿主。
 
 ```bash
 npm install
@@ -62,14 +62,7 @@ node engine/cli.js run/bank-demo.yaml
 #     curl -H "Authorization: Bearer <token>" http://127.0.0.1:<port>/state
 #     （/params /pause /resume /eval /event /session /tasks /tasks/cancel /logs /stream /chat /store /caps）
 
-# 4) fabric 宿主（standalone，无需任何外部进程）
-cd mod && ./gradlew build
-#   产物：mod/build/libs/botscript-mod-0.4.0.jar -> 放入客户端实例 mods/ 目录
-#   构建期从 ../runtime/lua 与 ../contracts/data 拷入资源（仓内不保留第二份 Lua 拷贝）
-#   脚本包：<游戏目录>/botscript/<包名>/（整包复制，含 bot.yaml 清单）
-#   实例配置：<游戏目录>/config/botscript-mod.json:
-#     {"package": "bank", "boundary": {}}
-#   进世界自动加载；游戏内 /bsclient 打开管理界面（§16.5 五页）。
+# 4) Fabric mod：已归档（archive/fabric-mod），不再构建/发布；日后重启须先对齐 ABI 与可选库。
 ```
 
 ## 实连验收（本地 Paper 服务器）
@@ -169,7 +162,7 @@ organizer 冷启动扫描+organize once 分流（2 项）；coal_guard 举煤追
 
 ## 已知限制
 
-- fabric 驱动无寻路器：`nav.walk` 走核心直线退化（`act.input` + `act.look`）；复杂地形显式失败。
+- 无寻路器：`nav.walk` 返回 `nav.unsupported`（不再直线退化）；需要直线移动的脚本自行用输入原语。
 - Fabric 宿主暂未实现自定义网络包：`caps.has("net.custom_payload")=false`，`net.send` 返回 `net.unsupported`。
 - 挖掘由宿主状态机驱动 `player_action`（START + 进度 + STOP），完成以方块变空为准。
 - Node 侧 ItemStack 组件来自网络组件（prismarine-item）；`attribute_modifiers` 只做通用属性提取，

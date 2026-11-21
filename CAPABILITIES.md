@@ -632,7 +632,10 @@ world.dimension()  world.time_of_day()  world.weather()  world.biome(pos)  world
 
 ---
 
-## 16. 客户端 mod 驱动（fabric）能力定义
+## 16. 客户端 mod 驱动（fabric）能力定义（已归档）
+
+> **2026-11-21 归档**：Fabric mod 源码移入 `archive/fabric-mod/`，不再随引擎构建/发布，CI 不再产出 jar。
+> 本章保留为历史能力定义；日后重启 mod 前需先对齐当前 ABI v2.1 与可选库（`bslib` / `container_lib`）。
 
 > **v2 现状**：mod 已 standalone——内嵌 Luaj（LuaRuntime）经 AbiDispatcher 直接服务 `<游戏目录>/botscript/<包名>/` 脚本包，
 > 无 Node 进程依赖。v1 的 WS 连接层实现已随 v2 清理删除（原 `mod/legacy-ws-client/` 归档）；

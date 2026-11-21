@@ -38,26 +38,3 @@ jobs:
           for d in examples/*/; do
             node engine/cli.js validate "$d" || exit 1
           done
-
-  mod:
-    name: fabric mod 构建（Luaj 契约向量 + 打包）
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
-      # gradle processResources 会从 ../runtime/lua 与 ../contracts/data 拷入资源；
-      # JUnit（LuaRuntimeTest/RuntimeContractTest）跑同一份 contracts/vectors。
-      - name: gradle build
-        run: |
-          cd mod
-          chmod +x gradlew
-          ./gradlew build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: botscript-mod
-          path: mod/build/libs/botscript-mod-*.jar
-          if-no-files-found: error

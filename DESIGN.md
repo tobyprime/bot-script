@@ -43,7 +43,7 @@
 
 宿主 = 原生桥 + 内嵌 Lua（各自独立进程，即 bot 本体）
   mineflayer 宿主   Node 程序：wasmoon + engine.js `__` 桥（契约 op 表生成）
-  fabric mod        JVM：Luaj（LuaRuntime `__` 桥）+ McRuntime + GUI 管理界面（支持 1.21.8~26.2）
+  fabric mod（已归档，archive/fabric-mod）  JVM：Luaj（LuaRuntime `__` 桥）+ McRuntime + GUI 管理界面
   mcc 宿主（规划）   C#：MoonSharp/NLua 桥 + 动作实现
 
 每宿主内置协议通用 HTTP API（常开、只绑 127.0.0.1、token 启动时生成并打印，规格见 CAPABILITIES.md §17）
@@ -388,8 +388,9 @@ HTTP API 是宿主常开能力（只绑 127.0.0.1、默认端口冲突自动顺�
 绑定覆盖属宿主启动参数（env），不存在于任何通用配置。
 **默认开放**：包不含任何边界；未配置 boundary 的实例不限制动作，显式字段才收紧。宿主强制执行边界（脚本不可绕过，§5.1）。
 （实现现状（已落地）：mineflayer 宿主以**部署配置 yaml** 启动（`node engine/cli.js run/bank-demo.yaml`），
-包清单从 `package:` 目录加载；状态路径由宿主固定为实例目录下的 `state/`（包无权指定）；
-fabric 宿主实例配置 = `<游戏目录>/config/botscript-mod.json`（package + boundary）。）
+包清单从 `package:` 目录加载；状态路径由宿主固定为实例目录下的 `state/`（包无权指定）。
+Fabric 宿主已归档到 `archive/fabric-mod/`，不再构建/发布；历史实例配置为
+`<游戏目录>/config/botscript-mod.json`（package + boundary）。）
 
 ---
 
@@ -398,7 +399,7 @@ fabric 宿主实例配置 = `<游戏目录>/config/botscript-mod.json`（package
 ```
 /engine/lua  共享纯 Lua 核心：bootstrap.lua（调度/任务/句柄）+ bslib.lua（行为策略），三栈复用
 /engine      mineflayer 宿主（Node）：wasmoon + engine.js `__` 桥 + cli + HTTP 控制
-/mod         fabric 宿主（JVM，standalone）：LuaHost(Luaj) + McRuntime + PersistStore/Policy + HTTP 控制
+/mod         fabric 宿主源码已归档到 `/archive/fabric-mod`（不构建、不发布；日后重启前需对齐 ABI）
 /hosts/mcc   mcc 宿主（C#，规划）：MoonSharp/NLua 桥 + 动作实现 + HTTP 控制
 /examples    bank / organizer / coal_guard / heart（验收集，各含 bot.yaml + .lua 入口与模块；
              haul/hunt 作为①②推导样例内嵌于本文档 §2.4）
@@ -410,7 +411,7 @@ fabric 宿主实例配置 = `<游戏目录>/config/botscript-mod.json`（package
 |---|---|---|
 | M0 | 语言规范 + HAL 定稿 + 共享 Lua 核心抽取 | 示例脚本全部通过静态检查 |
 | M1 | mineflayer 宿主（wasmoon 桥 + HTTP 控制） | 银行实跑 ✅；HTTP 九端点无头闭环实连 ✅（2026-09-09；2026-09-10 增 /eval） |
-| M2 | fabric 宿主 standalone（Luaj v2 ✅ + HTTP API ✅ + GUI 五页 ✅，1.21.8 jar ✅）+ 1.21.8~26.2 多版本矩阵 | heart 实跑 ✅（v1 驱动期）；同一脚本包零改动双宿主复验（v2 待跑）；CI 矩阵逐版本出包（待做） |
+| M2 | ~~fabric 宿主 standalone~~ **已归档**（archive/fabric-mod；源码保留，不构建） | — |
 | M3 | mcc 宿主（MoonSharp 桥 + HTTP 控制） | 同一脚本包三宿主通过；能力缺失显式降级 |
 | M4 | 工具链（LSP/dry-run/回放）、多实例部署 | — |
 

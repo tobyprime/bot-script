@@ -25,6 +25,7 @@ export class TokenHub {
     this.pendingResume = [];
     this.frozen = [];
     this.paused = false;
+    this.flushing = false;      // flush 重入护栏：rawResume 结束会再调 flush，不能在循环里递归
   }
 
   newToken(kind) {
@@ -119,9 +120,16 @@ export class TokenHub {
   }
 
   flushPending() {
-    while (this.pendingResume.length && this.depth === 0 && !this.paused) {
-      const [id, okj, ej] = this.pendingResume.shift();
-      this.rawResume(id, okj, ej);
+    // rawResume 末尾会再次调用本函数；重入时必须直接返回，否则 pending 队列长时会递归爆栈。
+    if (this.flushing) return;
+    this.flushing = true;
+    try {
+      while (this.pendingResume.length && this.depth === 0 && !this.paused) {
+        const [id, okj, ej] = this.pendingResume.shift();
+        this.rawResume(id, okj, ej);
+      }
+    } finally {
+      this.flushing = false;
     }
   }
 

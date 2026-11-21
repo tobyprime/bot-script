@@ -8,6 +8,7 @@ await import('./scheduler.test.js');
 await import('./state.test.js');
 await import('./policy.test.js');
 await import('./result.test.js');
+await import('./tokens.test.js');
 await import('./containers.test.js');
 await import('./nav.test.js');
 await import('./queries.test.js');

@@ -2,10 +2,10 @@
 // tools/sync-lua.mjs — Lua 单一源门禁（lua-sync）
 //
 // 唯一源码：runtime/lua/core/*.lua + runtime/lua/lib/*.lua + runtime/lua/compat/luaj.lua
-// Fabric 构建由 mod/build.gradle 的 processResources 直接拷入资源（不提交第二份拷贝）。
+// Fabric mod 已归档（archive/fabric-mod），不参与构建；历史构建会在归档目录内拷资源。
 //
 // 用法：
-//   node tools/sync-lua.mjs --check   门禁：仓内不得存在 mod/src/main/resources/lua；
+//   node tools/sync-lua.mjs --check   门禁：仓内不得存在归档目录内的 Lua 第二份拷贝；
 //                                     否则打印应拷贝的文件与 sha256，退出 1
 //   node tools/sync-lua.mjs --print   打印哈希清单（供发布记录/排查）
 import { createHash } from 'node:crypto';
@@ -17,7 +17,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CORE = path.join(ROOT, 'runtime', 'lua', 'core');
 const LIB = path.join(ROOT, 'runtime', 'lua', 'lib');
 const COMPAT = path.join(ROOT, 'runtime', 'lua', 'compat');
-const SECOND_COPY = path.join(ROOT, 'mod', 'src', 'main', 'resources', 'lua');
+const SECOND_COPY = path.join(ROOT, 'archive', 'fabric-mod', 'src', 'main', 'resources', 'lua');
 
 const sha = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 
