@@ -154,3 +154,45 @@ test('await_chat 超时后等待者必须出账（否则 __AWAITERS 只增不减
   assert.strictEqual(g(engine, '__R_n'), 0, '__AWAITERS 不应残留超时等待者');
   await engine.stop();
 });
+
+test('事件门控：高频世界事件无 on_event 时不进 Lua；注册后恢复分发', async () => {
+  script('gate0.lua', 'on_start(function() end)');
+  const { engine } = await makeEngine({ scripts: ['gate0.lua'] });
+  assert.strictEqual(engine._eventKinds.size, 0, '无 on_event 时注册集合应为空');
+  assert.strictEqual(engine.eventNeeded('entity_appeared'), false, '无消费者：实体事件不构造 payload');
+  assert.strictEqual(engine.eventNeeded('block_update'), false, '无消费者：区块事件不进 Lua');
+  assert.strictEqual(engine.eventNeeded('custom_payload'), false, '无 net 处理器：插件包不进 Lua');
+  // 计数 __core_event 实际调用次数
+  const lua = engine.lua;
+  const orig = lua.fn.bind(lua);
+  let calls = 0;
+  lua.fn = (n) => {
+    const f = orig(n);
+    if (n !== '__core_event') return f;
+    return (...a) => { calls += 1; return f(...a); };
+  };
+  engine.event('world.block_changed', { pos: { x: 0, y: 64, z: 0 }, name: 'minecraft:stone' });
+  engine.event('entity.appeared', { id: 1, type: 'minecraft:zombie', name: 'zombie' });
+  assert.strictEqual(calls, 0, '密集区高频事件在无消费者时不得进 Lua（JSON/WASM 往返是纯开销）');
+  engine.event('self.damaged', {});
+  assert.strictEqual(calls, 1, '非高频事件照常分发');
+  await engine.stop();
+});
+
+test('事件门控：脚本注册 on_event 后高频事件恢复分发（含 net.payload）', async () => {
+  script('gate1.lua', `
+    __R_blocks = 0
+    __R_net = 0
+    on_event("world.block_changed", function(p) __R_blocks = __R_blocks + 1 end)
+    on_event("net.payload", function(p) __R_net = __R_net + 1 end)
+    on_start(function() end)
+  `);
+  const { engine } = await makeEngine({ scripts: ['gate1.lua'] });
+  assert.strictEqual(engine.eventNeeded('block_update'), true, '注册了 on_event 就必须分发');
+  assert.strictEqual(engine.eventNeeded('custom_payload'), true, '注册了 net.payload 就必须分发');
+  engine.event('world.block_changed', { pos: { x: 0, y: 64, z: 0 }, name: 'minecraft:stone' });
+  assert.ok(await waitFor(() => g(engine, '__R_blocks') >= 1, 2000), '区块事件应交付 Lua');
+  engine.event('net.payload', { channel: 'c', data: '', ts: 1 });
+  assert.ok(await waitFor(() => g(engine, '__R_net') >= 1, 2000), '插件消息应交付 Lua');
+  await engine.stop();
+});

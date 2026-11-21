@@ -62,6 +62,8 @@ export function startHttpApi(engine, { log = console.log, port, token: tokenArg 
         perf: engine.abi?.perf?.() ?? [],
         // 长跑排障：worker isolate 的堆/外部内存（RSS 是进程级，含 host + 所有 worker）
         memory: process.memoryUsage(),
+        // 驱动排障计数：按包名 / 驱动事件 / 被门控事件（密集区 CPU 定位用）
+        driver_stats: engine.driver?.stats?.() ?? null,
       });
     },
     getParams: (req, res) => {

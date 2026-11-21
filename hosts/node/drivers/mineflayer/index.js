@@ -139,12 +139,30 @@ export class MineflayerDriver {
     // 主动拆旧 bot 期间为 true：此时 bot 的 kicked/end/error 不得再向外发 session 事件
     // （否则引擎会把「我们自己拆掉的连接」当成一次断线，安排重复重连）
     this.tearingDown = false;
+    // 引擎设置：返回 false 时连 payload 都不构造（密集区实体快照/插件包 base64 很贵）
+    this.eventGate = null;
+    // 排障计数器：每包类型 / 驱动事件 / 被门控数量（/state 的 driver_stats 暴露）
+    this._stats = { packets: {}, events: {}, gated: {}, since: Date.now() };
+  }
+
+  stats() {
+    return {
+      since: this._stats.since,
+      uptime_ms: Date.now() - this._stats.since,
+      packets: this._stats.packets,
+      events: this._stats.events,
+      gated: this._stats.gated,
+    };
+  }
+  _gated(name) {
+    this._stats.gated[name] = (this._stats.gated[name] || 0) + 1;
   }
 
   on(evt, cb) {
     (this.handlers[evt] = this.handlers[evt] ?? []).push(cb);
   }
   emit(evt, payload) {
+    this._stats.events[evt] = (this._stats.events[evt] || 0) + 1;
     for (const cb of this.handlers[evt] ?? []) {
       try { cb(payload); } catch (e) { this.log(`[${this.constructor.name}] handler ${evt} 出错: ${e.message}`); }
     }
@@ -177,6 +195,12 @@ export class MineflayerDriver {
     const botOpts = botOptions(cfg);
     const bot = mineflayer.createBot(botOpts);
     this.bot = bot;
+    // 排障：按包名计数（minecraft-protocol 对每个解析后的包发 'packet'）——密集区定位用
+    bot._client.on('packet', (data, meta) => {
+      const n = (meta && meta.name) || (data && data.name) || 'unknown';
+      const p = this._stats.packets;
+      p[n] = (p[n] || 0) + 1;
+    });
 
     this.trace = installProtocolTrace(bot, (line, level) => this.log(line, level ?? 'debug'));
     this._patchRuntime = installPatches(bot, { version: cfg.version, log: (line) => this.log(line, 'info') });
@@ -321,11 +345,13 @@ export class MineflayerDriver {
     bot.on('entitySwingArm', () => this.pushSelf());
     bot.on('entitySpawn', (e) => {
       if (e === bot.entity) return;
+      if (this.eventGate && !this.eventGate('entity_appeared')) { this._gated('entity_appeared'); return; }
       const s = this.snapshotOf(e);
       this.emit('entity_appeared', { id: s.id, type: s.type, name: s.name });
     });
     bot.on('entityGone', (e) => {
       if (e === bot.entity) return;
+      if (this.eventGate && !this.eventGate('entity_gone')) { this._gated('entity_gone'); return; }
       const isPlayer = e.type === 'player';
       this.emit('entity_gone', { id: e.id, type: isPlayer ? 'player' : `minecraft:${e.name ?? e.type}`, name: e.username ?? null });
     });
@@ -524,6 +550,8 @@ export class MineflayerDriver {
     bot._client.on('custom_payload', (p) => {
       const channel = p?.channel;
       if (typeof channel !== 'string' || !channel) return;
+      // 没有脚本消费者时不做 base64/JSON（机器/插件密集区插件消息可能很密集）
+      if (this.eventGate && !this.eventGate('custom_payload')) { this._gated('custom_payload'); return; }
       const raw = Buffer.isBuffer(p.data) ? p.data : Buffer.from(p.data ?? []);
       if (raw.length > CUSTOM_PAYLOAD_MAX) {
         this.log(`[custom_payload] ${channel} 载荷过大（${raw.length} 字节），已丢弃`, 'warn');

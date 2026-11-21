@@ -544,6 +544,21 @@ function on_event(name, fn)
   table.insert(__EVENT_HANDLERS[name], { fn = fn })
 end
 
+-- 宿主查询：脚本已注册 on_event 的事件名（宿主据此门控高频世界事件：entity.appeared /
+-- entity.gone / world.block_changed。没有消费者时不做 JSON/WASM 往返）。
+function __core_event_kinds()
+  local list = {}
+  for k in pairs(__EVENT_HANDLERS) do list[#list + 1] = k end
+  return json.encode(list)
+end
+
+-- 宿主查询：是否存在网络包处理器（net.on 任意频道，或 on_event("net.payload")）
+function __core_net_handlers()
+  for _ in pairs(__NET_HANDLERS) do return true end
+  local eh = __EVENT_HANDLERS["net.payload"]
+  return eh ~= nil and #eh > 0
+end
+
 function on_start(fn) __LIFE.on_start = __LIFE.on_start or {}; table.insert(__LIFE.on_start, fn) end
 function on_pause(fn) __LIFE.on_pause = __LIFE.on_pause or {}; table.insert(__LIFE.on_pause, fn) end
 function on_resume(fn) __LIFE.on_resume = __LIFE.on_resume or {}; table.insert(__LIFE.on_resume, fn) end

@@ -20,6 +20,17 @@ import { SessionState } from './state/session.js';
 
 const nowMs = () => Date.now();
 
+// 高频世界事件：只有脚本真正注册了 on_event 才进 Lua。否则每条消息都要在宿主侧
+// JSON.stringify → wasmoon 调 Lua → Lua JSON.decode（即使没有处理器），在机器/实体
+// 密集区（每 tick 大量 blockUpdate/entity 进出）足以打满整个 agent CPU 配额。
+const HIGH_FREQ_EVENTS = new Set(['entity.appeared', 'entity.gone', 'world.block_changed']);
+const DRIVER_EVENT_KIND = {
+  entity_appeared: 'entity.appeared',
+  entity_gone: 'entity.gone',
+  block_update: 'world.block_changed',
+  custom_payload: 'net.payload',
+};
+
 export class BotEngine {
   /**
    * @param cfg  bot.yaml 解析结果（name/scripts/params）
@@ -72,6 +83,9 @@ export class BotEngine {
     this._mounted = new Set();
     this._loading = false;      // 新脚本声明期：timer.after 先入队，swap 后统一生效
     this._reloading = false;    // 热重载窗口：动作拒绝（runtime.reloading），查询照常
+    this._eventKinds = null;    // Lua on_event 注册集合（null = 未知 → 保守全量分发）
+    this._netHandlers = true;   // Lua 是否有网络包处理器（未知 → 保守分发）
+    this._gateTimer = null;
 
     this.abi = new AbiDispatcher({
       name: this.name,
@@ -118,6 +132,8 @@ export class BotEngine {
     // 1) 参数值由部署层经 instanceParams 传入；核心不落盘（真源在平台实例配置）
     // 2) 驱动事件接线
     const d = this.driver;
+    // 驱动侧门控：没有脚本消费者时，连 payload 都不构造（实体快照很贵）
+    d.eventGate = (name) => this.eventNeeded(name);
     d.on('session', (p) => this.onSession(p));
     d.on('chat', (p) => this.onChat(p));
     d.on('self', (p) => this.onSelf(p));
@@ -154,6 +170,8 @@ export class BotEngine {
 
     // 4) 脚本加载（声明期）
     await this._loadScripts(this.lua, this.cfg);
+    // 4.5) 订阅门控：查询脚本注册的 on_event/网络处理器（高频世界事件只在有消费者时分发）
+    this.refreshEventGate();
 
     // 5) 参数绑定（核心持有 schema/values；宿主 HTTP 经 __core_call 读取）
     this.paramsSnapshotCache = this.coreCall('params.bind', {
@@ -170,6 +188,11 @@ export class BotEngine {
     if (this.hub.paused) this.timers.freeze();
 
     this.started = true;
+    // 运行期脚本也可能 on_event：低频刷新订阅集合（动态注册最多延迟 2s 生效）
+    if (!this._gateTimer) {
+      this._gateTimer = setInterval(() => this.refreshEventGate(), 2000);
+      this._gateTimer.unref?.();
+    }
     if (this.readyPending) {
       this.readyPending = false;
       this.fireReady();
@@ -202,6 +225,8 @@ export class BotEngine {
   async stop() {
     this.stopped = true;
     clearTimeout(this.reconnectTimer);
+    clearInterval(this._gateTimer);
+    this._gateTimer = null;
     this.reconnectDueAt = null;
     this.timers.clearAll();
     try { await this.driver.stop?.(); } catch { /* ignore */ }
@@ -303,6 +328,7 @@ export class BotEngine {
       this.paramsSnapshotCache = snapshot;
       committed = true;
       this._reloading = false;   // 换轨完成：新脚本从现在起可以发包
+      this.refreshEventGate();   // 新脚本的 on_event 集合可能不同
 
       this.obs.log('info', `脚本热重载完成（${reason}）：${(nextCfg.scripts ?? []).join(', ') || '无脚本'}`);
       this.event('lifecycle', { kind: 'on_start' });
@@ -462,6 +488,9 @@ export class BotEngine {
 
   event(kind, payload) {
     if (!this.lua) return;
+    // 高频世界事件门控：没有脚本消费者就根本不进 Lua（省掉 JSON/WASM 往返与 Lua GC）
+    if (HIGH_FREQ_EVENTS.has(kind) && this._eventKinds && !this._eventKinds.has(kind)) return;
+    if (kind === 'net.payload' && this._netHandlers === false) return;
     const fj = this.lua.fn('__core_event');
     this.hub.depth++;
     try {
@@ -472,6 +501,33 @@ export class BotEngine {
       this.hub.depth--;
     }
     this.hub.flushPending();
+  }
+
+  /**
+   * 驱动事件名 → 是否需要把事件送进 Lua（或至少让驱动构造 payload）。
+   * 未知集合时一律返回 true（保守，不丢事件）。
+   */
+  eventNeeded(name) {
+    const kind = DRIVER_EVENT_KIND[name] ?? name;
+    if (kind === 'net.payload') return this._netHandlers !== false;
+    if (!HIGH_FREQ_EVENTS.has(kind)) return true;
+    return !this._eventKinds || this._eventKinds.has(kind);
+  }
+
+  // 查询 Lua 核心：已注册的 on_event 名称 + 是否存在网络包处理器。
+  // 失败时回退「全量分发」，绝不让门控误伤脚本事件。
+  refreshEventGate() {
+    if (!this.lua || this.stopped) return;
+    try {
+      const raw = this.lua.fn('__core_event_kinds')();
+      const list = raw == null ? [] : JSON.parse(String(raw));
+      this._eventKinds = new Set(Array.isArray(list) ? list : []);
+      this._netHandlers = !!this.lua.fn('__core_net_handlers')();
+    } catch (e) {
+      this._eventKinds = null;
+      this._netHandlers = true;
+      this.obs.log('warn', `事件订阅查询失败（回退全量分发）：${e.message}`);
+    }
   }
 
   /** 平台事件入站（控制通道 /event）：有等待者直付，否则入队（容量 64，溢出丢最旧） */
