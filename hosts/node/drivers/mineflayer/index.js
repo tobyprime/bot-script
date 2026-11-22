@@ -359,7 +359,12 @@ export class MineflayerDriver {
     this.pushInventory();
     bot.on('spawn', () => this.pushInventory());
     bot.on('windowOpen', (win) => {
+      // prismarine-windows 只发 updateSlot（没有 'update' 事件）：此前容器窗口槽位变化
+      // 从不标脏，引擎快照只在开窗时更新一次——容器点击后 Lua 读到的背包/箱子恒为旧值
+      // （生产实测：主背包区物品转移后匹配总量不变，deposit/withdraw 误判停滞提前中断；
+      // hotbar 区因 bot.inventory 镜像另有推送而例外地正常）。两条事件都挂。
       win?.on?.('update', () => this.pushWindowsDirty());
+      win?.on?.('updateSlot', () => this.pushWindowsDirty());
       this.pushWindowsDirty();
     });
     bot.inventory?.on?.('update', () => { this.invDirty = true; this.pushWindowsDirty(); });
