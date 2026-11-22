@@ -606,6 +606,13 @@ export class MineflayerDriver {
     client.on('close_window', (p) => {
       this.log(`[win-proto] << close_window w=${p?.windowId}`, 'info');
     });
+    // 服务端位置同步（teleport）：若客户端不回显精确位置，服务端会一直
+    // awaitingPositionFromClient 并忽略全部移动包（幽灵行走——客户端走、服务端原地）。
+    // 记录每次服务端传送与其确认，失步起始点可见。
+    client.on('position', (p) => {
+      this.log(`[win-proto] << teleport id=${p.teleportId} pos=(${p.x},${p.y},${p.z}) flags=${JSON.stringify(p.flags ?? {})}`, 'info');
+    });
+    client.on('teleport_confirm', () => {});   // 出站在 write 包装器按包记录
     bot.on('windowOpen', (win) => {
       this.log(`[win-proto] << open w=${win.id} type=${win.type} 总槽=${win.slots.length}`, 'info');
     });
