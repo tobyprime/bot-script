@@ -204,7 +204,9 @@ export class MineflayerDriver {
 
     this.trace = installProtocolTrace(bot, (line, level) => this.log(line, level ?? 'debug'));
     this._patchRuntime = installPatches(bot, { version: cfg.version, log: (line) => this.log(line, 'info') });
-    this.bindMoveThrottle(bot);
+    // 移动包节流已移除（2026-11-23 事故）：tick-end-26x 补丁已有正确的「延后不丢弃」
+    // 队列机制；外层再加丢弃式节流会让 mineflayer physics 以为已发送而服务端收不到
+    // （现场：服务端视角冻结、寻路永不完成）。同 tick 双位置包治理归补丁所有。
     this.bindWindowProtocolTrace(bot);
     this.bindCustomPayload(bot);
 
@@ -556,43 +558,7 @@ export class MineflayerDriver {
 
   // 自定义网络包入站：binary 经 base64 走事件 JSON（Lua 核心再解成原始字节串）。
   // 门控在引擎层（boundary.packets）；驱动只负责翻译，不决定脚本可见性。
-  /**
-   * 移动包节流（2026-11-23 生产踢线根因）：Paper 26.x 的 handleMovePlayer 新增
-   * receivedPositionThisTick 校验——同一服务器 tick 内第二个含位置的移动包直接以
-   * multiplayer.disconnect.invalid_player_movement 踢线（先于一切物理/飞行判定）。
-   * mineflayer 在转向+微移时可能同 tick 连发 position + position_look；经 ViaVersion
-   * 翻译到 26.x 后更易撞上（现场：静止每秒一包无事，一动即被踢）。
-   * 对含位置的出站包做 ≥52ms 节流（服务器 tick=50ms：同 tick 双发间隔远小于 52ms，
-   * 合法 50ms 步频不误伤）：间隔不足则丢弃本包（服务器采用最新位置，无副作用）。
-   * teleport_confirm 后的位置回显必须放行——初版 60ms 地板既误伤合法步频、又会
-   * 砍掉传送回显，使服务端 awaitingPositionFromClient 永不满足而忽略后续全部移动
-   * （实测：服务端视角冻结、客户端幽灵行走、寻路永不完成）。
-   */
-  bindMoveThrottle(bot) {
-    const client = bot._client;
-    let lastMoveAt = 0;
-    let dropped = 0;
-    const origWrite = client.write.bind(client);
-    client.write = (name, params) => {
-      if (name === 'teleport_confirm') {
-        lastMoveAt = -9999;   // 强制放行随后的位置回显
-        return origWrite(name, params);
-      }
-      if (name === 'position' || name === 'position_look') {
-        const now = Date.now();
-        if (now - lastMoveAt < 52) {
-          dropped++;
-          if (dropped === 1 || dropped % 200 === 0) {
-            this.log(`[move-throttle] 已丢弃 ${dropped} 个同 tick 过密移动包（防 26.x 单 tick 双位置包踢线）`, 'info');
-          }
-          return;
-        }
-        lastMoveAt = now;
-      }
-      return origWrite(name, params);
-    };
-  }
-
+  
   /**
    * 窗口协议层（2026-11-23 生产排障）：
    * 1) 抓现场：记录出站 window_click、入站 window_items / set_slot / 关窗、开窗。
