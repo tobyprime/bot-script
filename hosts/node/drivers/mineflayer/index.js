@@ -732,13 +732,23 @@ export class MineflayerDriver {
     if (String(windowId) === '0') slot = this.engineInvToMineflayer(slot);
     const bot = this.bot;
     const snap = (w) => JSON.stringify(w.slots.map((s) => (s ? [s.name, s.count] : 0)));
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       const win = bot.currentWindow;
       if (!win || win.id === 0) break;
       const before = snap(win);
-      await Promise.race([bot.clickWindow(slot, button, mode), new Promise((r) => setTimeout(r, 2000))]);
+      await Promise.race([bot.clickWindow(slot, button, mode), new Promise((r) => setTimeout(r, 1500))]);
       await new Promise((r) => setTimeout(r, 250));
       if (snap(win) !== before) return;
+      // 点击无任何效果：1.17.1+ 服务器对过期 stateId 的点击**静默忽略且不回包**
+      // （mineflayer inventory.js 注释：唯一发现途径是主动同步）。盲重发同一点击只会
+      // 继续被无视（真实服实测：shift 点击连拒 4 次导致存放提前中断）。
+      // 先发不可能的 stateId（-1）强制服务器全窗回传，拿到权威状态 + 新 stateId 再重试。
+      if (typeof bot._syncWindow === 'function') {
+        try {
+          await Promise.race([bot._syncWindow(win), new Promise((r) => setTimeout(r, 1500))]);
+        } catch { /* 同步超时：继续走重试 */ }
+        if (snap(win) !== before) return;   // 同步带回变化（含回滚），交上层按总量判定
+      }
     }
   }
 
