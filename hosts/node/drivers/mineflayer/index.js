@@ -204,6 +204,7 @@ export class MineflayerDriver {
 
     this.trace = installProtocolTrace(bot, (line, level) => this.log(line, level ?? 'debug'));
     this._patchRuntime = installPatches(bot, { version: cfg.version, log: (line) => this.log(line, 'info') });
+    this.bindMoveThrottle(bot);
     this.bindWindowProtocolTrace(bot);
     this.bindCustomPayload(bot);
 
@@ -555,6 +556,36 @@ export class MineflayerDriver {
 
   // 自定义网络包入站：binary 经 base64 走事件 JSON（Lua 核心再解成原始字节串）。
   // 门控在引擎层（boundary.packets）；驱动只负责翻译，不决定脚本可见性。
+  /**
+   * 移动包节流（2026-11-23 生产踢线根因）：Paper 26.x 的 handleMovePlayer 新增
+   * receivedPositionThisTick 校验——同一服务器 tick 内第二个含位置的移动包直接以
+   * multiplayer.disconnect.invalid_player_movement 踢线（先于一切物理/飞行判定）。
+   * mineflayer 在转向+微移时可能同 tick 连发 position + position_look；经 ViaVersion
+   * 翻译到 26.x 后更易撞上（现场：静止每秒一包无事，一动即被踢）。
+   * 对含位置的出站包做 ≥60ms 节流：间隔不足则丢弃本包（服务器采用最新位置，
+   * 丢一个采样无副作用；原版客户端本身每 tick 至多一个位置包）。
+   */
+  bindMoveThrottle(bot) {
+    const client = bot._client;
+    let lastMoveAt = 0;
+    let dropped = 0;
+    const origWrite = client.write.bind(client);
+    client.write = (name, params) => {
+      if (name === 'position' || name === 'position_look') {
+        const now = Date.now();
+        if (now - lastMoveAt < 60) {
+          dropped++;
+          if (dropped === 1 || dropped % 200 === 0) {
+            this.log(`[move-throttle] 已丢弃 ${dropped} 个过密移动包（防 26.x 同 tick 双位置包踢线）`, 'info');
+          }
+          return;
+        }
+        lastMoveAt = now;
+      }
+      return origWrite(name, params);
+    };
+  }
+
   /**
    * 窗口协议层（2026-11-23 生产排障）：
    * 1) 抓现场：记录出站 window_click、入站 window_items / set_slot / 关窗、开窗。
