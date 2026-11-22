@@ -264,7 +264,10 @@ export class MineflayerDriver {
       bot.physics.pitchSpeed = 20;
       const movements = new Movements(bot, bot.registry);
       movements.allowSprinting = true;
-      movements.allowParkour = true;
+      // 疾跑/跳跑步伐会被本服移动校验判 invalid_player_movement 连续踢线（生产实测：
+      // 短途平地无碍，长距离寻路（拾取/撤退）必踢）。关闭跳跑；疾跑保留（平地疾跑合法），
+      // 若仍被踢可再关。
+      movements.allowParkour = false;
       movements.canDig = false;
       movements.canPlace = false;
       bot.pathfinder.setMovements(movements);
