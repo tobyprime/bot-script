@@ -812,9 +812,30 @@ export class MineflayerDriver {
 
   // ---- 协议动作（按原版包建模） ----
 
+  /**
+   * 1.21.x 组件附魔消毒：prismarine-item 的 enchants getter 对 component 形态直接
+   * 返回原始 NBT 对象（{levels:{...}, show_in_tooltip}），而 prismarine-block 的
+   * digTime 按数组迭代——带附魔的工具一挖就抛「enchantments is not iterable」
+   * （生产实测：附魔钻石镐每次 dig 必炸）。这里在 dig 前把组件数据归一成
+   * [{name,lvl}]（name 去掉 minecraft: 前缀，与 legacy NBT 路径同口径）。
+   */
+  sanitizeEnchantComponents(item) {
+    if (!item?.componentMap?.has('enchantments')) return;
+    const comp = item.componentMap.get('enchantments');
+    const d = comp?.data;
+    if (Array.isArray(d) || d == null || typeof d !== 'object') return;
+    const lv = d.levels && typeof d.levels === 'object' ? d.levels : null;
+    comp.data = lv
+      ? Object.entries(lv).map(([name, lvl]) => ({ name: String(name).replace(/^minecraft:/, ''), lvl: Number(lvl) }))
+      : [];
+  }
+
   async dig(pos, face = 1) {
     const block = this.bot.blockAt(new Vec3(pos.x, pos.y, pos.z));
     if (!block) throw new Error(`方块未加载 ${JSON.stringify(pos)}`);
+    this.sanitizeEnchantComponents(this.bot.heldItem);          // digTime 会迭代 enchants
+    const headSlot = this.bot.getEquipmentDestSlot?.('head');
+    if (headSlot != null) this.sanitizeEnchantComponents(this.bot.inventory?.slots?.[headSlot]);
     await this.bot.dig(block, false, face);
   }
 
