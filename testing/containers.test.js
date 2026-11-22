@@ -81,3 +81,93 @@ test('window.get fields=idcount：只回 id/count（count/find 不再展开整�
   assert.ok(fullItem.max_count != null, 'full 仍应展开 StackInfo（默认行为不变）');
   await engine.stop();
 });
+
+// ---------- 回归：deposit 进度判定（2026-11-22 生产现场） ----------
+// 现象：回收指令只放进一件就报「存放 0 件」。旧实现比较「首个匹配叠」点击前后的
+// 数量，两类假阴性都会提前中断：换叠后数量巧合相等；真实服 windowItems 晚到读到旧值。
+
+// 慢同步驱动：点击立即生效，但窗口/背包快照推送延迟（模拟真实服 windowItems 晚到）
+class SlowSyncDriver extends MockDriver {
+  constructor(opts) { super(opts); this.slowSync = false; }
+  async window_click(windowId, slot, button, mode, stateId) {
+    if (!this.slowSync) return super.window_click(windowId, slot, button, mode, stateId);
+    const pushW = this.pushWindow.bind(this);
+    const pushI = this.pushInventory.bind(this);
+    this.pushWindow = () => {};
+    this.pushInventory = () => {};
+    try {
+      await super.window_click(windowId, slot, button, mode, stateId);
+    } finally {
+      this.pushWindow = pushW;
+      this.pushInventory = pushI;
+      setTimeout(() => { pushW(); pushI(); }, 120);
+    }
+  }
+}
+
+test('deposit 回归①：换叠数量巧合不再误判「没动」（×1 叠跟 ×1 叠）', async () => {
+  script('t-dep1.lua', `
+    local clib = require "container_lib"
+    task("dep", function()
+      local w = clib.open({ x = 5, y = 64, z = 5 })
+      __R_moved = clib.deposit(w, function(it) return it ~= nil end, math.huge)
+      container.close(w)
+    end)
+    on_start(function() task.spawn("dep") end)
+  `);
+  const driver = new MockDriver();
+  driver.setContainer({ x: 5, y: 64, z: 5 }, [], 27);
+  driver.give(0, 'minecraft:diamond_pickaxe', 1);   // 首叠 ×1
+  driver.give(6, 'minecraft:diamond', 1);           // 次叠恰好也是 ×1：旧实现 1==1 误判
+  driver.give(7, 'minecraft:dirt', 3);
+  const { engine } = await makeEngine({ scripts: ['t-dep1.lua'], driver });
+  assert.ok(await waitFor(() => g(engine, '__R_moved') != null, 15000), 'deposit 未完成');
+  assert.strictEqual(g(engine, '__R_moved'), 5, '全部 5 件应入箱（旧实现会停在 0）');
+  const chest = driver.containerSlots.get('5,64,5');
+  assert.strictEqual(chest.reduce((n, s) => n + (s?.count ?? 0), 0), 5, '箱内应有 5 件');
+  assert.strictEqual(driver.inv.reduce((n, s) => n + (s?.count ?? 0), 0), 0, '背包应清空');
+  await engine.stop();
+});
+
+test('deposit 回归②：快照慢同步（120ms）下多叠全量入箱', async () => {
+  script('t-dep2.lua', `
+    local clib = require "container_lib"
+    task("dep", function()
+      local w = clib.open({ x = 5, y = 64, z = 5 })
+      __R_moved = clib.deposit(w, function(it) return it ~= nil end, math.huge)
+      container.close(w)
+    end)
+    on_start(function() task.spawn("dep") end)
+  `);
+  const driver = new SlowSyncDriver();
+  driver.slowSync = true;
+  driver.setContainer({ x: 5, y: 64, z: 5 }, [], 27);
+  for (let i = 0; i < 5; i++) driver.give(9 + i, 'minecraft:diamond', 64);
+  const { engine } = await makeEngine({ scripts: ['t-dep2.lua'], driver });
+  assert.ok(await waitFor(() => g(engine, '__R_moved') != null, 30000), 'deposit 未完成');
+  assert.strictEqual(g(engine, '__R_moved'), 320, '5×64 应全部入箱');
+  const chest = driver.containerSlots.get('5,64,5');
+  assert.strictEqual(chest.reduce((n, s) => n + (s?.count ?? 0), 0), 320, '箱内应有 320 件');
+  assert.strictEqual(driver.invCount('minecraft:diamond'), 0, '背包应清空');
+  await engine.stop();
+});
+
+test('withdraw 回归：总量判定下精确取出仍成立（不回归旧用例语义）', async () => {
+  script('t-wd.lua', `
+    local clib = require "container_lib"
+    task("wd", function()
+      local w = clib.open({ x = 5, y = 64, z = 5 })
+      __R_got = clib.withdraw(w, { id = "minecraft:pink_wool" }, 30)
+      container.close(w)
+    end)
+    on_start(function() task.spawn("wd") end)
+  `);
+  const driver = new SlowSyncDriver();
+  driver.slowSync = true;
+  driver.setContainer({ x: 5, y: 64, z: 5 }, [[0, 'minecraft:pink_wool', 64], [1, 'minecraft:pink_wool', 64]]);
+  const { engine } = await makeEngine({ scripts: ['t-wd.lua'], driver });
+  assert.ok(await waitFor(() => g(engine, '__R_got') != null, 30000), 'withdraw 未完成');
+  assert.strictEqual(g(engine, '__R_got'), 30, '精确取出 30');
+  assert.strictEqual(driver.invCount('minecraft:pink_wool'), 30);
+  await engine.stop();
+});

@@ -187,6 +187,45 @@ local function find_in_section(win, filter, min_index, max_index)
 end
 
 -- ---------- withdraw / deposit（点击协议复合） ----------
+--
+-- 进度判定：按「匹配总量」对比 + 落定等待，不按「首个匹配叠」的前后数量对比。
+-- 两个真实故障模式（2026-11-22 生产现场：回收只放进一件就报「存放 0 件」）：
+--   1) 换叠巧合：矿镐(×1) 入箱后，新的首叠恰好也是 ×1 → 旧比较 1==1 误判「没动」提前中断；
+--   2) 同步竞态：点击完成 ≠ 服务器内容同步完成（windowItems 是另一个包），
+--      快照滞后期间读到旧值同样误判。
+-- 总量在窗口（默认 800ms）内不变且仍有匹配物 = 真·放不下/取不出。
+
+local function inv_matching_total(filter)
+  local t = 0
+  for _, sl in ipairs(inv.slots()) do
+    if sl.item and sl.index <= 35 and item_match(sl.item, filter) then
+      t = t + (sl.item.count or 0)
+    end
+  end
+  return t
+end
+
+local function win_matching_total(win, filter)
+  local t = 0
+  local size = win:size()
+  for _, sl in ipairs(win:slots()) do
+    if sl.item and sl.index < size and item_match(sl.item, filter) then
+      t = t + (sl.item.count or 0)
+    end
+  end
+  return t
+end
+
+-- 等总量离开 before（窗口同步落地）；到点仍相同则原样返回（= 真·没动）
+local function settle_total(count_fn, before, timeout_ms)
+  local deadline = now_ms() + (timeout_ms or 800)
+  while now_ms() < deadline do
+    local t = count_fn()
+    if t ~= before then return t end
+    time.sleep(40)
+  end
+  return count_fn()
+end
 
 function M.withdraw(win, filter, n)
   n = n or math.huge
@@ -199,18 +238,23 @@ function M.withdraw(win, filter, n)
     local item = win:peek(slot)
     if not item then break end
     local want = n - moved
+    local before = win_matching_total(win, filter)
     if item.count <= want then
       win.click(slot, { shift = true })
-      local left = win:peek(slot)
-      if left and left.count == item.count then break end   -- 背包满，没动 => 停
-      moved = moved + item.count
+      local after = settle_total(function() return win_matching_total(win, filter) end, before, 800)
+      local delta = before - after
+      if delta <= 0 then break end                     -- 背包满：真·没动 => 停
+      moved = moved + delta
     else
       local dst = empty_slot_in(win, win:size(), win:size() + 35)
       if not dst then break end
       win.click(slot, { button = "left" })
       for _ = 1, want do win.click(dst, { button = "right" }) end
       win.click(slot, { button = "left" })
-      moved = moved + want
+      local after = settle_total(function() return win_matching_total(win, filter) end, before, 1500)
+      local delta = before - after
+      if delta <= 0 then break end
+      moved = moved + delta
     end
   end
   return moved
@@ -220,27 +264,32 @@ function M.deposit(win, filter, n)
   n = n or math.huge
   local moved = 0
   local guard = 0
-  while moved < n and guard < 64 do
+  while guard < 64 do
     guard = guard + 1
     local slot = inv.find(filter)
     if not slot then break end
     local item = find_by_slots(inv.slots(), slot)
     if not item then break end
     local want = n - moved
+    local before = inv_matching_total(filter)
     if item.count <= want then
       inv.click(slot, { shift = true })
-      local left = inv.find(filter)
-      local left_item = left and find_by_slots(inv.slots(), left)
-      if left_item and left_item.count == item.count then break end
-      moved = moved + item.count
+      local after = settle_total(function() return inv_matching_total(filter) end, before, 800)
+      local delta = before - after
+      if delta <= 0 then break end                     -- 容器满：真·没动 => 停
+      moved = moved + delta
     else
       local dst = empty_slot_in(win, 0, win:size() - 1)
       if not dst then break end
       inv.click(slot, { button = "left" })
       for _ = 1, want do win.click(dst, { button = "right" }) end
       inv.click(slot, { button = "left" })
-      moved = moved + want
+      local after = settle_total(function() return inv_matching_total(filter) end, before, 1500)
+      local delta = before - after
+      if delta <= 0 then break end
+      moved = moved + delta
     end
+    if moved >= n then break end
   end
   return moved
 end
