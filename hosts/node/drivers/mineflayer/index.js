@@ -548,30 +548,46 @@ export class MineflayerDriver {
   // 自定义网络包入站：binary 经 base64 走事件 JSON（Lua 核心再解成原始字节串）。
   // 门控在引擎层（boundary.packets）；驱动只负责翻译，不决定脚本可见性。
   /**
-   * 窗口协议抓现场（2026-11-23 生产排障）：存放/回收第二个点击起被服务器无视，
-   * 两轮推测式修复（总量判定、_syncWindow 同步重试）均未命中。改为让现场自己说话：
-   * 记录出站 window_click（含 stateId）、入站 window_items / set_slot（含 stateId 与
-   * 槽位内容）、开/关窗。只在容器窗口打开期间记录入站（挖矿背包变动不刷屏）。
+   * 窗口协议层（2026-11-23 生产排障）：
+   * 1) 抓现场：记录出站 window_click、入站 window_items / set_slot / 关窗、开窗。
+   *    入站仅容器窗口打开期间记录（挖矿背包变动不刷屏）。
+   * 2) stateId 按窗口跟踪并覆写出站点击：mineflayer 用单一全局 stateId 变量，
+   *    被 w=0（背包）的 set_slot 污染后，发给容器的点击携带完全错位的 stateId
+   *    （现场实测：箱子 state 1/2/3，我们发 7/8）。多数服务器容忍几个错位点击后
+   *    开始静默无视，本地窗口状态随之漂移直至点击层抛错。这里按包内 windowId
+   *    各自维护最新 stateId，出站时替换为该窗口的真值。
    */
   bindWindowProtocolTrace(bot) {
     const fmtItem = (it) => (it && (it.name ?? it.itemId) != null ? `${it.name ?? it.itemId}×${it.count ?? '?'}` : '空');
     const winOpen = () => bot.currentWindow && bot.currentWindow.id !== 0;
     const client = bot._client;
+    const stateByWindow = new Map();
 
     const origWrite = client.write.bind(client);
     client.write = (name, params) => {
       if (name === 'window_click') {
         const p = params ?? {};
-        this.log(`[win-proto] >> click w=${p.windowId} state=${p.stateId} slot=${p.slot} btn=${p.mouseButton} mode=${p.mode} cursor=${fmtItem(p.cursorItem)} 变更槽=${(p.changedSlots ?? []).length}`, 'info');
+        const wid = p.windowId;
+        const truth = stateByWindow.get(wid);
+        if (truth !== undefined && p.stateId !== truth) {
+          this.log(`[win-proto] stateId 纠偏 w=${wid} ${p.stateId}→${truth}（全局变量被其它窗口污染）`, 'info');
+          p.stateId = truth;
+        }
+        this.log(`[win-proto] >> click w=${wid} state=${p.stateId} slot=${p.slot} btn=${p.mouseButton} mode=${p.mode} cursor=${fmtItem(p.cursorItem)} 变更槽=${(p.changedSlots ?? []).length}`, 'info');
       }
       return origWrite(name, params);
     };
 
+    const track = (wid, stateId) => {
+      if (Number.isFinite(stateId)) stateByWindow.set(Number(wid), Number(stateId));
+    };
     client.on('window_items', (p) => {
+      track(p.windowId, p.stateId);
       if (!winOpen()) return;
       this.log(`[win-proto] << window_items w=${p.windowId} state=${p.stateId} 非空槽=${(p.items ?? []).filter(Boolean).length}/${(p.items ?? []).length}`, 'info');
     });
     client.on('set_slot', (p) => {
+      track(p.windowId, p.stateId);
       if (!winOpen()) return;
       this.log(`[win-proto] << set_slot w=${p.windowId} state=${p.stateId} slot=${p.slot} item=${fmtItem(p.item)}`, 'info');
     });
@@ -774,11 +790,16 @@ export class MineflayerDriver {
     const fmt = (it) => (it ? `${it.name}×${it.count}` : '空');
     const before = snap(win);
     const beforeItem = win.slots[slot];
-    await Promise.race([bot.clickWindow(slot, button, mode), new Promise((r) => setTimeout(r, 2000))]);
+    // clickWindow 可能同步抛错（本地 acceptClick 断言/槽位状态漂移）：现场实测第三次
+    // 点击未发包也无日志即此因——异常被 race 吞掉后 [win] 行直接消失。捕获并记录。
+    try {
+      await Promise.race([bot.clickWindow(slot, button, mode), new Promise((r) => setTimeout(r, 2000))]);
+    } catch (e) {
+      this.log(`[win] click 异常 w=${win.id} slot=${slot}(${fmt(beforeItem)}): ${e.message}`, 'warn');
+      throw e;
+    }
     await new Promise((r) => setTimeout(r, 250));
     const changed = snap(win) !== before;
-    // 抓现场：单次点击 + 记录本地前后状态。不做盲重试/同步重试（两版实测无效，
-    // 且重发点击会污染协议现场）。服务器是否真的受理由 [win-proto] 入站包日志判定。
     this.log(`[win] click w=${win.id} slot=${slot}(${fmt(beforeItem)}→${fmt(win.slots[slot])}) ${changed ? '本地有变化' : '本地无变化'}`, changed ? 'info' : 'warn');
   }
 

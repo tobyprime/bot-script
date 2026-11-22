@@ -227,6 +227,17 @@ local function settle_total(count_fn, before, timeout_ms)
   return count_fn()
 end
 
+-- 点击 Result 失败时记录（此前被吞：驱动层异常→Result ok=false，总量不变即「停滞」，
+-- 无法区分容器满与点击抛错）
+local function click_result(r, where)
+  if type(r) == 'table' and r.ok == false then
+    local code = r.error and r.error.code or '?'
+    log.warn('%s 点击失败：%s', where, tostring(code))
+    return false
+  end
+  return true
+end
+
 function M.withdraw(win, filter, n)
   n = n or math.huge
   local moved = 0
@@ -240,7 +251,8 @@ function M.withdraw(win, filter, n)
     local want = n - moved
     local before = win_matching_total(win, filter)
     if item.count <= want then
-      win.click(slot, { shift = true })
+      local r = win.click(slot, { shift = true })
+      if not click_result(r, 'withdraw') then break end
       local after = settle_total(function() return win_matching_total(win, filter) end, before, 800)
       local delta = before - after
       if delta <= 0 then
@@ -277,7 +289,8 @@ function M.deposit(win, filter, n)
     local want = n - moved
     local before = inv_matching_total(filter)
     if item.count <= want then
-      inv.click(slot, { shift = true })
+      local r = inv.click(slot, { shift = true })
+      if not click_result(r, 'deposit') then break end
       local after = settle_total(function() return inv_matching_total(filter) end, before, 800)
       local delta = before - after
       if delta <= 0 then

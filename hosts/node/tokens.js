@@ -26,6 +26,18 @@ export class TokenHub {
     this.frozen = [];
     this.paused = false;
     this.flushing = false;      // flush 重入护栏：rawResume 结束会再调 flush，不能在循环里递归
+    // 交付看门狗（2026-11-23 生产现场：任务结算后挂起数分钟，直到下一次外部 VM 进入
+    // 才被 pump——机制未定位，先兜底 + 留现场）：挂起交付超 2 秒强制 flush 并告警。
+    this.pendingSince = 0;
+    this.watchdog = setInterval(() => {
+      if (!this.pendingResume.length) { this.pendingSince = 0; return; }
+      if (!this.pendingSince) this.pendingSince = Date.now();
+      if (Date.now() - this.pendingSince < 2000) return;
+      this._log('warn', `交付看门狗：${this.pendingResume.length} 条挂起交付滞留 ${Math.round((Date.now() - this.pendingSince) / 1000)}s（depth=${this.depth} flushing=${this.flushing} paused=${this.paused}），强制 flush`);
+      this.pendingSince = 0;
+      if (this.depth === 0 && !this.paused && !this.flushing) this.flushPending();
+    }, 1000);
+    this.watchdog.unref?.();
   }
 
   newToken(kind) {
@@ -146,6 +158,10 @@ export class TokenHub {
     const q = this.frozen;
     this.frozen = [];
     for (const [id, okj, ej] of q) this.deliver(id, okj, ej);
+  }
+
+  dispose() {
+    clearInterval(this.watchdog);
   }
 }
 

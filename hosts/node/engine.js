@@ -229,6 +229,7 @@ export class BotEngine {
     this._gateTimer = null;
     this.reconnectDueAt = null;
     this.timers.clearAll();
+    this.hub.dispose?.();
     try { await this.driver.stop?.(); } catch { /* ignore */ }
     try { this.lua?.close(); } catch { /* ignore */ }
     this.stateStore?.close();
