@@ -61,6 +61,19 @@ export function installTickEndSender(bot, opts = {}) {
   let flushTimer = null;
   const origWrite = client.write.bind(client);
 
+  // ---- ②' 位置包后**立即**尾随 tick_end（2026-11-23 生产踢线根因收口）----
+  // 定时器版 tick_end 与位置包异步：事件循环卡顿（Lua 桥接长调用）会漏发，
+  // 两个位置包之间没有 tick_end → receivedPositionThisTick 不清零 → 踢。
+  // 本地对照实测（Paper 26.3+ViaVersion 无 Velocity）：240s 连续走动 2 次踢；
+  // 生产（多一层 Velocity）30-40s 一次。改为每个 position/position_look 落地后
+  // 同步尾随 tick_end，窗口重置不再依赖任何定时器相位。额外 tick_end 服务端无害。
+  const withTrailingTickEnd = (name, params) => {
+    origWrite(name, params);
+    if (name === 'position' || name === 'position_look') {
+      try { origWrite('tick_end', {}); sent += 1; } catch { /* 版本不支持：静默 */ }
+    }
+  };
+
   const flush = () => {
     flushTimer = null;
     const wait = tickMs - (Date.now() - lastMoveAt);
@@ -68,7 +81,7 @@ export function installTickEndSender(bot, opts = {}) {
     const next = queue.shift();
     if (!next) return;
     lastMoveAt = Date.now();
-    origWrite(next.name, next.params);
+    withTrailingTickEnd(next.name, next.params);
     if (queue.length && !flushTimer) flushTimer = setTimeout(flush, tickMs);
   };
   const enqueue = (name, params) => {
@@ -83,19 +96,19 @@ export function installTickEndSender(bot, opts = {}) {
     if (!MOVE_PACKETS.has(name)) return origWrite(name, params);
     if (Date.now() - lastMoveAt >= tickMs) {
       lastMoveAt = Date.now();
-      return origWrite(name, params);
+      return withTrailingTickEnd(name, params);
     }
     enqueue(name, params);
     return undefined;
   };
 
-  // ---- ① 每 tick 发 client_tick_end（进入 play 之后才开始）----
+  // ---- ① 兜底：每 tick 发 client_tick_end（进入 play 之后才开始）----
+  // 位置包尾随版为主，此定时器仅兜底（如仅 look/flying 流量期间维持节拍）。
   const start = () => {
     if (timer) return;
-    // tick_end 紧跟在移动包之后发，确保服务端先看到本 tick 的位置包再看到结束标记
     timer = setInterval(() => {
       try {
-        client.write('tick_end', {});
+        origWrite('tick_end', {});
         sent += 1;
       } catch { /* 连接已断或版本不支持：静默 */ }
     }, tickMs);
