@@ -789,14 +789,16 @@ export class MineflayerDriver {
     void stateId;   // mineflayer clickWindow 自行携带最新同步号
     if (String(windowId) === '0') slot = this.engineInvToMineflayer(slot);
     const bot = this.bot;
-    const win = bot.currentWindow;
-    if (!win || win.id === 0) return;   // 无容器窗口：不做背包点击（上层走 drop/select_slot）
+    // 无容器窗口时落到背包窗口（inv.equip 的热键换持等背包点击此前被直接丢弃——
+    // 生产实测：背包里有矿镐却一直空手挖、挖掘全部超时，就是 equip 点击空转所致）。
+    // 连背包窗口都没有属异常态：显式抛错，不允许静默成功（静默 = 上层永远不知道没点上）。
+    const win = bot.currentWindow || bot.inventory;
+    if (!win) throw new Error('window.missing: 无可用窗口（currentWindow 与 inventory 均缺失）');
     const snap = (w) => JSON.stringify(w.slots.map((s) => (s ? [s.name, s.count] : 0)));
     const fmt = (it) => (it ? `${it.name}×${it.count}` : '空');
     const before = snap(win);
     const beforeItem = win.slots[slot];
-    // clickWindow 可能同步抛错（本地 acceptClick 断言/槽位状态漂移）：现场实测第三次
-    // 点击未发包也无日志即此因——异常被 race 吞掉后 [win] 行直接消失。捕获并记录。
+    // clickWindow 可能同步抛错（本地 acceptClick 断言/槽位状态漂移）：捕获并记录
     try {
       await Promise.race([bot.clickWindow(slot, button, mode), new Promise((r) => setTimeout(r, 2000))]);
     } catch (e) {

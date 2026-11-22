@@ -1575,7 +1575,9 @@ combat = {
   end,
   place = function(pos, face) return combat.use_block(pos, { intent = "place", face = face or 1 }) end,
   dig = function(pos, face) return call_action("act.dig", { pos = pos, face = face or 1, phase = "start" }) end,
-  dig_stop = function() return call_action("act.dig", { pos = { x = 0, y = 0, z = 0 }, phase = "stop" }) end,
+  -- 停止挖掘走独立 op：此前误发 act.dig + 空坐标（0,0,0），驱动按真坐标解析直接抛
+  -- 「方块未加载」（生产实测日志可见）
+  dig_stop = function() return call_action("act.dig_stop", {}) end,
   use_item = function(duration, hand)
     local h = hand or "main"
     call_action("act.use_item", { hand = h, phase = "start" })
