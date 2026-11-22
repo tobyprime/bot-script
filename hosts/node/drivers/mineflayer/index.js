@@ -204,6 +204,7 @@ export class MineflayerDriver {
 
     this.trace = installProtocolTrace(bot, (line, level) => this.log(line, level ?? 'debug'));
     this._patchRuntime = installPatches(bot, { version: cfg.version, log: (line) => this.log(line, 'info') });
+    this.bindWindowProtocolTrace(bot);
     this.bindCustomPayload(bot);
 
     // 配置阶段资源包：必须用字符串 uuid 应答 ACCEPTED+LOADED。mineflayer 内置插件传
@@ -546,6 +547,42 @@ export class MineflayerDriver {
 
   // 自定义网络包入站：binary 经 base64 走事件 JSON（Lua 核心再解成原始字节串）。
   // 门控在引擎层（boundary.packets）；驱动只负责翻译，不决定脚本可见性。
+  /**
+   * 窗口协议抓现场（2026-11-23 生产排障）：存放/回收第二个点击起被服务器无视，
+   * 两轮推测式修复（总量判定、_syncWindow 同步重试）均未命中。改为让现场自己说话：
+   * 记录出站 window_click（含 stateId）、入站 window_items / set_slot（含 stateId 与
+   * 槽位内容）、开/关窗。只在容器窗口打开期间记录入站（挖矿背包变动不刷屏）。
+   */
+  bindWindowProtocolTrace(bot) {
+    const fmtItem = (it) => (it && (it.name ?? it.itemId) != null ? `${it.name ?? it.itemId}×${it.count ?? '?'}` : '空');
+    const winOpen = () => bot.currentWindow && bot.currentWindow.id !== 0;
+    const client = bot._client;
+
+    const origWrite = client.write.bind(client);
+    client.write = (name, params) => {
+      if (name === 'window_click') {
+        const p = params ?? {};
+        this.log(`[win-proto] >> click w=${p.windowId} state=${p.stateId} slot=${p.slot} btn=${p.mouseButton} mode=${p.mode} cursor=${fmtItem(p.cursorItem)} 变更槽=${(p.changedSlots ?? []).length}`, 'info');
+      }
+      return origWrite(name, params);
+    };
+
+    client.on('window_items', (p) => {
+      if (!winOpen()) return;
+      this.log(`[win-proto] << window_items w=${p.windowId} state=${p.stateId} 非空槽=${(p.items ?? []).filter(Boolean).length}/${(p.items ?? []).length}`, 'info');
+    });
+    client.on('set_slot', (p) => {
+      if (!winOpen()) return;
+      this.log(`[win-proto] << set_slot w=${p.windowId} state=${p.stateId} slot=${p.slot} item=${fmtItem(p.item)}`, 'info');
+    });
+    client.on('close_window', (p) => {
+      this.log(`[win-proto] << close_window w=${p?.windowId}`, 'info');
+    });
+    bot.on('windowOpen', (win) => {
+      this.log(`[win-proto] << open w=${win.id} type=${win.type} 总槽=${win.slots.length}`, 'info');
+    });
+  }
+
   bindCustomPayload(bot) {
     bot._client.on('custom_payload', (p) => {
       const channel = p?.channel;
@@ -731,25 +768,18 @@ export class MineflayerDriver {
     void stateId;   // mineflayer clickWindow 自行携带最新同步号
     if (String(windowId) === '0') slot = this.engineInvToMineflayer(slot);
     const bot = this.bot;
+    const win = bot.currentWindow;
+    if (!win || win.id === 0) return;   // 无容器窗口：不做背包点击（上层走 drop/select_slot）
     const snap = (w) => JSON.stringify(w.slots.map((s) => (s ? [s.name, s.count] : 0)));
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const win = bot.currentWindow;
-      if (!win || win.id === 0) break;
-      const before = snap(win);
-      await Promise.race([bot.clickWindow(slot, button, mode), new Promise((r) => setTimeout(r, 1500))]);
-      await new Promise((r) => setTimeout(r, 250));
-      if (snap(win) !== before) return;
-      // 点击无任何效果：1.17.1+ 服务器对过期 stateId 的点击**静默忽略且不回包**
-      // （mineflayer inventory.js 注释：唯一发现途径是主动同步）。盲重发同一点击只会
-      // 继续被无视（真实服实测：shift 点击连拒 4 次导致存放提前中断）。
-      // 先发不可能的 stateId（-1）强制服务器全窗回传，拿到权威状态 + 新 stateId 再重试。
-      if (typeof bot._syncWindow === 'function') {
-        try {
-          await Promise.race([bot._syncWindow(win), new Promise((r) => setTimeout(r, 1500))]);
-        } catch { /* 同步超时：继续走重试 */ }
-        if (snap(win) !== before) return;   // 同步带回变化（含回滚），交上层按总量判定
-      }
-    }
+    const fmt = (it) => (it ? `${it.name}×${it.count}` : '空');
+    const before = snap(win);
+    const beforeItem = win.slots[slot];
+    await Promise.race([bot.clickWindow(slot, button, mode), new Promise((r) => setTimeout(r, 2000))]);
+    await new Promise((r) => setTimeout(r, 250));
+    const changed = snap(win) !== before;
+    // 抓现场：单次点击 + 记录本地前后状态。不做盲重试/同步重试（两版实测无效，
+    // 且重发点击会污染协议现场）。服务器是否真的受理由 [win-proto] 入站包日志判定。
+    this.log(`[win] click w=${win.id} slot=${slot}(${fmt(beforeItem)}→${fmt(win.slots[slot])}) ${changed ? '本地有变化' : '本地无变化'}`, changed ? 'info' : 'warn');
   }
 
   // ---- 协议动作（按原版包建模） ----

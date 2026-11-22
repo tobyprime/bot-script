@@ -243,7 +243,11 @@ function M.withdraw(win, filter, n)
       win.click(slot, { shift = true })
       local after = settle_total(function() return win_matching_total(win, filter) end, before, 800)
       local delta = before - after
-      if delta <= 0 then break end                     -- 背包满：真·没动 => 停
+      if delta <= 0 then
+        log.warn('withdraw 停滞：槽 %s（%s×%d），箱内匹配总量 %d→%d 无变化（背包满或点击被服务器无视，详见引擎通道 [win-proto] 日志）',
+          tostring(slot), tostring(item.id), item.count or 0, before, after)
+        break
+      end
       moved = moved + delta
     else
       local dst = empty_slot_in(win, win:size(), win:size() + 35)
@@ -276,7 +280,11 @@ function M.deposit(win, filter, n)
       inv.click(slot, { shift = true })
       local after = settle_total(function() return inv_matching_total(filter) end, before, 800)
       local delta = before - after
-      if delta <= 0 then break end                     -- 容器满：真·没动 => 停
+      if delta <= 0 then
+        log.warn('deposit 停滞：槽 %s（%s×%d），背包匹配总量 %d→%d 无变化（容器满或点击被服务器无视，详见引擎通道 [win-proto] 日志）',
+          tostring(slot), tostring(item.id), item.count or 0, before, after)
+        break
+      end
       moved = moved + delta
     else
       local dst = empty_slot_in(win, 0, win:size() - 1)

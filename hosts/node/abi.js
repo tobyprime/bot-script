@@ -400,8 +400,8 @@ export class AbiDispatcher {
         if (target === '0' && !windows.view('0')) await driver.window_refresh?.('0');
         await withTimeout(
           Promise.resolve(driver.window_click(target, Number(s2), Number(button) || 0, Number(mode) || 0, stateId ?? null)),
-          15000, TYPE_ERR('container.closed', target),
-        );   // 15s：驱动侧对被静默忽略的点击会先 _syncWindow 全窗同步再重试（≤3 轮）
+          5000, TYPE_ERR('container.closed', target),
+        );
         await this._waitRevision(target, rev, 3000);
         return {};
       },
