@@ -562,8 +562,11 @@ export class MineflayerDriver {
    * multiplayer.disconnect.invalid_player_movement 踢线（先于一切物理/飞行判定）。
    * mineflayer 在转向+微移时可能同 tick 连发 position + position_look；经 ViaVersion
    * 翻译到 26.x 后更易撞上（现场：静止每秒一包无事，一动即被踢）。
-   * 对含位置的出站包做 ≥60ms 节流：间隔不足则丢弃本包（服务器采用最新位置，
-   * 丢一个采样无副作用；原版客户端本身每 tick 至多一个位置包）。
+   * 对含位置的出站包做 ≥52ms 节流（服务器 tick=50ms：同 tick 双发间隔远小于 52ms，
+   * 合法 50ms 步频不误伤）：间隔不足则丢弃本包（服务器采用最新位置，无副作用）。
+   * teleport_confirm 后的位置回显必须放行——初版 60ms 地板既误伤合法步频、又会
+   * 砍掉传送回显，使服务端 awaitingPositionFromClient 永不满足而忽略后续全部移动
+   * （实测：服务端视角冻结、客户端幽灵行走、寻路永不完成）。
    */
   bindMoveThrottle(bot) {
     const client = bot._client;
@@ -571,12 +574,16 @@ export class MineflayerDriver {
     let dropped = 0;
     const origWrite = client.write.bind(client);
     client.write = (name, params) => {
+      if (name === 'teleport_confirm') {
+        lastMoveAt = -9999;   // 强制放行随后的位置回显
+        return origWrite(name, params);
+      }
       if (name === 'position' || name === 'position_look') {
         const now = Date.now();
-        if (now - lastMoveAt < 60) {
+        if (now - lastMoveAt < 52) {
           dropped++;
           if (dropped === 1 || dropped % 200 === 0) {
-            this.log(`[move-throttle] 已丢弃 ${dropped} 个过密移动包（防 26.x 同 tick 双位置包踢线）`, 'info');
+            this.log(`[move-throttle] 已丢弃 ${dropped} 个同 tick 过密移动包（防 26.x 单 tick 双位置包踢线）`, 'info');
           }
           return;
         }
