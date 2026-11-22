@@ -1200,9 +1200,11 @@ world = {
   reach = function(pos, max_distance)
     return rv(bridge.world.reach(pos, max_distance), nil) or { reachable = false, distance = nil, hit_block = nil }
   end,
+  -- 三个都取自同一个 world.env 查询：bridge.world.time_of_day / weather 两个 op
+  -- 在 host-abi.yaml 里并不存在（WorldEnv 是单查询多字段），此前调用会 nil-call。
   dimension = function() return (rv(bridge.world.env(), {}) or {}).dimension end,
-  time_of_day = function() return rv(bridge.world.time_of_day(), nil) end,
-  weather = function() return rv(bridge.world.weather(), nil) end,
+  time_of_day = function() return (rv(bridge.world.env(), {}) or {}).time_of_day end,
+  weather = function() return (rv(bridge.world.env(), {}) or {}).weather end,
 }
 
 -- ---------- 容器 / 背包（协议无关的视图；开箱编排在可选库 container_lib） ----------

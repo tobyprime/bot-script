@@ -344,3 +344,29 @@ test('perf 计数：查询 op 的调用/出站字节可在 /state.perf 观测', 
   assert.ok(row.us_avg >= 0 && row.kb_s >= 0);
   await engine.stop();
 });
+
+test('world.dimension / time_of_day / weather 取自同一次 world.env 查询', async () => {
+  // 回归：三者曾分别调用 bridge.world.time_of_day / bridge.world.weather ——
+  // 这两个 op 在 host-abi.yaml 里不存在（WorldEnv 是单查询多字段），运行期是 nil-call。
+  script('world-env.lua', `
+    __R_env = nil
+    task('env', { single = true }, function()
+      __R_env = {
+        dimension = world.dimension(),
+        time_of_day = world.time_of_day(),
+        weather = world.weather(),
+      }
+    end)
+    on_start(function() task.spawn('env') end)
+  `);
+  const driver = new MockDriver();
+  // 断言「真的走了宿主查询」：把 env 换成可辨识的值，悬空 op 会直接抛错而不是返回这些值
+  driver.world_env = () => ({ dimension: 'the_nether', time_of_day: 18300, weather: 'thunder' });
+  const { engine } = await makeEngine({ scripts: ['world-env.lua'], driver });
+  assert.ok(await waitFor(() => g(engine, '__R_env') != null, 3000), 'world.env 查询未返回');
+  const env = g(engine, '__R_env');
+  assert.strictEqual(env.dimension, 'the_nether');
+  assert.strictEqual(env.time_of_day, 18300);
+  assert.strictEqual(env.weather, 'thunder');
+  await engine.stop();
+});
