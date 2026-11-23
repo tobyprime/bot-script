@@ -265,6 +265,18 @@ export class MineflayerDriver {
     bot.once('spawn', () => {
       bot.physics.yawSpeed = 20;
       bot.physics.pitchSpeed = 20;
+      // 客户端 AABB 必须用与服务端相同的 float32 尺寸（Minecraft 的
+      // EntityDimensions 是 float：宽 0.6f / 高 1.8f，半宽 0.30000001192092896）。
+      // prismarine-physics 默认用 double 0.3 / 1.8，与 float32 差 1.19e-8。
+      // 后果：bot 贴墙滑行时，客户端裁剪出的位置恰好是「1001.0 - 0.3」，
+      // 服务端却按 1001.0 - 0.30000001192 重建包围盒 → 以 1.19e-8 侵入方块。
+      // Paper 的 CLIPPED_INTO_BLOCK 校验（hasNewCollision，无 1e-3 容差、
+      // logWarning=false 静默）会把「旧包围盒没碰到、新包围盒碰到方块」的
+      // 每一帧都回卷服务端位置。1 格宽沟拐角处 bot 只能斜向挤进墙角，
+      // 于是每 tick 被回卷一次 → 原地卡死（实测 1 格宽 L 型沟拐角卡 12~19s）。
+      // 换成 float32 常量后贴墙位置恰好相切（侵入侵入量 = 0），与官方客户端一致。
+      bot.physics.playerHalfWidth = Math.fround(0.6) / 2;
+      bot.physics.playerHeight = Math.fround(1.8);
       const movements = new Movements(bot, bot.registry);
       movements.allowSprinting = true;
       // 疾跑/跳跑步伐会被本服移动校验判 invalid_player_movement 连续踢线（生产实测：
@@ -277,8 +289,15 @@ export class MineflayerDriver {
     });
     bot.on('goal_reached', () => this.pathWait?.({ ok: true }));
     bot.on('path_update', (r) => {
+      if (process.env.BOTSCRIPT_NAV_DEBUG) {
+        const head = (r?.path ?? []).slice(0, 3).map((n) => `${n.x},${n.y},${n.z}`).join(' ');
+        this.log(`[nav] path_update status=${r?.status} nodes=${r?.path?.length ?? 0} head=[${head}] pos=${this.bot.entity?.position}`, 'info');
+      }
       if (r.status === 'noPath') this.pathWait?.({ ok: false, reason: 'unreachable' });
       else if (r.status === 'timeout') this.pathWait?.({ ok: false, reason: 'timeout' });
+    });
+    bot.on('path_reset', (reason) => {
+      if (process.env.BOTSCRIPT_NAV_DEBUG) this.log(`[nav] path_reset reason=${reason} pos=${this.bot.entity?.position}`, 'info');
     });
     bot.on('path_stop', () => this.pathWait?.({ ok: false, reason: 'cancelled' }));
   }
@@ -745,11 +764,35 @@ export class MineflayerDriver {
 
   async path_to(target, opts = {}) {
     if (!this.connected) return { ok: false, reason: 'disconnected' };
-    const GoalNear = (this.pfMod.goals ?? this.pfMod).GoalNear;
+    const g = this.pfMod.goals ?? this.pfMod;
+    const GoalNear = g.GoalNear;
+    const GoalNearXZ = g.GoalNearXZ;
     const arrive = Math.max(0, Math.round(opts.arrive ?? 1.5));
-    this.bot.pathfinder.setGoal(new GoalNear(target.x, target.y, target.z, arrive));
+    // GoalNear 的 isEnd 用**球形**距离（把 y 计入），且 range 会被四舍五入：
+    //   arrive=1.5 → range=2 → 目标在「斜下方 1 格」时 sqrt(1+1)=1.41 ≤ 2 立即判定到达，
+    //   于是 bot 站在上一层原地「到达」，脚本再挖就永远够不着（生产实测：1 格宽
+    //   通道的拐弯/层级交界处卡死，笔直段无碍）。
+    // 寻路仍按 XZ 平面判定（到达同列就算到），纵向由调用方自行对齐；
+    // 到达后再实测一次距离，寻路器自认到达但实际没动时如实报 stuck。
+    const goal = (GoalNearXZ && arrive > 1)
+      ? new GoalNearXZ(target.x, target.z, Math.max(1, arrive))
+      : new GoalNear(target.x, target.y, target.z, arrive);
+    const navDbg = process.env.BOTSCRIPT_NAV_DEBUG;
+    const t0 = Date.now();
+    if (navDbg) this.log(`[nav] setGoal ${JSON.stringify(target)} arrive=${arrive} pos=${this.bot.entity?.position}`, 'info');
+    this.bot.pathfinder.setGoal(goal);
     const result = await new Promise((resolve) => { this.pathWait = resolve; });
     this.pathWait = null;
+    if (navDbg) this.log(`[nav] goal_reached ${JSON.stringify(result)} dt=${Date.now() - t0} pos=${this.bot.entity?.position}`, 'info');
+    if (!result?.ok) return result;
+    const pos = this.bot?.entity?.position;
+    if (!pos) return { ok: false, reason: 'stuck' };
+    const dx = pos.x - target.x, dy = pos.y - target.y, dz = pos.z - target.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    // 允许 arrive + 1 的水平余量，但纵向必须真的到了目标层（否则就是「原地到达」）
+    if (Math.abs(dy) > 1.05 || dist > arrive + 1.2) {
+      return { ok: false, reason: 'stuck' };
+    }
     return result;
   }
 
