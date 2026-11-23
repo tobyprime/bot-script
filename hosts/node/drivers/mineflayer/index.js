@@ -392,7 +392,13 @@ export class MineflayerDriver {
       win?.on?.('updateSlot', () => this.pushWindowsDirty());
       this.pushWindowsDirty();
     });
-    bot.inventory?.on?.('update', () => { this.invDirty = true; this.pushWindowsDirty(); });
+    // prismarine-windows 只 emit 'updateSlot'，从不 emit 'update'（全仓仅 furnace 发 update）。
+    // 此前只挂 'update' → 热键换持（mode=2 numberClick 在本地改槽位）不会标脏，引擎快照
+    // 的 revision 永远不增，`act.window_click` 的 _waitRevision 每次白等满 3000ms。
+    // 生产实测：每挖一格换一次工具，单格因此凭空多出 3 秒（挖 0.5s 停 3s 的真凶，不是寻路）。
+    const markInvDirty = () => { this.invDirty = true; this.pushWindowsDirty(); };
+    bot.inventory?.on?.('update', markInvDirty);
+    bot.inventory?.on?.('updateSlot', markInvDirty);
     bot.on('blockUpdate', (oldBlock, newBlock) => {
       if (newBlock) this.emit('block_update', { pos: NORM(newBlock.position ?? oldBlock?.position), name: CANON(newBlock.name) });
     });

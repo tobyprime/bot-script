@@ -169,7 +169,16 @@ export class AbiDispatcher {
         const r = this._resultOf(e, op);
         hub.settleErr(token, r.error.code, r.error.message);
       }
-    })().finally(() => this._record(op, 'async', 0, 0, performance.now() - t0, false));
+    })().finally(() => {
+      this._record(op, 'async', 0, 0, performance.now() - t0, false);
+      // 动作耗时观测（排障用）：BOTSCRIPT_ACT_DEBUG=1 时逐条打印，定位「动作内部固定等待」。
+      if (process.env.BOTSCRIPT_ACT_DEBUG && op.startsWith('act.')) {
+        const dt = performance.now() - t0;
+        if (dt >= (Number(process.env.BOTSCRIPT_ACT_DEBUG_MIN_MS) || 0)) {
+          try { obs.log('info', `[act] ${op} dt=${dt.toFixed(0)}ms ${brief(args)}`); } catch { /* ignore */ }
+        }
+      }
+    });
     return token;
   }
 
