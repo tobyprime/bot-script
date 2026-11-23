@@ -404,7 +404,16 @@ export class MineflayerDriver {
     });
     bot.on('death', () => this.emit('death', {}));
     bot.on('respawn', () => this.emit('respawn', {}));
-    bot.on('damage', () => this.emit('damaged', {}));
+    // mineflayer **没有** 'damage' 事件（只有 entityHurt / health）：此前挂 bot.on('damage')
+    // 是个永不触发的死事件，引擎的 self.damaged 因此从未发出——脚本里「受击立即打断
+    // 当前挖掘/行走」的保护完全没生效（实测被僵尸贴身打 2 秒仍在闷头挖，血量 20→7）。
+    // 用 update_health 的血量下降作为受击信号。
+    let lastHealth = bot.health ?? 20;
+    bot.on('health', () => {
+      const hp = bot.health;
+      if (typeof hp === 'number' && hp < lastHealth) this.emit('damaged', {});
+      lastHealth = hp;
+    });
   }
 
   stopSampling() {
@@ -918,12 +927,27 @@ export class MineflayerDriver {
   async use_entity(id, kind, target, hand = 'main') {
     const e = this.bot.entities[id];
     if (!e) throw new Error(`实体 ${id} 不存在`);
-    if (kind === 'attack') await this.bot.attack(e);
-    else if (kind === 'interact_at') {
+    if (kind === 'attack') {
+      // 不能直接用 bot.attack(e)：mineflayer 4.39 的 useEntity() 发 'use_entity' 包时
+      // **不带 hand 字段**，而 1.21.8 协议在 mouse=0/2 时 hand 是必填 varint
+      // （mcdata packet_use_entity: hand 为 switch(mouse in {0,2} => varint)）。
+      // 缺字段会让服务端按错位解码、攻击被判无效——实测僵尸血量恒 20.0 不掉，
+      // bot 一边挨打一边「挥剑」。这里按协议自己发完整包。
+      const handId = hand === 'offhand' ? 1 : 0;
+      this.bot._client.write('use_entity', {
+        target: e.id,
+        mouse: 1,                 // 1 = attack
+        sneaking: this.bot.getControlState?.('sneak') ?? false,
+        hand: handId,
+      });
+      this.bot.swingArm(hand === 'offhand' ? 'left' : 'right');
+      this.bot.emit('entityAttacked', e);   // 维持 mineflayer 内部语义（不依赖其发包路径）
+      return;
+    }
+    if (kind === 'interact_at') {
       const t = target ?? { x: e.position.x, y: e.position.y, z: e.position.z };
       await this.bot.activateEntityAt(e, new Vec3(t.x, t.y, t.z));
     } else await this.bot.activateEntity(e);
-    void hand;
   }
 
   async swing(hand = 'main') {
