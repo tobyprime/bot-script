@@ -1445,12 +1445,20 @@ local function round_pos(p)
 end
 
 -- 把驱动/NavResult 归一成跨平台 Result（OK/ERR/取消由 await 负责）
+--
+-- 注意双层信封：act.path_to 这类「驱动自己也可能失败」的动作，ABI 层用
+-- settleOk 把驱动的返回原样装进 {ok=true, value=<驱动返回>}。因此 ok=true 不等于
+-- 寻路成功——必须再看 value 里的 ok/reason。此前的实现只看外层，导致
+-- timeout/unreachable 全部被报告成「到达」（生产实测：1 格宽通道拐弯处
+-- nav.walk 烧满 8 秒超时仍返回 ok=true，脚本以为走到了，原地反复重试）。
 local function as_nav_result(r)
   if type(r) ~= "table" then return { ok = true, value = {} } end
-  if r.ok == true then return { ok = true, value = r } end
-  if r.ok == false and r.error ~= nil then return r end   -- ABI 确定性失败（policy/denied/…）
-  local reason = r.reason or "unreachable"
-  return { ok = false, error = { code = "nav." .. reason, message = reason } }
+  local inner = r
+  if r.ok == true and type(r.value) == "table" then inner = r.value end
+  if inner.ok == true then return { ok = true, value = inner } end
+  if inner.ok == false and inner.error ~= nil then return inner end   -- ABI 确定性失败（policy/denied/…）
+  local reason = inner.reason or "unreachable"
+  return { ok = false, error = { code = "nav." .. tostring(reason), message = tostring(reason) } }
 end
 
 nav = {
